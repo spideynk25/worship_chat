@@ -9,7 +9,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:intl/intl.dart';
 import 'package:worship_chat/colors.dart';
-import 'package:worship_chat/common/widgets/loader.dart';
+import 'package:worship_chat/common/widgets/skeleton_loader.dart';
 import 'package:worship_chat/features/chat/controller/chat_controller.dart';
 import 'package:worship_chat/features/chat/screens/one_to_one_chat_screen.dart';
 import 'package:cached_network_image/cached_network_image.dart';
@@ -179,21 +179,22 @@ class CombinedContactsScreen extends ConsumerWidget {
                   ],
                 );
               },
-              loading: () => const SizedBox(
-                height: 108,
-                child: Center(child: CircularProgressIndicator()),
-              ),
+              loading: () => const StatusRowSkeleton(),
               error: (e, _) => const SizedBox.shrink(),
             ),
 
             // ── Chats list ─────────────────────────────────────────────
             StreamBuilder<List<ChatContact>>(
+              initialData: ref
+                  .watch(chatControllerProvider)
+                  .getCachedContacts(isAllChats: isAllChats),
               stream: isAllChats
                   ? ref.watch(chatControllerProvider).fetchAllContacts()
                   : ref.watch(chatControllerProvider).chatContacts(),
               builder: (context, snapshot) {
-                if (snapshot.connectionState == ConnectionState.waiting) {
-                  return const Loader();
+                if (snapshot.connectionState == ConnectionState.waiting &&
+                    (!snapshot.hasData || snapshot.data!.isEmpty)) {
+                  return const ContactListSkeleton();
                 }
                 if (!snapshot.hasData ||
                     snapshot.data == null ||

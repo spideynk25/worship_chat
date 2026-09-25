@@ -1,11 +1,15 @@
 import 'dart:developer';
+import 'package:firebase_auth/firebase_auth.dart';
+import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:hive_flutter/hive_flutter.dart';
 import 'package:worship_chat/common/providers/message_reply_provider.dart';
 import 'package:worship_chat/features/auth/controller/auth_controller.dart';
 import 'package:worship_chat/features/chat/repositories/chat_repository.dart';
 import 'package:worship_chat/models/chat_contact.dart';
 import 'package:worship_chat/models/one_to_one_message_model.dart';
+import 'package:worship_chat/models/user_model.dart';
 
 final chatControllerProvider = Provider((ref) {
   final chatRepository = ref.watch(chatRepositoryProvider);
@@ -17,6 +21,10 @@ class ChatController {
   final Ref ref;
 
   ChatController({required this.chatRepository, required this.ref});
+
+  List<ChatContact> getCachedContacts({required bool isAllChats}) {
+    return chatRepository.getCachedContacts(isAllChats: isAllChats);
+  }
 
   Stream<List<ChatContact>> chatContacts() {
     return chatRepository.getChatContact();
@@ -64,9 +72,27 @@ class ChatController {
       final messageReply = ref.read(messageReplyProvider);
       log("controller sendTextMessage: $fcmToken");
 
-      final userDataAsync = await ref.read(userDataAuthProvider.future);
+      UserModel? senderUser = await ref.read(userDataAuthProvider.future);
+      if (senderUser == null && Hive.isBoxOpen('userBox')) {
+        senderUser = Hive.box<UserModel>('userBox').get('currentUser');
+      }
+      if (senderUser == null) {
+        final authUser = FirebaseAuth.instance.currentUser;
+        if (authUser != null) {
+          senderUser = UserModel(
+            name: authUser.displayName ?? 'User',
+            userName: authUser.displayName ?? 'User',
+            uid: authUser.uid,
+            profilePic: authUser.photoURL ?? '',
+            isOnline: true,
+            email: authUser.email ?? '',
+            groupId: [],
+            fcmToken: await FirebaseMessaging.instance.getToken(),
+          );
+        }
+      }
 
-      if (userDataAsync != null) {
+      if (senderUser != null) {
         await chatRepository.sendTextMessage(
           messageReply: messageReply,
           messageType: messageType,
@@ -74,7 +100,7 @@ class ChatController {
           context: context,
           text: text,
           receiverUserId: receiverUserId,
-          senderUser: userDataAsync,
+          senderUser: senderUser,
           fcmToken: fcmToken,
           unseenCount: unseenCount,
           chatBackgroundUrl: chatBackgroundUrl,
@@ -113,6 +139,14 @@ class ChatController {
       );
     } catch (e) {
       log("error on setChatMessageSeen: $e");
+    }
+  }
+
+  void markChatAsSeen(String partnerUserId) {
+    try {
+      chatRepository.markChatAsSeen(partnerUserId);
+    } catch (e) {
+      log("error on markChatAsSeen: $e");
     }
   }
 

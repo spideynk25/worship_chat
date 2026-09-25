@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:worship_chat/common/widgets/loader.dart';
+import 'package:worship_chat/common/widgets/skeleton_loader.dart';
 import 'package:worship_chat/features/chat/controller/chat_controller.dart';
 import 'package:worship_chat/models/chat_contact.dart';
 
@@ -35,7 +35,7 @@ class _SelectContactsGroupState extends ConsumerState<SelectContactsGroup> {
       stream: ref.watch(chatControllerProvider).chatContacts(),
       builder: (context, snapshot) {
         if (snapshot.connectionState == ConnectionState.waiting) {
-          return const Loader();
+          return const ContactListSkeleton();
         }
         if (!snapshot.hasData ||
             snapshot.hasError ||

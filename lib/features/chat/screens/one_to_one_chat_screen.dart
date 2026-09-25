@@ -6,9 +6,12 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:hive_flutter/adapters.dart';
 import 'package:image_cropper/image_cropper.dart';
 import 'package:worship_chat/colors.dart';
+import 'package:worship_chat/common/utils/active_chat_notifier.dart';
 import 'package:worship_chat/common/utils/file_messages.dart';
+import 'package:worship_chat/common/utils/firebase_notification_service.dart';
 import 'package:worship_chat/common/utils/utils.dart';
-import 'package:worship_chat/common/widgets/loader.dart';
+import 'package:worship_chat/common/widgets/chat_status_indicator.dart';
+import 'package:worship_chat/common/widgets/skeleton_loader.dart';
 import 'package:worship_chat/common/widgets/user_avatar.dart';
 import 'package:worship_chat/features/auth/controller/auth_controller.dart';
 import 'package:worship_chat/features/chat/controller/chat_controller.dart';
@@ -43,11 +46,45 @@ class OneToOneChatScreen extends ConsumerStatefulWidget {
       _OneToOneChatScreenState();
 }
 
-class _OneToOneChatScreenState extends ConsumerState<OneToOneChatScreen> {
+class _OneToOneChatScreenState extends ConsumerState<OneToOneChatScreen>
+    with WidgetsBindingObserver {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
+    ActiveChatNotifier.instance.enter(widget.uid, chatName: widget.name);
+    FirebaseNotificationService.cancelNotificationsForChat(
+      widget.uid,
+      chatName: widget.name,
+    );
     displayOrHideImage();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) {
+        ref.read(chatControllerProvider).markChatAsSeen(widget.uid);
+      }
+    });
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    super.didChangeAppLifecycleState(state);
+    if (state == AppLifecycleState.resumed) {
+      ActiveChatNotifier.instance.enter(widget.uid, chatName: widget.name);
+      FirebaseNotificationService.cancelNotificationsForChat(
+        widget.uid,
+        chatName: widget.name,
+      );
+      if (mounted) {
+        ref.read(chatControllerProvider).markChatAsSeen(widget.uid);
+      }
+    }
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    ActiveChatNotifier.instance.leave();
+    super.dispose();
   }
 
   Future<void> displayOrHideImage() async {
@@ -228,8 +265,17 @@ class _OneToOneChatScreenState extends ConsumerState<OneToOneChatScreen> {
         title: StreamBuilder<UserModel>(
           stream: ref.watch(authControllerProvider).userDataById(widget.uid),
           builder: (context, snapshot) {
-            if (snapshot.connectionState == ConnectionState.waiting) {
-              return const Loader();
+            final user = snapshot.data;
+            final displayName = (user?.name != null && user!.name!.isNotEmpty)
+                ? user.name!
+                : widget.name;
+            final displayPic = (user?.profilePic != null && user!.profilePic!.isNotEmpty)
+                ? user.profilePic
+                : widget.profilePic;
+
+            // Show skeleton only if both display name and profile are empty while connecting
+            if (displayName.isEmpty && (displayPic == null || displayPic.isEmpty) && snapshot.connectionState == ConnectionState.waiting) {
+              return const ChatAppBarSkeleton();
             }
             // ✅ Wrap entire title in GestureDetector to open user info
             return GestureDetector(
@@ -238,60 +284,61 @@ class _OneToOneChatScreenState extends ConsumerState<OneToOneChatScreen> {
                 mainAxisAlignment: MainAxisAlignment.start,
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  UserAvatar(url: widget.profilePic, radius: 20),
+                  UserAvatar(
+                    url: displayPic,
+                    radius: 20,
+                    isOnline: user?.isOnline,
+                    showOnlineIndicator: user != null,
+                    borderColor: appBarColor,
+                  ),
                   const SizedBox(width: 10),
-                  Column(
-                    mainAxisSize: MainAxisSize.min,
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(widget.name, style: const TextStyle(fontSize: 16)),
-                      StreamBuilder<bool>(
-                        stream: ref
-                            .watch(chatControllerProvider)
-                            .getTypingStatus(widget.uid),
-                        builder: (context, typingSnapshot) {
-                          final isTyping = typingSnapshot.data ?? false;
-                          if (isTyping) {
-                            return Row(
-                              children: [
-                                Text(
-                                  'typing',
-                                  style: TextStyle(
-                                    fontWeight: FontWeight.normal,
-                                    fontSize: 13,
-                                    color: Colors.green.shade300,
+                  Flexible(
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          displayName,
+                          style: const TextStyle(
+                            fontSize: 16,
+                            fontWeight: FontWeight.w600,
+                            letterSpacing: 0.1,
+                          ),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                        const SizedBox(height: 2),
+                        StreamBuilder<bool>(
+                          stream: ref
+                              .watch(chatControllerProvider)
+                              .getTypingStatus(widget.uid),
+                          builder: (context, typingSnapshot) {
+                            final isTyping = typingSnapshot.data ?? false;
+
+                            // If snapshot is still connecting and has no user data yet
+                            if (!snapshot.hasData && user == null) {
+                              return ShimmerEffect(
+                                child: Container(
+                                  width: 44,
+                                  height: 9,
+                                  margin: const EdgeInsets.only(top: 2),
+                                  decoration: BoxDecoration(
+                                    color: Colors.white24,
+                                    borderRadius: BorderRadius.circular(4),
                                   ),
                                 ),
-                                const SizedBox(width: 4),
-                                SizedBox(
-                                  width: 20,
-                                  height: 13,
-                                  child: Row(
-                                    mainAxisAlignment: MainAxisAlignment.center,
-                                    children: [
-                                      _TypingDot(delay: 0),
-                                      const SizedBox(width: 2),
-                                      _TypingDot(delay: 200),
-                                      const SizedBox(width: 2),
-                                      _TypingDot(delay: 400),
-                                    ],
-                                  ),
-                                ),
-                              ],
+                              );
+                            }
+
+                            return AppBarStatusSubtitle(
+                              isTyping: isTyping,
+                              isOnline: user?.isOnline == true,
+                              accentColor: tabColor,
                             );
-                          }
-                          return Text(
-                            snapshot.data?.isOnline == true
-                                ? 'online'
-                                : 'offline',
-                            style: const TextStyle(
-                              fontWeight: FontWeight.normal,
-                              fontSize: 13,
-                            ),
-                          );
-                        },
-                      ),
-                    ],
+                          },
+                        ),
+                      ],
+                    ),
                   ),
                 ],
               ),
@@ -336,6 +383,21 @@ class _OneToOneChatScreenState extends ConsumerState<OneToOneChatScreen> {
                   profilePic: widget.profilePic ?? "",
                 ),
               ),
+              // Floating in-chat typing bubble
+              StreamBuilder<bool>(
+                stream: ref
+                    .watch(chatControllerProvider)
+                    .getTypingStatus(widget.uid),
+                builder: (context, snapshot) {
+                  final isTyping = snapshot.data ?? false;
+                  return InChatTypingBubble(
+                    isTyping: isTyping,
+                    userName: widget.name,
+                    profilePic: widget.profilePic,
+                    accentColor: tabColor,
+                  );
+                },
+              ),
               OneToOneBottomChatFieldWidget(
                 receiverUserId: widget.uid,
                 fcmToken: widget.fcmToken,
@@ -345,61 +407,6 @@ class _OneToOneChatScreenState extends ConsumerState<OneToOneChatScreen> {
             ],
           ),
         ],
-      ),
-    );
-  }
-}
-
-// ── Animated typing dot ──────────────────────────────────────────────────────
-
-class _TypingDot extends StatefulWidget {
-  final int delay;
-  const _TypingDot({required this.delay});
-
-  @override
-  State<_TypingDot> createState() => _TypingDotState();
-}
-
-class _TypingDotState extends State<_TypingDot>
-    with SingleTickerProviderStateMixin {
-  late AnimationController _controller;
-  late Animation<double> _animation;
-
-  @override
-  void initState() {
-    super.initState();
-    _controller = AnimationController(
-      duration: const Duration(milliseconds: 600),
-      vsync: this,
-    );
-    _animation = Tween<double>(
-      begin: 0.0,
-      end: 1.0,
-    ).animate(CurvedAnimation(parent: _controller, curve: Curves.easeInOut));
-    Future.delayed(Duration(milliseconds: widget.delay), () {
-      if (mounted) _controller.repeat(reverse: true);
-    });
-  }
-
-  @override
-  void dispose() {
-    _controller.dispose();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return AnimatedBuilder(
-      animation: _animation,
-      builder: (context, child) => Container(
-        width: 4,
-        height: 4,
-        decoration: BoxDecoration(
-          color: Colors.green.shade300.withOpacity(
-            0.3 + (_animation.value * 0.7),
-          ),
-          shape: BoxShape.circle,
-        ),
       ),
     );
   }

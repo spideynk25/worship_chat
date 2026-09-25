@@ -68,6 +68,10 @@ class GroupController {
     );
   }
 
+  List<GroupModel> getCachedGroups(String category) {
+    return groupRepository.getCachedGroups(category);
+  }
+
   Stream<List<GroupModel>> chatGroups() {
     return groupRepository.getChatGroups();
   }
@@ -154,6 +158,14 @@ class GroupController {
       await groupRepository.setChatMessageSeen(context, groupId, messageId);
     } catch (e) {
       log("error on setChatMessageSeen: $e");
+    }
+  }
+
+  void markGroupAsSeen(String groupId) {
+    try {
+      groupRepository.markGroupAsSeen(groupId);
+    } catch (e) {
+      log("error on markGroupAsSeen: $e");
     }
   }
 

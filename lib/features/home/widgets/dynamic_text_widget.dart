@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:worship_chat/colors.dart';
 
 class DynamicTextWidget extends StatefulWidget {
   const DynamicTextWidget({super.key});
@@ -94,7 +95,7 @@ class _DynamicTextWidgetState extends State<DynamicTextWidget> {
         _currentList[_currentIndex],
         key: ValueKey<int>(_currentIndex),
         style: const TextStyle(
-          color: Colors.orange,
+          color: accentOrange,
           fontSize: 11.5,
           fontWeight: FontWeight.w400,
         ),

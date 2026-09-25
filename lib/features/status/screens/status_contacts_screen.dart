@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:worship_chat/common/widgets/skeleton_loader.dart';
 import 'package:worship_chat/features/status/controller/status_controller.dart';
 import 'package:worship_chat/features/status/screens/view_status_screen.dart';
 
@@ -53,7 +54,7 @@ class StatusContactsScreen extends ConsumerWidget {
             },
           );
         },
-        loading: () => const Center(child: CircularProgressIndicator()),
+        loading: () => const StatusListSkeleton(),
         error: (e, _) => Center(child: Text('Error: $e')),
       ),
     );

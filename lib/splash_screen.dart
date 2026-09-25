@@ -114,7 +114,7 @@ class _SplashScreenState extends State<SplashScreen>
           gradient: LinearGradient(
             begin: Alignment.topLeft,
             end: Alignment.bottomRight,
-            colors: [Color(0xFF1a1a2e), Color(0xFF16213e), Color(0xFF0f3460)],
+            colors: [Color(0xFF0A0A0F), Color(0xFF12121C), Color(0xFF1A0A18)],
           ),
         ),
         child: Stack(
@@ -156,12 +156,12 @@ class _SplashScreenState extends State<SplashScreen>
                                 shape: BoxShape.circle,
                                 boxShadow: [
                                   BoxShadow(
-                                    color: Color(0xFFe94560).withOpacity(0.6),
+                                    color: Color(0xFFFF2D78).withOpacity(0.6),
                                     blurRadius: 40,
                                     spreadRadius: 15,
                                   ),
                                   BoxShadow(
-                                    color: Color(0xFFff6b9d).withOpacity(0.4),
+                                    color: Color(0xFFFF7AAF).withOpacity(0.4),
                                     blurRadius: 60,
                                     spreadRadius: 25,
                                   ),
@@ -196,8 +196,8 @@ class _SplashScreenState extends State<SplashScreen>
                                                 begin: Alignment.topLeft,
                                                 end: Alignment.bottomRight,
                                                 colors: [
-                                                  Color(0xFFe94560),
-                                                  Color(0xFFff6b9d),
+                                                  Color(0xFFFF2D78),
+                                                  Color(0xFFFF7AAF),
                                                 ],
                                               ),
                                             ),
@@ -218,8 +218,8 @@ class _SplashScreenState extends State<SplashScreen>
                                             begin: Alignment.topLeft,
                                             end: Alignment.bottomRight,
                                             colors: [
-                                              Color(0xFFe94560),
-                                              Color(0xFFff6b9d),
+                                              Color(0xFFFF2D78),
+                                              Color(0xFFFF7AAF),
                                             ],
                                           ),
                                         ),
@@ -252,9 +252,9 @@ class _SplashScreenState extends State<SplashScreen>
                           ShaderMask(
                             shaderCallback: (bounds) => LinearGradient(
                               colors: [
-                                Color(0xFFe94560),
-                                Color(0xFFff6b9d),
-                                Color(0xFFffd93d),
+                                Color(0xFFFF2D78),
+                                Color(0xFFFF7AAF),
+                                Color(0xFFFF6B2D),
                               ],
                             ).createShader(bounds),
                             child: Text(
@@ -366,11 +366,11 @@ class _AnimatedLoadingDotsState extends State<_AnimatedLoadingDots>
                   decoration: BoxDecoration(
                     shape: BoxShape.circle,
                     gradient: LinearGradient(
-                      colors: [Color(0xFFe94560), Color(0xFFff6b9d)],
+                      colors: [Color(0xFFFF2D78), Color(0xFFFF7AAF)],
                     ),
                     boxShadow: [
                       BoxShadow(
-                        color: Color(0xFFe94560).withOpacity(0.5),
+                        color: Color(0xFFFF2D78).withOpacity(0.5),
                         blurRadius: 8,
                         spreadRadius: 2,
                       ),
@@ -410,7 +410,7 @@ class ParticlesPainter extends CustomPainter {
       final opacity = (math.sin(animationValue * 2 * math.pi + i) + 1) / 2;
       final size_particle = random.nextDouble() * 3 + 1;
 
-      paint.color = Color(0xFFe94560).withOpacity(opacity * 0.3);
+      paint.color = Color(0xFFFF2D78).withOpacity(opacity * 0.3);
       canvas.drawCircle(Offset(x, y), size_particle, paint);
     }
   }

@@ -26,8 +26,14 @@ Future<String?> uploadImageToCloudinary(File file, String type) async {
     final response = await dio.post(url, data: formData);
     log("image response $response");
     if (response.statusCode == 200) {
-      log("Image url ${response.data["url"]}");
-      return response.data["url"]; // The Cloudinary URL of the uploaded image
+      final raw = response.data["secure_url"] as String? ??
+          response.data["url"] as String? ??
+          '';
+      final cleanUrl = raw.startsWith('http://')
+          ? raw.replaceFirst('http://', 'https://')
+          : raw;
+      log("Image url $cleanUrl");
+      return cleanUrl;
     } else {
       throw Exception('Failed to upload image: ${response.data}');
     }

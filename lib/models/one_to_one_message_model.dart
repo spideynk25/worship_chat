@@ -1,3 +1,4 @@
+import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:hive/hive.dart';
 
 part 'one_to_one_message_model.g.dart';
@@ -23,7 +24,8 @@ class OneToOneMessageModel {
   final String messageId;
 
   @HiveField(6)
-  final bool isSeen;
+  final bool? _isSeen;
+  bool get isSeen => _isSeen ?? false;
 
   @HiveField(7)
   String? fileMessageData;
@@ -37,6 +39,13 @@ class OneToOneMessageModel {
   @HiveField(10)
   final String repliedMessageType;
 
+  @HiveField(11)
+  final bool? _isDelivered;
+  bool get isDelivered => _isDelivered ?? false;
+
+  final bool? _isSending;
+  bool get isSending => _isSending ?? false;
+
   OneToOneMessageModel({
     required this.senderId,
     required this.receiverId,
@@ -44,12 +53,16 @@ class OneToOneMessageModel {
     required this.messageType,
     required this.timeSent,
     required this.messageId,
-    required this.isSeen,
+    bool? isSeen,
+    bool? isDelivered,
+    bool? isSending,
     this.fileMessageData,
     required this.repliedMessage,
     required this.repliedTo,
     required this.repliedMessageType,
-  });
+  })  : _isSeen = isSeen ?? false,
+        _isDelivered = isDelivered ?? false,
+        _isSending = isSending ?? false;
 
   // ✅ Added copyWith - no HiveField changes so no regeneration needed
   OneToOneMessageModel copyWith({
@@ -60,6 +73,8 @@ class OneToOneMessageModel {
     DateTime? timeSent,
     String? messageId,
     bool? isSeen,
+    bool? isDelivered,
+    bool? isSending,
     String? fileMessageData,
     String? repliedMessage,
     String? repliedTo,
@@ -73,6 +88,8 @@ class OneToOneMessageModel {
       timeSent: timeSent ?? this.timeSent,
       messageId: messageId ?? this.messageId,
       isSeen: isSeen ?? this.isSeen,
+      isDelivered: isDelivered ?? this.isDelivered,
+      isSending: isSending ?? this.isSending,
       fileMessageData: fileMessageData ?? this.fileMessageData,
       repliedMessage: repliedMessage ?? this.repliedMessage,
       repliedTo: repliedTo ?? this.repliedTo,
@@ -89,6 +106,7 @@ class OneToOneMessageModel {
       'timeSent': timeSent.millisecondsSinceEpoch,
       'messageId': messageId,
       'isSeen': isSeen,
+      'isDelivered': isDelivered,
       'fileMessageData': fileMessageData,
       'repliedMessage': repliedMessage,
       'repliedTo': repliedTo,
@@ -97,18 +115,37 @@ class OneToOneMessageModel {
   }
 
   factory OneToOneMessageModel.fromMap(Map<String, dynamic> map) {
+    DateTime parsedTime;
+    final rawTime = map['timeSent'];
+    if (rawTime is int) {
+      parsedTime = DateTime.fromMillisecondsSinceEpoch(rawTime);
+    } else if (rawTime is Timestamp) {
+      parsedTime = rawTime.toDate();
+    } else if (rawTime is String) {
+      final asInt = int.tryParse(rawTime);
+      if (asInt != null) {
+        parsedTime = DateTime.fromMillisecondsSinceEpoch(asInt);
+      } else {
+        parsedTime = DateTime.tryParse(rawTime) ?? DateTime.now();
+      }
+    } else {
+      parsedTime = DateTime.now();
+    }
+
     return OneToOneMessageModel(
-      senderId: map['senderId'] as String,
-      receiverId: map['receiverId'] as String,
-      text: map['text'] as String,
-      messageType: map['messageType'] ?? "text",
-      timeSent: DateTime.fromMillisecondsSinceEpoch(map['timeSent'] as int),
-      messageId: map['messageId'] as String,
-      isSeen: map['isSeen'] as bool,
-      fileMessageData: map['fileMessageData'],
-      repliedMessage: map['repliedMessage'] ?? '',
-      repliedTo: map['repliedTo'] ?? '',
-      repliedMessageType: map['repliedMessageType'] ?? 'text',
+      senderId: map['senderId']?.toString() ?? '',
+      receiverId: map['receiverId']?.toString() ?? '',
+      text: map['text']?.toString() ?? '',
+      messageType: map['messageType']?.toString() ?? "text",
+      timeSent: parsedTime,
+      messageId: map['messageId']?.toString() ?? '',
+      isSeen: map['isSeen'] as bool? ?? false,
+      isDelivered: map['isDelivered'] as bool? ?? (map['isSeen'] as bool? ?? false),
+      isSending: false,
+      fileMessageData: map['fileMessageData']?.toString(),
+      repliedMessage: map['repliedMessage']?.toString() ?? '',
+      repliedTo: map['repliedTo']?.toString() ?? '',
+      repliedMessageType: map['repliedMessageType']?.toString() ?? 'text',
     );
   }
-}
+}

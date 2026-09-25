@@ -11,6 +11,7 @@ import 'package:uuid/uuid.dart';
 import 'package:worship_chat/common/providers/message_reply_provider.dart';
 import 'package:worship_chat/common/utils/file_messages.dart';
 import 'package:worship_chat/common/utils/firebase_notification_service.dart';
+import 'package:worship_chat/common/utils/media_cache_service.dart';
 import 'package:worship_chat/common/utils/utils.dart';
 import 'package:worship_chat/models/chat_contact.dart';
 import 'package:worship_chat/models/one_to_one_message_model.dart';
@@ -37,8 +38,6 @@ class ChatRepository {
   final FirebaseAuth auth;
 
   ChatRepository({required this.fireStore, required this.auth});
-
-  final Map<String, Set<String>> _deletionQueue = {};
 
   Stream<bool> getTypingStatus(String otherUserId) {
     return fireStore
@@ -88,70 +87,167 @@ class ChatRepository {
     }
   }
 
-  Stream<List<ChatContact>> fetchAllContacts() {
-    return fireStore.collection('users').snapshots().asyncMap((event) async {
+  List<ChatContact> getCachedContacts({required bool isAllChats}) {
+    final currentUserId = auth.currentUser?.uid;
+    if (currentUserId == null) return [];
+    try {
+      if (Hive.isBoxOpen('contacts_cache')) {
+        final box = Hive.box('contacts_cache');
+        final key = isAllChats ? 'all_contacts' : 'user_chats_$currentUserId';
+        final cachedRaw = box.get(key, defaultValue: []);
+        if (cachedRaw is List && cachedRaw.isNotEmpty) {
+          return cachedRaw
+              .map((item) =>
+                  ChatContact.fromMap(Map<String, dynamic>.from(item as Map)))
+              .toList();
+        }
+      }
+    } catch (e) {
+      log('Error reading cached contacts: $e');
+    }
+    return [];
+  }
+
+  Stream<List<ChatContact>> fetchAllContacts() async* {
+    final currentUserId = auth.currentUser?.uid;
+
+    // 1. Immediately emit cached contacts from Hive (0ms)
+    final cached = getCachedContacts(isAllChats: true);
+    if (cached.isNotEmpty) {
+      log('⚡ [Instant Cache] Emitted ${cached.length} all_contacts from Hive');
+      yield cached;
+    }
+
+    // 2. Stream from Firestore and update Hive
+    yield* fireStore.collection('users').snapshots().map((event) {
       log("Snapshot received - Doc count: ${event.docs.length}");
 
       List<ChatContact> contacts = [];
       for (var document in event.docs) {
         try {
-          var chatContact = ChatContact.fromMap(document.data());
-          var userData = await fireStore
-              .collection('users')
-              .doc(chatContact.uid)
-              .get();
+          final data = document.data();
+          final uid = data['uid'] as String? ?? document.id;
+          if (uid == currentUserId) continue;
 
-          if (userData.data() != null) {
-            var user = UserModel.fromMap(userData.data()!);
-            contacts.add(
-              ChatContact(
-                name: user.name!,
-                profilePic: user.profilePic,
-                uid: chatContact.uid,
-                timeSent: chatContact.timeSent,
-                lastMessage: chatContact.lastMessage,
-                fcmToken: chatContact.fcmToken,
-                unseenCount: chatContact.unseenCount,
-                chatBackgroundUrl: chatContact.chatBackgroundUrl,
-              ),
-            );
-          }
+          final name = data['name'] as String? ?? 'User';
+          final profilePic = data['profilePic'] as String?;
+          final fcmToken = data['fcmToken'] as String? ?? '';
+
+          contacts.add(
+            ChatContact(
+              name: name,
+              profilePic: profilePic,
+              uid: uid,
+              timeSent: DateTime.now(),
+              lastMessage: '',
+              fcmToken: fcmToken,
+              unseenCount: false,
+              chatBackgroundUrl: '',
+            ),
+          );
         } catch (e) {
-          log("Error processing contact: $e");
-          continue;
+          log("Error processing all_contact doc: $e");
         }
       }
 
-      final currentUserId = auth.currentUser?.uid;
-      return contacts
-          .where((chatContact) => chatContact.uid != currentUserId)
-          .toList();
+      // Persist to Hive for next instant launch
+      try {
+        if (Hive.isBoxOpen('contacts_cache')) {
+          Hive.box('contacts_cache').put(
+            'all_contacts',
+            contacts.map((c) => c.toMap()).toList(),
+          );
+        }
+      } catch (e) {
+        log('Error saving all_contacts to Hive: $e');
+      }
+
+      return contacts;
     });
   }
 
-  Stream<List<ChatContact>> getChatContact() {
-    return fireStore
+  Stream<List<ChatContact>> getChatContact() async* {
+    final currentUserId = auth.currentUser?.uid;
+    if (currentUserId == null) {
+      yield [];
+      return;
+    }
+
+    // 1. Immediately emit cached chat contacts from Hive (0ms)
+    final cached = getCachedContacts(isAllChats: false);
+    if (cached.isNotEmpty) {
+      log('⚡ [Instant Cache] Emitted ${cached.length} chat contacts from Hive');
+      yield cached;
+    }
+
+    // 2. Stream from Firestore and update Hive
+    yield* fireStore
         .collection('users')
-        .doc(auth.currentUser!.uid)
+        .doc(currentUserId)
         .collection("chats")
         .snapshots()
         .asyncMap((event) async {
           List<ChatContact> contacts = [];
           for (var document in event.docs) {
             try {
-              var chatContact = ChatContact.fromMap(document.data());
-              var userData = await fireStore
-                  .collection('users')
-                  .doc(chatContact.uid)
-                  .get();
+              final docData = document.data();
+              // ALWAYS resolve the UID: try docData['uid'], then docData['contactId'], then document.id
+              final targetUid = (docData['uid'] as String?)?.trim().isNotEmpty == true
+                  ? (docData['uid'] as String).trim()
+                  : (docData['contactId'] as String?)?.trim().isNotEmpty == true
+                      ? (docData['contactId'] as String).trim()
+                      : document.id.trim();
 
-              if (userData.data() != null) {
-                var user = UserModel.fromMap(userData.data()!);
+              if (targetUid.isEmpty || targetUid == currentUserId) {
+                continue;
+              }
+
+              var chatContact = ChatContact.fromMap(docData, documentId: targetUid);
+              try {
+                var userData = await fireStore
+                    .collection('users')
+                    .doc(targetUid)
+                    .get();
+
+                if (userData.data() != null) {
+                  var user = UserModel.fromMap(userData.data()!);
+                  final freshToken = (user.fcmToken != null && user.fcmToken!.isNotEmpty)
+                      ? user.fcmToken!
+                      : (chatContact.fcmToken ?? '');
+                  contacts.add(
+                    ChatContact(
+                      name: (user.name != null && user.name!.isNotEmpty)
+                          ? user.name!
+                          : chatContact.name,
+                      profilePic: user.profilePic ?? chatContact.profilePic,
+                      uid: targetUid,
+                      timeSent: chatContact.timeSent,
+                      lastMessage: chatContact.lastMessage,
+                      fcmToken: freshToken,
+                      unseenCount: chatContact.unseenCount,
+                      chatBackgroundUrl: chatContact.chatBackgroundUrl,
+                    ),
+                  );
+                } else {
+                  contacts.add(
+                    ChatContact(
+                      name: chatContact.name,
+                      profilePic: chatContact.profilePic,
+                      uid: targetUid,
+                      timeSent: chatContact.timeSent,
+                      lastMessage: chatContact.lastMessage,
+                      fcmToken: chatContact.fcmToken,
+                      unseenCount: chatContact.unseenCount,
+                      chatBackgroundUrl: chatContact.chatBackgroundUrl,
+                    ),
+                  );
+                }
+              } catch (e) {
                 contacts.add(
                   ChatContact(
-                    name: user.name!,
-                    profilePic: user.profilePic,
-                    uid: chatContact.uid,
+                    name: chatContact.name,
+                    profilePic: chatContact.profilePic,
+                    uid: targetUid,
                     timeSent: chatContact.timeSent,
                     lastMessage: chatContact.lastMessage,
                     fcmToken: chatContact.fcmToken,
@@ -166,20 +262,62 @@ class ChatRepository {
             }
           }
 
-          final currentUserId = auth.currentUser?.uid;
-          return contacts
-              .where((chatContact) => chatContact.uid != currentUserId)
+          final filtered = contacts
+              .where((chatContact) =>
+                  chatContact.uid.isNotEmpty && chatContact.uid != currentUserId)
               .toList();
+
+          // Sort by timeSent descending so the most recent conversation is on top
+          filtered.sort((a, b) {
+            if (a.timeSent == null && b.timeSent == null) return 0;
+            if (a.timeSent == null) return 1;
+            if (b.timeSent == null) return -1;
+            return b.timeSent!.compareTo(a.timeSent!);
+          });
+
+          // Persist to Hive for next instant launch
+          try {
+            if (Hive.isBoxOpen('contacts_cache')) {
+              await Hive.box('contacts_cache').put(
+                'user_chats_$currentUserId',
+                filtered.map((c) => c.toMap()).toList(),
+              );
+            }
+          } catch (e) {
+            log('Error saving user_chats to Hive: $e');
+          }
+
+          return filtered;
         });
   }
 
-  Stream<List<OneToOneMessageModel>> getChatStream(String receiverUserId) {
+  Stream<List<OneToOneMessageModel>> getChatStream(
+      String receiverUserId) async* {
     final currentUserId = auth.currentUser?.uid;
     if (currentUserId == null) {
-      return Stream.value([]);
+      yield [];
+      return;
     }
 
-    return fireStore
+    final localKey = '${currentUserId}_$receiverUserId';
+
+    // 1. Immediately emit cached messages from Hive (0ms)
+    try {
+      if (Hive.isBoxOpen('messages')) {
+        final box = Hive.box('messages');
+        final cachedData = box.get(localKey, defaultValue: []);
+        if (cachedData is List && cachedData.isNotEmpty) {
+          final cachedMessages = cachedData.cast<OneToOneMessageModel>();
+          log('⚡ [Instant Cache] Emitted ${cachedMessages.length} cached 1-to-1 messages for $receiverUserId');
+          yield cachedMessages;
+        }
+      }
+    } catch (e) {
+      log('❌ Error emitting cached 1-to-1 messages: $e');
+    }
+
+    // 2. Stream updates from Firestore and keep Hive in sync
+    yield* fireStore
         .collection('users')
         .doc(currentUserId)
         .collection('chats')
@@ -200,6 +338,8 @@ class ChatRepository {
           for (int i = 0; i < prev.length; i++) {
             if (prev[i].messageId != next[i].messageId ||
                 prev[i].isSeen != next[i].isSeen ||
+                prev[i].isDelivered != next[i].isDelivered ||
+                prev[i].isSending != next[i].isSending ||
                 prev[i].text != next[i].text) {
               return false;
             }
@@ -212,7 +352,9 @@ class ChatRepository {
     QuerySnapshot<Map<String, dynamic>> snapshot,
     String receiverUserId,
   ) async {
-    final localKey = '${auth.currentUser!.uid}_$receiverUserId';
+    final currentUid = auth.currentUser?.uid;
+    if (currentUid == null) return [];
+    final localKey = '${currentUid}_$receiverUserId';
 
     Box box;
     try {
@@ -226,14 +368,26 @@ class ChatRepository {
       return _processFirestoreOnly(snapshot);
     }
 
-    // Firestore is source of truth
-    List<OneToOneMessageModel> firestoreMessages = snapshot.docs.map((doc) {
-      final data = doc.data();
-      data['isSeen'] = data['isSeen'] ?? false;
-      return OneToOneMessageModel.fromMap(data);
-    }).toList();
+    // Firestore is source of truth - parse individually to prevent single doc failure
+    List<OneToOneMessageModel> firestoreMessages = [];
+    for (var doc in snapshot.docs) {
+      try {
+        final data = doc.data();
+        data['isSeen'] = data['isSeen'] ?? false;
+        firestoreMessages.add(OneToOneMessageModel.fromMap(data));
+      } catch (e) {
+        log('❌ Error parsing message ${doc.id}: $e');
+      }
+    }
 
     log('🔥 Loaded ${firestoreMessages.length} messages from Firestore');
+
+    // Auto-acknowledge delivery for messages received by the current user
+    for (var m in firestoreMessages) {
+      if (m.receiverId == currentUid && !m.isDelivered && !m.isSeen) {
+        _markMessageAsDelivered(m.senderId, currentUid, m.messageId);
+      }
+    }
 
     // Load cached messages
     List<OneToOneMessageModel> cachedMessages = [];
@@ -261,12 +415,8 @@ class ChatRepository {
 
     log('📊 Total unique messages: ${allMessages.length}');
 
-    // Save merged list to Hive
-    _saveToHiveAsync(box, localKey, allMessages);
-
-    // ✅ REMOVED: _deleteSeenMessagesAsync from stream processing
-    // Deletion is now only triggered from setChatMessageSeen
-    // to avoid race conditions with the seen status update
+    // Save merged list to Hive, then batch clean seen/old messages from Firestore
+    _saveToHiveAsync(box, localKey, allMessages, receiverUserId, firestoreMessages);
 
     return allMessages;
   }
@@ -288,6 +438,8 @@ class ChatRepository {
     Box box,
     String key,
     List<OneToOneMessageModel> messages,
+    String receiverUserId,
+    List<OneToOneMessageModel> firestoreMessages,
   ) {
     Future.microtask(() async {
       try {
@@ -299,72 +451,32 @@ class ChatRepository {
     });
   }
 
-  // ✅ Now called only from setChatMessageSeen, not from stream
-  void _deleteSeenMessagesAsync(
-    String receiverUserId,
-    List<OneToOneMessageModel> seenMessages,
-  ) {
-    final currentUserId = auth.currentUser?.uid;
-    if (currentUserId == null) return;
+  void _markMessageAsDelivered(
+    String senderId,
+    String receiverId,
+    String messageId,
+  ) async {
+    try {
+      await fireStore
+          .collection('users')
+          .doc(receiverId)
+          .collection('chats')
+          .doc(senderId)
+          .collection('messages')
+          .doc(messageId)
+          .update({'isDelivered': true});
+    } catch (_) {}
 
-    final queueKey = '${currentUserId}_$receiverUserId';
-    _deletionQueue[queueKey] ??= {};
-
-    final messagesToDelete = seenMessages
-        .where((m) => !_deletionQueue[queueKey]!.contains(m.messageId))
-        .toList();
-
-    if (messagesToDelete.isEmpty) return;
-
-    for (var msg in messagesToDelete) {
-      _deletionQueue[queueKey]!.add(msg.messageId);
-    }
-
-    Future.microtask(() async {
-      try {
-        final messagesRef = fireStore
-            .collection('users')
-            .doc(currentUserId)
-            .collection('chats')
-            .doc(receiverUserId)
-            .collection('messages');
-
-        const batchSize = 100;
-        int totalDeleted = 0;
-
-        for (int i = 0; i < messagesToDelete.length; i += batchSize) {
-          final batch = fireStore.batch();
-          final end = (i + batchSize < messagesToDelete.length)
-              ? i + batchSize
-              : messagesToDelete.length;
-
-          for (int j = i; j < end; j++) {
-            batch.delete(messagesRef.doc(messagesToDelete[j].messageId));
-          }
-
-          await batch.commit();
-          totalDeleted += (end - i);
-          log('🗑️ Deleted batch: $totalDeleted/${messagesToDelete.length}');
-
-          if (i + batchSize < messagesToDelete.length) {
-            await Future.delayed(const Duration(milliseconds: 100));
-          }
-        }
-
-        log('✅ Deleted $totalDeleted seen messages from Firestore');
-
-        Future.delayed(const Duration(seconds: 5), () {
-          for (var msg in messagesToDelete) {
-            _deletionQueue[queueKey]?.remove(msg.messageId);
-          }
-        });
-      } catch (e) {
-        log('❌ Error deleting from Firestore: $e');
-        for (var msg in messagesToDelete) {
-          _deletionQueue[queueKey]?.remove(msg.messageId);
-        }
-      }
-    });
+    try {
+      await fireStore
+          .collection('users')
+          .doc(senderId)
+          .collection('chats')
+          .doc(receiverId)
+          .collection('messages')
+          .doc(messageId)
+          .update({'isDelivered': true});
+    } catch (_) {}
   }
 
   void updateChatBackground(String receiverUserId, String backgroundUrl) async {
@@ -390,17 +502,17 @@ class ChatRepository {
     }
   }
 
-  void _saveDataToContactsSubCollection(
-    UserModel senderUserData,
-    UserModel? receiverUserData,
-    String text,
-    DateTime timeSent,
-    String receiverUserId,
-    String messageType,
-    String fcmToken,
-    bool? unseenCount,
-    String? chatBackgroundUrl,
-  ) async {
+  Future<void> _saveDataToContactsSubCollection({
+    required UserModel senderUserData,
+    required UserModel? receiverUserData,
+    required String text,
+    required DateTime timeSent,
+    required String receiverUserId,
+    required String messageType,
+    required String fcmToken,
+    required bool? unseenCount,
+    required String? chatBackgroundUrl,
+  }) async {
     log("_saveDataToContactsSubCollection $fcmToken");
 
     String lastMessage;
@@ -415,20 +527,22 @@ class ChatRepository {
         lastMessage = "🎮 Gif";
         break;
       default:
-        lastMessage = text;
+        lastMessage = text.trim().isNotEmpty ? text.trim() : "New message";
     }
 
     final currentUserId = auth.currentUser?.uid;
     if (currentUserId == null) return;
 
     try {
+      final myToken = await FirebaseMessaging.instance.getToken() ?? '';
+
       var receiverChatContact = ChatContact(
-        name: senderUserData.name!,
+        name: senderUserData.name ?? 'User',
         profilePic: senderUserData.profilePic,
-        uid: senderUserData.uid!,
+        uid: currentUserId,
         timeSent: timeSent,
         lastMessage: lastMessage,
-        fcmToken: await FirebaseMessaging.instance.getToken() ?? '',
+        fcmToken: myToken,
         unseenCount: true,
         chatBackgroundUrl: chatBackgroundUrl ?? "",
       );
@@ -438,12 +552,12 @@ class ChatRepository {
           .doc(receiverUserId)
           .collection('chats')
           .doc(currentUserId)
-          .set(receiverChatContact.toMap());
+          .set(receiverChatContact.toMap(), SetOptions(merge: true));
 
       var senderChatContact = ChatContact(
-        name: receiverUserData!.name!,
-        profilePic: receiverUserData.profilePic,
-        uid: receiverUserData.uid!,
+        name: receiverUserData?.name ?? 'User',
+        profilePic: receiverUserData?.profilePic,
+        uid: receiverUserId,
         timeSent: timeSent,
         lastMessage: lastMessage,
         fcmToken: fcmToken,
@@ -456,21 +570,21 @@ class ChatRepository {
           .doc(currentUserId)
           .collection('chats')
           .doc(receiverUserId)
-          .set(senderChatContact.toMap());
+          .set(senderChatContact.toMap(), SetOptions(merge: true));
     } catch (e) {
       log('Error saving to contacts: $e');
     }
   }
 
-  void _saveMessageToMessageSubcollection({
+  Future<void> _saveMessageToMessageSubcollection({
     required String receiverUserId,
     required String text,
     required DateTime timeSent,
     required String messageId,
     required String username,
     required String name,
-    required receiverUsername,
-    required receiverName,
+    required dynamic receiverUsername,
+    required dynamic receiverName,
     required String messageType,
     String? fileMessageData,
     required MessageReply? messageReply,
@@ -545,6 +659,8 @@ class ChatRepository {
           senderUid: senderUid,
           senderProfilePic: senderProfilePic,
         );
+      } else {
+        log('⚠️ [Notification] Cannot send notification: recipient fcmToken is empty for receiver $receiverUserId');
       }
     } catch (e) {
       log('❌ Error saving message: $e');
@@ -585,7 +701,7 @@ class ChatRepository {
         } else {
           switch (messageType) {
             case 'text':
-              body = text;
+              body = text.trim().isNotEmpty ? text.trim() : 'New message';
               break;
             case 'image':
               body = '📷 Photo';
@@ -601,15 +717,18 @@ class ChatRepository {
           }
         }
 
+        final safeName = name.trim().isNotEmpty ? name.trim() : 'New Message';
+
         await sendNotification(
           fcmToken,
-          name,
+          safeName,
           body,
           data: {
             'type': 'chat',
             'senderUid': senderUid,
-            'name': name,
+            'name': safeName,
             'profilePic': senderProfilePic,
+            'tag': senderUid,
           },
         );
         log('✅ Notification sent successfully');
@@ -633,10 +752,39 @@ class ChatRepository {
     required String type,
   }) async {
     try {
-      log("token sendTextMessage: $fcmToken");
+      final currentUserId = auth.currentUser?.uid;
+      if (currentUserId == null) {
+        throw Exception('User not authenticated');
+      }
 
       var messageId = const Uuid().v1();
       var timeSent = DateTime.now();
+
+      // Immediately save optimistic message to local Hive with isSending: true (clock icon)
+      final optimisticMessage = OneToOneMessageModel(
+        senderId: currentUserId,
+        receiverId: receiverUserId,
+        text: text,
+        messageType: messageType,
+        timeSent: timeSent,
+        messageId: messageId,
+        isSeen: false,
+        isDelivered: false,
+        isSending: true,
+        fileMessageData: file is File ? file.path : (file is String ? file : null),
+        repliedMessage: messageReply == null
+            ? ''
+            : messageReply.messageType == 'text'
+            ? messageReply.message
+            : messageReply.fileMessageData,
+        repliedTo: messageReply == null
+            ? ''
+            : messageReply.isMe
+            ? (senderUser.name ?? 'User')
+            : '',
+        repliedMessageType: messageReply == null ? 'text' : messageReply.messageType,
+      );
+      _saveOptimisticMessageToHive(currentUserId, receiverUserId, optimisticMessage);
 
       String? fileData;
 
@@ -644,70 +792,151 @@ class ChatRepository {
         log("📤 Uploading image for message: $messageId");
         fileData = await uploadImageToCloudinary(file, type);
         log("✅ Image uploaded: $fileData");
+        if (file is File && fileData != null && fileData.isNotEmpty) {
+          MediaCacheService().registerLocalMapping(fileData, file.path);
+        }
       } else if (messageType == "video" && file != null) {
         log("📤 Uploading video for message: $messageId");
         fileData = await uploadVideoToCloudinary(file, type);
         log("✅ Video uploaded: $fileData");
+        if (file is File && fileData != null && fileData.isNotEmpty) {
+          MediaCacheService().registerLocalMapping(fileData, file.path);
+        }
       } else if (messageType == "gif" && file != null) {
         fileData = file;
       }
 
-      var userDataMap = await fireStore
-          .collection('users')
-          .doc(receiverUserId)
-          .get();
+      // Fetch fresh receiver data to get latest FCM token (server-first with cache fallback)
+      UserModel? receiverUserData;
+      try {
+        DocumentSnapshot<Map<String, dynamic>> userDataMap;
+        try {
+          userDataMap = await fireStore
+              .collection('users')
+              .doc(receiverUserId)
+              .get(const GetOptions(source: Source.server))
+              .timeout(const Duration(seconds: 3));
+        } catch (_) {
+          userDataMap = await fireStore
+              .collection('users')
+              .doc(receiverUserId)
+              .get();
+        }
 
-      if (!userDataMap.exists || userDataMap.data() == null) {
-        throw Exception('Receiver user not found');
+        if (userDataMap.exists && userDataMap.data() != null) {
+          receiverUserData = UserModel.fromMap(userDataMap.data()!);
+        }
+      } catch (e) {
+        log('Warning: could not fetch receiverUserData: $e');
       }
 
-      UserModel? receiverUserData = UserModel.fromMap(userDataMap.data()!);
+      // Priority: fresh token from receiver's Firestore doc, fallback to passed token
+      final recipientFcmToken = (receiverUserData?.fcmToken != null &&
+              receiverUserData!.fcmToken!.isNotEmpty)
+          ? receiverUserData.fcmToken!
+          : fcmToken;
+
+      log("token sendTextMessage: recipientFcmToken length=${recipientFcmToken.length}");
+
+      final safeSenderName = senderUser.name ?? 'User';
+      final safeSenderUsername = senderUser.userName ?? 'User';
+      final safeReceiverName = receiverUserData?.name ?? 'User';
+      final safeReceiverUsername = receiverUserData?.userName ?? 'User';
 
       await Future.wait([
-        Future.microtask(
-          () => _saveDataToContactsSubCollection(
-            senderUser,
-            receiverUserData,
-            text,
-            timeSent,
-            receiverUserId,
-            messageType,
-            fcmToken,
-            unseenCount,
-            chatBackgroundUrl,
-          ),
+        _saveDataToContactsSubCollection(
+          senderUserData: senderUser,
+          receiverUserData: receiverUserData,
+          text: text,
+          timeSent: timeSent,
+          receiverUserId: receiverUserId,
+          messageType: messageType,
+          fcmToken: recipientFcmToken,
+          unseenCount: unseenCount,
+          chatBackgroundUrl: chatBackgroundUrl,
         ),
-        Future.microtask(
-          () => _saveMessageToMessageSubcollection(
-            receiverUserId: receiverUserId,
-            text: text,
-            timeSent: timeSent,
-            messageType: messageType,
-            messageId: messageId,
-            receiverUsername: receiverUserData.userName,
-            receiverName: receiverUserData.name,
-            name: senderUser.name!,
-            username: senderUser.userName!,
-            fileMessageData: fileData,
-            receiverUserName: receiverUserData.name,
-            senderUsername: senderUser.name!,
-            messageReplyType: messageReply == null
-                ? "text"
-                : messageReply.messageType,
-            messageReply: messageReply,
-            fcmToken: fcmToken,
-            senderUid: senderUser.uid ?? '',
-            senderProfilePic: senderUser.profilePic ?? '',
-          ),
+        _saveMessageToMessageSubcollection(
+          receiverUserId: receiverUserId,
+          text: text,
+          timeSent: timeSent,
+          messageType: messageType,
+          messageId: messageId,
+          receiverUsername: safeReceiverUsername,
+          receiverName: safeReceiverName,
+          name: safeSenderName,
+          username: safeSenderUsername,
+          fileMessageData: fileData,
+          receiverUserName: safeReceiverName,
+          senderUsername: safeSenderName,
+          messageReplyType: messageReply == null
+              ? "text"
+              : messageReply.messageType,
+          messageReply: messageReply,
+          fcmToken: recipientFcmToken,
+          senderUid: currentUserId,
+          senderProfilePic: senderUser.profilePic ?? '',
         ),
       ]);
 
       log('✅ Message saved with ID: $messageId');
     } catch (e) {
       log('❌ Error sending message: $e');
-      showSnackBar(context: context, content: e.toString());
+      final currentUserId = auth.currentUser?.uid;
+      if (currentUserId != null) {
+        _removeOptimisticMessageFromHive(currentUserId, receiverUserId);
+      }
+      if (context.mounted) {
+        showSnackBar(context: context, content: e.toString());
+      }
       rethrow;
     }
+  }
+
+  void _saveOptimisticMessageToHive(
+    String currentUserId,
+    String receiverUserId,
+    OneToOneMessageModel message,
+  ) async {
+    final localKey = '${currentUserId}_$receiverUserId';
+    try {
+      final box = Hive.isBoxOpen('messages')
+          ? Hive.box('messages')
+          : await Hive.openBox('messages');
+
+      final cachedData = box.get(localKey, defaultValue: []);
+      List<OneToOneMessageModel> messages = [];
+      if (cachedData is List) {
+        messages = cachedData.cast<OneToOneMessageModel>().toList();
+      }
+      final existingIndex = messages.indexWhere((m) => m.messageId == message.messageId);
+      if (existingIndex >= 0) {
+        messages[existingIndex] = message;
+      } else {
+        messages.add(message);
+      }
+      await box.put(localKey, messages);
+      log('🕒 Saved optimistic sending message to Hive: ${message.messageId}');
+    } catch (e) {
+      log('❌ Error saving optimistic message to Hive: $e');
+    }
+  }
+
+  void _removeOptimisticMessageFromHive(
+    String currentUserId,
+    String receiverUserId,
+  ) async {
+    final localKey = '${currentUserId}_$receiverUserId';
+    try {
+      if (Hive.isBoxOpen('messages')) {
+        final box = Hive.box('messages');
+        final cachedData = box.get(localKey, defaultValue: []);
+        if (cachedData is List) {
+          final messages = cachedData.cast<OneToOneMessageModel>().toList();
+          messages.removeWhere((m) => m.isSending);
+          await box.put(localKey, messages);
+        }
+      }
+    } catch (_) {}
   }
 
   Future<void> setChatMessageSeen(
@@ -721,48 +950,144 @@ class ChatRepository {
 
       log('👁️ Marking message as seen: $messageId');
 
-      // ✅ Update isSeen in both users' Firestore collections atomically
-      await Future.wait([
-        fireStore
-            .collection('users')
-            .doc(receiverUserId)
-            .collection('chats')
-            .doc(currentUserId)
-            .collection('messages')
-            .doc(messageId)
-            .update({'isSeen': true}),
-        fireStore
+      // Update current user's copy
+      try {
+        await fireStore
             .collection('users')
             .doc(currentUserId)
             .collection('chats')
             .doc(receiverUserId)
             .collection('messages')
             .doc(messageId)
-            .update({'isSeen': true}),
-      ]);
+            .update({'isSeen': true, 'isDelivered': true});
+      } catch (e) {
+        log('Note: could not update seen on current user doc: $e');
+      }
+
+      // Update partner's copy
+      try {
+        await fireStore
+            .collection('users')
+            .doc(receiverUserId)
+            .collection('chats')
+            .doc(currentUserId)
+            .collection('messages')
+            .doc(messageId)
+            .update({'isSeen': true, 'isDelivered': true});
+      } catch (e) {
+        log('Note: could not update seen on receiver doc: $e');
+      }
 
       // ✅ Update Hive cache immediately so UI reflects change
-      // without waiting for the next Firestore snapshot
       await _updateSeenInHive(currentUserId, receiverUserId, messageId);
 
       // ✅ Update unseen count
-      await fireStore
-          .collection('users')
-          .doc(currentUserId)
-          .collection('chats')
-          .doc(receiverUserId)
-          .update({'unseenCount': false});
+      try {
+        await fireStore
+            .collection('users')
+            .doc(currentUserId)
+            .collection('chats')
+            .doc(receiverUserId)
+            .update({'unseenCount': false});
+      } catch (e) {
+        log('Note: could not update unseenCount: $e');
+      }
 
       log('✅ Message marked as seen');
-
-      // ✅ Now safe to delete from Firestore since isSeen is committed
-      _scheduleSeenMessageDeletion(currentUserId, receiverUserId, messageId);
     } catch (e) {
       log('❌ Error in setChatMessageSeen: $e');
     }
   }
 
-  // ✅ NEW: Update a single message's isSeen in Hive immediately
+  /// Mark all unread messages in the chat as seen and clear the unseen badge
+  Future<void> markChatAsSeen(String partnerUserId) async {
+    final currentUserId = auth.currentUser?.uid;
+    if (currentUserId == null || partnerUserId.isEmpty) return;
+
+    // 1. Immediately clear contact unseenCount for current user
+    try {
+      await fireStore
+          .collection('users')
+          .doc(currentUserId)
+          .collection('chats')
+          .doc(partnerUserId)
+          .update({'unseenCount': false});
+      log('✅ Contact unseenCount reset to false for $partnerUserId');
+    } catch (e) {
+      log('Note: could not update contact unseenCount: $e');
+    }
+
+    // 2. Query all unread messages received by current user in this chat
+    try {
+      final unreadDocs = await fireStore
+          .collection('users')
+          .doc(currentUserId)
+          .collection('chats')
+          .doc(partnerUserId)
+          .collection('messages')
+          .where('receiverId', isEqualTo: currentUserId)
+          .where('isSeen', isEqualTo: false)
+          .get();
+
+      if (unreadDocs.docs.isNotEmpty) {
+        log('👁️ Found ${unreadDocs.docs.length} unread messages to mark as seen');
+        final batch = fireStore.batch();
+        for (var doc in unreadDocs.docs) {
+          final messageId = doc.id;
+          // Receiver's doc
+          batch.update(doc.reference, {'isSeen': true, 'isDelivered': true});
+
+          // Sender's doc
+          final senderMessageRef = fireStore
+              .collection('users')
+              .doc(partnerUserId)
+              .collection('chats')
+              .doc(currentUserId)
+              .collection('messages')
+              .doc(messageId);
+          batch.update(senderMessageRef, {'isSeen': true, 'isDelivered': true});
+        }
+        await batch.commit();
+        log('✅ Batch marked ${unreadDocs.docs.length} messages as seen in Firestore');
+      }
+    } catch (e) {
+      log('❌ Error batch marking messages as seen in Firestore: $e');
+    }
+
+    // 3. Immediately update Hive cache
+    await _markChatSeenInHive(currentUserId, partnerUserId);
+  }
+
+  Future<void> _markChatSeenInHive(String currentUserId, String partnerUserId) async {
+    final localKey = '${currentUserId}_$partnerUserId';
+    try {
+      final box = Hive.isBoxOpen('messages')
+          ? Hive.box('messages')
+          : await Hive.openBox('messages');
+
+      final cachedData = box.get(localKey, defaultValue: []);
+      if (cachedData is List) {
+        final messages = cachedData.cast<OneToOneMessageModel>();
+        bool changed = false;
+        final updated = messages.map((m) {
+          if (m.receiverId == currentUserId && (!m.isSeen || !m.isDelivered)) {
+            changed = true;
+            return m.copyWith(isSeen: true, isDelivered: true);
+          }
+          return m;
+        }).toList();
+
+        if (changed) {
+          await box.put(localKey, updated);
+          log('✅ Hive cache updated: all messages marked seen for chat $partnerUserId');
+        }
+      }
+    } catch (e) {
+      log('❌ Error updating Hive cache for seen chat: $e');
+    }
+  }
+
+  // ✅ Update a single message's isSeen in Hive immediately
   Future<void> _updateSeenInHive(
     String currentUserId,
     String receiverUserId,
@@ -778,7 +1103,7 @@ class ChatRepository {
       if (cachedData is List) {
         final messages = cachedData.cast<OneToOneMessageModel>();
         final updated = messages.map((m) {
-          return m.messageId == messageId ? m.copyWith(isSeen: true) : m;
+          return m.messageId == messageId ? m.copyWith(isSeen: true, isDelivered: true) : m;
         }).toList();
         await box.put(localKey, updated);
         log('✅ Hive cache updated: message $messageId marked seen');
@@ -786,47 +1111,6 @@ class ChatRepository {
     } catch (e) {
       log('❌ Error updating Hive for seen message: $e');
     }
-  }
-
-  // ✅ NEW: Delete a single seen message from Firestore after seen is confirmed
-  void _scheduleSeenMessageDeletion(
-    String currentUserId,
-    String receiverUserId,
-    String messageId,
-  ) {
-    final queueKey = '${currentUserId}_$receiverUserId';
-    _deletionQueue[queueKey] ??= {};
-
-    if (_deletionQueue[queueKey]!.contains(messageId)) return;
-    _deletionQueue[queueKey]!.add(messageId);
-
-    Future.delayed(const Duration(seconds: 2), () async {
-      try {
-        final batch = fireStore.batch();
-
-        // Delete from current user's collection
-        batch.delete(
-          fireStore
-              .collection('users')
-              .doc(currentUserId)
-              .collection('chats')
-              .doc(receiverUserId)
-              .collection('messages')
-              .doc(messageId),
-        );
-
-        await batch.commit();
-        log('🗑️ Deleted seen message $messageId from Firestore');
-
-        // Clean up queue after delay
-        Future.delayed(const Duration(seconds: 5), () {
-          _deletionQueue[queueKey]?.remove(messageId);
-        });
-      } catch (e) {
-        log('❌ Error deleting seen message: $e');
-        _deletionQueue[queueKey]?.remove(messageId);
-      }
-    });
   }
 
   // ── Add these two methods to ChatRepository ──────────────────────────────────

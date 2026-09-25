@@ -17,24 +17,25 @@ class OneToOneMessageModelAdapter extends TypeAdapter<OneToOneMessageModel> {
       for (int i = 0; i < numOfFields; i++) reader.readByte(): reader.read(),
     };
     return OneToOneMessageModel(
-      senderId: fields[0] as String,
-      receiverId: fields[1] as String,
-      text: fields[2] as String,
-      messageType: fields[3] as String,
-      timeSent: fields[4] as DateTime,
-      messageId: fields[5] as String,
-      isSeen: fields[6] as bool,
+      senderId: fields[0] as String? ?? '',
+      receiverId: fields[1] as String? ?? '',
+      text: fields[2] as String? ?? '',
+      messageType: fields[3] as String? ?? 'text',
+      timeSent: fields[4] as DateTime? ?? DateTime.now(),
+      messageId: fields[5] as String? ?? '',
+      isSeen: fields[6] as bool? ?? false,
       fileMessageData: fields[7] as String?,
-      repliedMessage: fields[8] as String,
-      repliedTo: fields[9] as String,
-      repliedMessageType: fields[10] as String,
+      repliedMessage: fields[8] as String? ?? '',
+      repliedTo: fields[9] as String? ?? '',
+      repliedMessageType: fields[10] as String? ?? 'text',
+      isDelivered: fields[11] as bool? ?? false,
     );
   }
 
   @override
   void write(BinaryWriter writer, OneToOneMessageModel obj) {
     writer
-      ..writeByte(11)
+      ..writeByte(12)
       ..writeByte(0)
       ..write(obj.senderId)
       ..writeByte(1)
@@ -56,7 +57,9 @@ class OneToOneMessageModelAdapter extends TypeAdapter<OneToOneMessageModel> {
       ..writeByte(9)
       ..write(obj.repliedTo)
       ..writeByte(10)
-      ..write(obj.repliedMessageType);
+      ..write(obj.repliedMessageType)
+      ..writeByte(11)
+      ..write(obj.isDelivered);
   }
 
   @override

@@ -3,7 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:worship_chat/colors.dart';
 import 'package:worship_chat/common/utils/share_intent_service.dart';
-import 'package:worship_chat/common/widgets/loader.dart';
+import 'package:worship_chat/common/widgets/skeleton_loader.dart';
 import 'package:worship_chat/features/auth/controller/auth_controller.dart';
 import 'package:worship_chat/features/chat/controller/chat_controller.dart';
 import 'package:worship_chat/features/group/controller/group_controller.dart';
@@ -821,7 +821,7 @@ class _GroupList extends StatelessWidget {
       stream: stream,
       builder: (context, snapshot) {
         if (snapshot.connectionState == ConnectionState.waiting) {
-          return const Loader();
+          return const ContactListSkeleton(isGroup: true);
         }
 
         final all = snapshot.data ?? [];
@@ -944,7 +944,7 @@ class _ContactList extends StatelessWidget {
       stream: stream,
       builder: (context, snapshot) {
         if (snapshot.connectionState == ConnectionState.waiting) {
-          return const Loader();
+          return const ContactListSkeleton();
         }
 
         final all = snapshot.data ?? [];

@@ -8,6 +8,8 @@ import 'package:path_provider/path_provider.dart';
 import 'package:worship_chat/colors.dart';
 import 'package:worship_chat/common/utils/utils.dart';
 import 'package:worship_chat/features/auth/controller/auth_controller.dart';
+import 'package:cached_network_image/cached_network_image.dart';
+import 'package:worship_chat/common/widgets/user_avatar.dart';
 import 'package:worship_chat/models/user_model.dart';
 
 class ProfileScreen extends ConsumerStatefulWidget {
@@ -177,13 +179,13 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
             ),
           ),
           body: Container(
-            decoration: BoxDecoration(
+            decoration: const BoxDecoration(
               gradient: LinearGradient(
                 begin: Alignment.topCenter,
                 end: Alignment.bottomCenter,
                 colors: [
-                  appBarColor.withOpacity(0.9),
-                  Colors.black.withOpacity(0.7),
+                  Color(0xFF12121C),
+                  Color(0xFF0A0A0F),
                 ],
               ),
             ),
@@ -213,13 +215,14 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
                               radius: 80,
                               backgroundImage:
                                   _selectedImage != null &&
-                                      _selectedImage!.existsSync()
-                                  ? FileImage(_selectedImage!)
-                                  : (user?.profilePic != null &&
-                                            user!.profilePic!.isNotEmpty
-                                        ? NetworkImage(user.profilePic!)
-                                              as ImageProvider
-                                        : null),
+                                          _selectedImage!.existsSync()
+                                      ? FileImage(_selectedImage!)
+                                      : (user?.profilePic != null &&
+                                              user!.profilePic!.trim().isNotEmpty
+                                          ? CachedNetworkImageProvider(
+                                              UserAvatar.sanitizeUrl(user.profilePic!) ?? user.profilePic!,
+                                            ) as ImageProvider
+                                          : null),
                               child:
                                   (user?.profilePic == null ||
                                           user!.profilePic!.isEmpty) &&
@@ -267,7 +270,7 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
                     shape: RoundedRectangleBorder(
                       borderRadius: BorderRadius.circular(12),
                     ),
-                    color: Colors.white.withOpacity(0.1),
+                    color: mobileChatBoxColor,
                     child: ListTile(
                       leading: const Icon(Icons.email, color: Colors.white70),
                       title: Text(
@@ -320,7 +323,7 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
     return Card(
       elevation: 4,
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-      color: Colors.white.withOpacity(0.1),
+      color: mobileChatBoxColor,
       child: Padding(
         padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
         child: TextFormField(

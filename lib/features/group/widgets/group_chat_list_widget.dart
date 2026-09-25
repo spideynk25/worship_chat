@@ -1,13 +1,15 @@
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:hive_flutter/hive_flutter.dart';
 import 'package:intl/intl.dart';
 import 'dart:developer';
 import 'package:worship_chat/common/providers/message_reply_provider.dart';
-import 'package:worship_chat/common/widgets/loader.dart';
+import 'package:worship_chat/common/widgets/skeleton_loader.dart';
 import 'package:worship_chat/features/chat/widgets/sender_message_card.dart';
 import 'package:worship_chat/features/group/controller/group_controller.dart';
 import 'package:worship_chat/models/group_chat_message_model.dart';
+import 'package:worship_chat/colors.dart';
 import 'package:worship_chat/features/chat/widgets/my_message_card.dart';
 
 class GroupChatListWidget extends ConsumerStatefulWidget {
@@ -28,22 +30,71 @@ class _GroupChatListWidgetState extends ConsumerState<GroupChatListWidget>
   String? _lastMessageId;
   List<GroupChatMessageModel> _displayMessages = [];
 
+  // ── Scroll to Load (Pagination) ──────────────────────────────────────────
+  static const int _pageSize = 30;
+  int _visibleCount = _pageSize;
+  bool _isLoadingMore = false;
+  int _prevTotalMessages = 0;
+
   @override
   bool get wantKeepAlive => true;
 
   @override
   void initState() {
     super.initState();
+    _loadInitialCachedMessages();
     _setupScrollListener();
+  }
+
+  void _loadInitialCachedMessages() {
+    try {
+      final localKey = widget.groupId;
+      if (Hive.isBoxOpen('messages')) {
+        final box = Hive.box('messages');
+        final cachedData = box.get(localKey, defaultValue: []);
+        if (cachedData is List && cachedData.isNotEmpty) {
+          _displayMessages = cachedData.cast<GroupChatMessageModel>();
+          _lastMessageId = _displayMessages.last.messageId;
+          _prevTotalMessages = _displayMessages.length;
+          log('⚡ Pre-seeded ${_displayMessages.length} group messages from Hive in initState');
+        }
+      }
+    } catch (e) {
+      log('Error pre-seeding cached group messages: $e');
+    }
   }
 
   void _setupScrollListener() {
     messageController.addListener(() {
       if (!messageController.hasClients) return;
-      final position = messageController.position.pixels;
-      final atBottom = position <= 10.0;
+      final position = messageController.position;
+      final atBottom = position.pixels <= 10.0;
       if (atBottom != _isAtBottom) {
         setState(() => _isAtBottom = atBottom);
+      }
+
+      // Check if user is scrolling up towards older messages (near top in reverse list)
+      if (position.pixels >= position.maxScrollExtent - 250 &&
+          !_isLoadingMore &&
+          _visibleCount < _displayMessages.length) {
+        _loadMoreMessages();
+      }
+    });
+  }
+
+  void _loadMoreMessages() {
+    if (_isLoadingMore || _visibleCount >= _displayMessages.length) return;
+    setState(() {
+      _isLoadingMore = true;
+    });
+
+    Future.delayed(const Duration(milliseconds: 150), () {
+      if (mounted) {
+        setState(() {
+          _visibleCount =
+              (_visibleCount + _pageSize).clamp(0, _displayMessages.length);
+          _isLoadingMore = false;
+        });
       }
     });
   }
@@ -132,12 +183,15 @@ class _GroupChatListWidgetState extends ConsumerState<GroupChatListWidget>
     return currentDate != previousDate;
   }
 
-  // ✅ Check if seen status changed on any message
-  bool _hasSeenStatusChanged(List<GroupChatMessageModel> newMessages) {
-    if (_displayMessages.length != newMessages.length) return false;
-    for (int i = 0; i < _displayMessages.length; i++) {
-      if (_displayMessages[i].messageId == newMessages[i].messageId &&
-          _displayMessages[i].isSeen != newMessages[i].isSeen) {
+  // ✅ Check if delivery, sending, seen, or text changed on any message
+  bool _hasDeliveryOrSeenStatusChanged(List<GroupChatMessageModel> newMessages) {
+    if (_displayMessages.length != newMessages.length) return true;
+    for (int i = 0; i < newMessages.length; i++) {
+      if (_displayMessages[i].messageId != newMessages[i].messageId ||
+          _displayMessages[i].isSeen != newMessages[i].isSeen ||
+          _displayMessages[i].isDelivered != newMessages[i].isDelivered ||
+          _displayMessages[i].isSending != newMessages[i].isSending ||
+          _displayMessages[i].text != newMessages[i].text) {
         return true;
       }
     }
@@ -156,7 +210,7 @@ class _GroupChatListWidgetState extends ConsumerState<GroupChatListWidget>
             if (_displayMessages.isNotEmpty) {
               return _buildMessageList(_displayMessages);
             }
-            return const Loader();
+            return const ChatMessagesSkeleton();
           }
 
           if (snapshot.hasError) {
@@ -173,6 +227,7 @@ class _GroupChatListWidgetState extends ConsumerState<GroupChatListWidget>
                     onPressed: () => setState(() {
                       _displayMessages = [];
                       _lastMessageId = null;
+                      _visibleCount = _pageSize;
                     }),
                     child: const Text('Retry'),
                   ),
@@ -184,6 +239,7 @@ class _GroupChatListWidgetState extends ConsumerState<GroupChatListWidget>
           if (!snapshot.hasData || snapshot.data!.isEmpty) {
             _displayMessages = [];
             _lastMessageId = null;
+            _prevTotalMessages = 0;
             return const Center(
               child: Text('No messages yet. Start the conversation!'),
             );
@@ -194,17 +250,44 @@ class _GroupChatListWidgetState extends ConsumerState<GroupChatListWidget>
               ? newMessages.last.messageId
               : null;
 
-          final hasSeenChanges = _hasSeenStatusChanged(newMessages);
+          final currentUserId = FirebaseAuth.instance.currentUser?.uid;
+          if (currentUserId != null) {
+            final hasUnseenIncoming = newMessages.any(
+              (m) => m.senderId != currentUserId && !m.isSeen,
+            );
+            if (hasUnseenIncoming) {
+              WidgetsBinding.instance.addPostFrameCallback((_) {
+                if (mounted) {
+                  ref
+                      .read(groupControllerProvider)
+                      .markGroupAsSeen(widget.groupId);
+                }
+              });
+            }
+          }
+
+          final hasStatusChanges = _hasDeliveryOrSeenStatusChanged(newMessages);
           final isNewData =
-              newLastMessageId != _lastMessageId || hasSeenChanges;
+              newLastMessageId != _lastMessageId || hasStatusChanges;
 
           if (isNewData) {
             log('📨 Messages updated: ${newMessages.length} total');
-            final hasNewMessage = newMessages.length > _displayMessages.length;
+            final oldMessageCount = _displayMessages.length;
+            final hasNewMessage = newMessages.length > oldMessageCount;
+            final addedCount = newMessages.length - _prevTotalMessages;
+
+            if (addedCount > 0 && _prevTotalMessages > 0) {
+              _visibleCount += addedCount;
+            } else if (_visibleCount == _pageSize ||
+                _visibleCount > newMessages.length) {
+              _visibleCount = _pageSize.clamp(0, newMessages.length);
+            }
+
+            _prevTotalMessages = newMessages.length;
             _lastMessageId = newLastMessageId;
             _displayMessages = newMessages;
 
-            if (_isAtBottom && hasNewMessage) {
+            if (_isAtBottom && (hasNewMessage || hasStatusChanges)) {
               WidgetsBinding.instance.addPostFrameCallback((_) {
                 if (mounted) _scrollToBottom();
               });
@@ -217,12 +300,19 @@ class _GroupChatListWidgetState extends ConsumerState<GroupChatListWidget>
     );
   }
 
-  Widget _buildMessageList(List<GroupChatMessageModel> messages) {
-    if (messages.isEmpty) {
+  Widget _buildMessageList(List<GroupChatMessageModel> allMessages) {
+    if (allMessages.isEmpty) {
       return const Center(
         child: Text('No messages yet. Start the conversation!'),
       );
     }
+
+    final totalCount = allMessages.length;
+    final effectiveCount = _visibleCount.clamp(0, totalCount);
+    final startIndex =
+        totalCount > effectiveCount ? totalCount - effectiveCount : 0;
+    final visibleMessages = allMessages.sublist(startIndex);
+    final hasMore = startIndex > 0;
 
     return NotificationListener<OverscrollIndicatorNotification>(
       onNotification: (notification) {
@@ -233,17 +323,37 @@ class _GroupChatListWidgetState extends ConsumerState<GroupChatListWidget>
         controller: messageController,
         reverse: true,
         physics: const AlwaysScrollableScrollPhysics(),
-        itemCount: messages.length,
+        itemCount: visibleMessages.length + (hasMore ? 1 : 0),
         itemBuilder: (context, index) {
-          final reversedIndex = messages.length - 1 - index;
-          final messageData = messages[reversedIndex];
+          // Top spinner for loading older messages in reverse list
+          if (index == visibleMessages.length) {
+            return Padding(
+              padding: const EdgeInsets.symmetric(vertical: 14),
+              child: Center(
+                child: SizedBox(
+                  width: 20,
+                  height: 20,
+                  child: CircularProgressIndicator(
+                    strokeWidth: 2,
+                    color: tabColor,
+                  ),
+                ),
+              ),
+            );
+          }
+
+          final reversedIndex = visibleMessages.length - 1 - index;
+          final messageData = visibleMessages[reversedIndex];
           final currentUserId = FirebaseAuth.instance.currentUser?.uid;
 
           if (currentUserId == null) return const SizedBox.shrink();
 
           final isMyMessage = messageData.senderId == currentUserId;
-          final previousMessage = reversedIndex > 0
-              ? messages[reversedIndex - 1]
+
+          // Global index in allMessages to check date separator accurately across pages
+          final globalIndex = startIndex + reversedIndex;
+          final previousMessage = globalIndex > 0
+              ? allMessages[globalIndex - 1]
               : null;
           final showDateSeparator = _shouldShowDateSeparator(
             messageData,
@@ -253,8 +363,7 @@ class _GroupChatListWidgetState extends ConsumerState<GroupChatListWidget>
           _markMessageAsSeen(messageData);
 
           return _GroupMessageItemWidget(
-            // ✅ Include isSeen in key so widget rebuilds on seen change
-            key: ValueKey('${messageData.messageId}_${messageData.isSeen}'),
+            key: ValueKey(messageData.messageId),
             messageData: messageData,
             isMyMessage: isMyMessage,
             showDateSeparator: showDateSeparator,
@@ -289,7 +398,7 @@ class _GroupMessageItemWidget extends StatelessWidget {
         margin: const EdgeInsets.symmetric(vertical: 16),
         padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
         decoration: BoxDecoration(
-          color: Colors.black.withOpacity(0.5),
+          color: Colors.black.withValues(alpha: 0.5),
           borderRadius: BorderRadius.circular(20),
         ),
         child: Text(
@@ -307,13 +416,18 @@ class _GroupMessageItemWidget extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final timeSent = DateFormat.jm().format(messageData.timeSent);
+    final seen = messageData.isSeen;
+    final delivered = messageData.isDelivered;
+    final sending = messageData.isSending;
 
     return Column(
       children: [
         if (showDateSeparator) _buildDateSeparator(messageData.timeSent),
         isMyMessage
             ? MyMessageCard(
-                key: ValueKey('my_${messageData.messageId}'),
+                key: ValueKey(
+                  'my_${messageData.messageId}_${sending}_${delivered}_$seen',
+                ),
                 message: messageData.text,
                 date: timeSent,
                 messageType: messageData.messageType,
@@ -327,7 +441,9 @@ class _GroupMessageItemWidget extends StatelessWidget {
                   messageData.messageType,
                   messageData.fileMessageData ?? "",
                 ),
-                isSeen: messageData.isSeen,
+                isSeen: seen,
+                isDelivered: delivered,
+                isSending: sending,
               )
             : SenderMessageCard(
                 key: ValueKey('sender_${messageData.messageId}'),

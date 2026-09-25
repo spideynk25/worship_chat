@@ -8,7 +8,12 @@ class ActiveChatNotifier {
 
   String? get activeChatUid => _activeChatUid;
 
-  void enter(String uid) => _activeChatUid = uid;
+  void Function(String chatId, String? chatName)? onChatEntered;
+
+  void enter(String uid, {String? chatName}) {
+    _activeChatUid = uid;
+    onChatEntered?.call(uid, chatName);
+  }
 
   void leave() => _activeChatUid = null;
 

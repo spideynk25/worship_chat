@@ -2,7 +2,7 @@ import 'dart:developer';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:worship_chat/common/widgets/loader.dart';
+import 'package:worship_chat/common/widgets/skeleton_loader.dart';
 import 'package:worship_chat/features/group/controller/group_controller.dart';
 import 'package:worship_chat/features/group/screens/group_chat_screen.dart';
 import 'package:worship_chat/models/group.dart';
@@ -132,10 +132,14 @@ class _QueenRashmikaQueendomListState
     super.build(context); // required by AutomaticKeepAliveClientMixin
 
     return StreamBuilder<List<GroupModel>>(
+      initialData: ref
+          .watch(groupControllerProvider)
+          .getCachedGroups('groups_rashmika'),
       stream: ref.watch(groupControllerProvider).getQueenRashmikaStream(),
       builder: (context, snapshot) {
-        if (snapshot.connectionState == ConnectionState.waiting) {
-          return const Loader();
+        if (snapshot.connectionState == ConnectionState.waiting &&
+            (!snapshot.hasData || snapshot.data!.isEmpty)) {
+          return const ContactListSkeleton(isGroup: true);
         }
         if (snapshot.hasError) {
           log("Error loading groups: ${snapshot.error}");

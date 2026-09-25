@@ -12,6 +12,7 @@ class MediaCacheService {
 
   final Dio _dio = Dio();
   String? _cacheDir;
+  final Map<String, String> _memoryCache = {};
 
   // Initialize cache directory
   Future<void> init() async {
@@ -26,6 +27,41 @@ class MediaCacheService {
     } catch (e) {
       log('Error initializing cache directory: $e');
     }
+  }
+
+  /// Associate a remote URL with an already existing local file (e.g. freshly uploaded image/video).
+  /// This prevents any re-downloading or flickering when transitioning from optimistic local path to remote URL.
+  void registerLocalMapping(String url, String localPath) {
+    if (url.isNotEmpty && localPath.isNotEmpty) {
+      _memoryCache[url] = localPath;
+    }
+  }
+
+  /// Synchronously get cached media path if available in memory or immediately on disk.
+  /// Returns null if not cached yet.
+  String? getCachedSync(String url) {
+    if (url.isEmpty) return null;
+    if (_memoryCache.containsKey(url)) {
+      return _memoryCache[url];
+    }
+    // If it's already a local file path
+    if (!url.startsWith('http://') && !url.startsWith('https://')) {
+      if (File(url).existsSync()) {
+        _memoryCache[url] = url;
+        return url;
+      }
+    }
+    // Check if already in disk cache without async
+    if (_cacheDir != null) {
+      final fileName = _getFileNameFromUrl(url);
+      final diskFile = File('$_cacheDir/$fileName');
+      if (diskFile.existsSync()) {
+        final path = diskFile.path;
+        _memoryCache[url] = path;
+        return path;
+      }
+    }
+    return null;
   }
 
   // Generate unique filename from URL
@@ -45,10 +81,13 @@ class MediaCacheService {
 
   // Check if file exists in cache
   Future<bool> isCached(String url) async {
+    if (getCachedSync(url) != null) return true;
     try {
       final localPath = await _getLocalFilePath(url);
       final file = File(localPath);
-      return await file.exists();
+      final exists = await file.exists();
+      if (exists) _memoryCache[url] = localPath;
+      return exists;
     } catch (e) {
       log('Error checking cache: $e');
       return false;
@@ -57,12 +96,31 @@ class MediaCacheService {
 
   // Get cached file path or download if not cached
   Future<String?> getMediaPath(String url) async {
+    if (url.isEmpty) return null;
+
+    // Check fast memory cache or local file first
+    final fastSync = getCachedSync(url);
+    if (fastSync != null) {
+      return fastSync;
+    }
+
+    // If it's a local file path that exists on device
+    if (!url.startsWith('http://') && !url.startsWith('https://')) {
+      final localFile = File(url);
+      if (await localFile.exists()) {
+        _memoryCache[url] = url;
+        return url;
+      }
+      return null;
+    }
+
     try {
       final localPath = await _getLocalFilePath(url);
       final file = File(localPath);
 
       // If file exists, return local path
       if (await file.exists()) {
+        _memoryCache[url] = localPath;
         log('Media found in cache: $localPath');
         return localPath;
       }
@@ -81,6 +139,7 @@ class MediaCacheService {
       );
 
       if (await file.exists()) {
+        _memoryCache[url] = localPath;
         log('Media downloaded successfully: $localPath');
         return localPath;
       }

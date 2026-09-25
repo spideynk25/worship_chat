@@ -68,7 +68,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                 decoration: BoxDecoration(
                   color: Colors.black.withOpacity(0.2),
                   borderRadius: BorderRadius.circular(35),
-                  border: Border.all(color: Colors.pink, width: 2),
+                  border: Border.all(color: tabColor, width: 2),
                 ),
                 child: Form(
                   key: _formKey,

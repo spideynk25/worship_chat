@@ -10,6 +10,7 @@ import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:hive_flutter/adapters.dart';
+import 'package:worship_chat/common/utils/fcm_token_manager.dart';
 import 'package:worship_chat/common/utils/utils.dart';
 import 'package:worship_chat/features/auth/screens/login_screen.dart';
 import 'package:worship_chat/features/home/screens/home_screen.dart';
@@ -95,9 +96,26 @@ class AuthRepository {
         'name': name,
         'userName': userName,
         'email': email.trim(),
+        'profilePic': '',
+        'isOnline': true,
+        'groupId': [],
         'createdAt': FieldValue.serverTimestamp(),
         'fcmToken': token,
       });
+
+      // 💾 Save to Hive immediately so HomeScreen can show name/userName right away
+      final newUser = UserModel(
+        userName: userName,
+        name: name,
+        uid: user.uid,
+        profilePic: '',
+        isOnline: true,
+        email: email.trim(),
+        groupId: [],
+        fcmToken: token,
+      );
+      await _saveUserToHive(newUser);
+      log('✅ New user saved to Hive: ${newUser.name}');
 
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
@@ -166,6 +184,18 @@ class AuthRepository {
         return;
       }
 
+      // Ensure fresh FCM token is stored for group and 1-to-1 notifications
+      FCMTokenManager.refreshAndSaveFCMToken();
+
+      // 💾 Eagerly fetch & cache user data to Hive so HomeScreen shows
+      // name / userName / profilePic immediately (no waiting for a message).
+      try {
+        await getCurrentUserData();
+        log('✅ User data cached to Hive on login');
+      } catch (e) {
+        log('⚠️ Could not pre-cache user data on login: $e');
+      }
+
       Navigator.pushAndRemoveUntil(
         context,
         MaterialPageRoute(builder: (_) => const HomeScreen()),
@@ -205,6 +235,9 @@ class AuthRepository {
       if (profilePic != null) {
         photoUrl = await uploadImageToCloudinary(profilePic);
       }
+      if (photoUrl != null && photoUrl.startsWith('http://')) {
+        photoUrl = photoUrl.replaceFirst('http://', 'https://');
+      }
 
       // Check if userName is provided and different from current
       if (userName != null && userName != currentUserData.displayName) {
@@ -233,6 +266,27 @@ class AuthRepository {
         photoURL: photoUrl,
       );
 
+      // Preserve existing user fields like fcmToken and groupId
+      String existingFcm = "";
+      List<String> existingGroup = [];
+      try {
+        final existingDoc = await firestore
+            .collection('users')
+            .doc(currentUserData.uid)
+            .get();
+        if (existingDoc.exists && existingDoc.data() != null) {
+          final data = existingDoc.data()!;
+          existingFcm = data['fcmToken']?.toString() ?? "";
+          existingGroup = List<String>.from(data['groupId'] ?? []);
+        }
+      } catch (_) {}
+
+      if (existingFcm.isEmpty) {
+        try {
+          existingFcm = await FirebaseMessaging.instance.getToken() ?? "";
+        } catch (_) {}
+      }
+
       var user = UserModel(
         userName: userName ?? currentUserData.displayName!,
         name: name,
@@ -240,14 +294,14 @@ class AuthRepository {
         profilePic: photoUrl ?? "",
         isOnline: true,
         email: currentUserData.email!,
-        groupId: [],
-        fcmToken: "",
+        groupId: existingGroup,
+        fcmToken: existingFcm,
       );
 
       await firestore
           .collection('users')
           .doc(currentUserData.uid)
-          .set(user.toMap());
+          .set(user.toMap(), SetOptions(merge: true));
 
       await _saveUserToHive(user);
       log('User data saved to Firestore and Hive: ${user.toMap()}');
@@ -264,15 +318,20 @@ class AuthRepository {
   }
 
   Stream<UserModel> userData(String userId) {
-    log("user id $userId");
-    log(
-      "${firestore.collection('users').doc(userId).snapshots().map((event) => UserModel.fromMap(event.data()!))}",
-    );
+    final cleanUid = userId.trim();
+    if (cleanUid.isEmpty) return const Stream.empty();
     return firestore
         .collection('users')
-        .doc(userId)
+        .doc(cleanUid)
         .snapshots()
-        .map((event) => UserModel.fromMap(event.data()!));
+        .where((event) => event.exists && event.data() != null)
+        .map((event) {
+          final user = UserModel.fromMap(event.data()!);
+          if (cleanUid == auth.currentUser?.uid) {
+            _saveUserToHive(user);
+          }
+          return user;
+        });
   }
 
   void setUserState(bool isOnline) async {
@@ -314,8 +373,14 @@ class AuthRepository {
       final response = await dio.post(url, data: formData);
       log("image response $response");
       if (response.statusCode == 200) {
-        print("Image url ${response.data["url"]}");
-        return response.data["url"]; // The Cloudinary URL of the uploaded image
+        final raw = response.data["secure_url"] as String? ??
+            response.data["url"] as String? ??
+            '';
+        final cleanUrl = raw.startsWith('http://')
+            ? raw.replaceFirst('http://', 'https://')
+            : raw;
+        log("Cloudinary image URL: $cleanUrl");
+        return cleanUrl;
       } else {
         throw Exception('Failed to upload image: ${response.data}');
       }

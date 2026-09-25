@@ -10,7 +10,7 @@ import 'package:path_provider/path_provider.dart';
 import 'package:photo_view/photo_view.dart';
 import 'package:photo_view/photo_view_gallery.dart';
 import 'package:worship_chat/colors.dart';
-import 'package:worship_chat/common/widgets/loader.dart';
+import 'package:worship_chat/common/widgets/skeleton_loader.dart';
 import 'package:worship_chat/common/widgets/user_avatar.dart';
 import 'package:worship_chat/features/bookmark/controller/bookmark_controller.dart';
 import 'package:worship_chat/features/group/screens/slide_show_screen.dart';
@@ -47,7 +47,7 @@ class BookmarkScreen extends ConsumerWidget {
         stream: ref.watch(bookmarkControllerProvider).allBookmarks(),
         builder: (context, snapshot) {
           if (snapshot.connectionState == ConnectionState.waiting) {
-            return const Loader();
+            return const BookmarkUserListSkeleton();
           }
 
           final all = snapshot.data ?? [];
@@ -364,7 +364,7 @@ class _UserBookmarksScreenState extends ConsumerState<_UserBookmarksScreen> {
             .bookmarksForUser(widget.userId),
         builder: (context, snapshot) {
           if (snapshot.connectionState == ConnectionState.waiting) {
-            return const Loader();
+            return const BookmarkGridSkeleton();
           }
 
           final original = snapshot.data ?? [];

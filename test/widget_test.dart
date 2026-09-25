@@ -1,30 +1,92 @@
-// This is a basic Flutter widget test.
-//
-// To perform an interaction with a widget in your test, use the WidgetTester
-// utility in the flutter_test package. For example, you can send tap and scroll
-// gestures. You can also use WidgetTester to find child widgets in the widget
-// tree, read text, and verify that the values of widget properties are correct.
-
-import 'package:flutter/material.dart';
+import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:flutter_test/flutter_test.dart';
-
-import 'package:worship_chat/main.dart';
+import 'package:worship_chat/common/utils/active_chat_notifier.dart';
+import 'package:worship_chat/models/group.dart';
 
 void main() {
-  testWidgets('Counter increments smoke test', (WidgetTester tester) async {
-    // Build our app and trigger a frame.
-    await tester.pumpWidget(const MyApp());
+  group('ActiveChatNotifier Tests', () {
+    final notifier = ActiveChatNotifier.instance;
 
-    // Verify that our counter starts at 0.
-    expect(find.text('0'), findsOneWidget);
-    expect(find.text('1'), findsNothing);
+    setUp(() {
+      notifier.leave();
+    });
 
-    // Tap the '+' icon and trigger a frame.
-    await tester.tap(find.byIcon(Icons.add));
-    await tester.pump();
+    test('Initial active chat should be null', () {
+      expect(notifier.activeChatUid, isNull);
+      expect(notifier.isChatActive('user123'), isFalse);
+    });
 
-    // Verify that our counter has incremented.
-    expect(find.text('0'), findsNothing);
-    expect(find.text('1'), findsOneWidget);
+    test('Entering chat sets activeChatUid and suppresses notification', () {
+      notifier.enter('user123');
+      expect(notifier.activeChatUid, 'user123');
+      expect(notifier.isChatActive('user123'), isTrue);
+      expect(notifier.isChatActive('user456'), isFalse);
+    });
+
+    test('Leaving chat clears activeChatUid', () {
+      notifier.enter('user123');
+      expect(notifier.isChatActive('user123'), isTrue);
+
+      notifier.leave();
+      expect(notifier.activeChatUid, isNull);
+      expect(notifier.isChatActive('user123'), isFalse);
+    });
+
+    test('Entering chat triggers onChatEntered callback with chatId and chatName', () {
+      String? enteredId;
+      String? enteredName;
+      notifier.onChatEntered = (id, name) {
+        enteredId = id;
+        enteredName = name;
+      };
+
+      notifier.enter('user_alice', chatName: 'Alice');
+      expect(enteredId, 'user_alice');
+      expect(enteredName, 'Alice');
+
+      notifier.onChatEntered = null;
+    });
+
+    test('FlutterLocalNotificationsPlugin cancel and getActiveNotifications API verification', () {
+      final plugin = FlutterLocalNotificationsPlugin();
+      expect(plugin.cancel, isNotNull);
+      expect(plugin.getActiveNotifications, isNotNull);
+
+      // Verify ActiveNotification fields
+      const active = ActiveNotification(
+        id: 1,
+        tag: 'chat123',
+        title: 'Alice',
+        body: 'Hello',
+        payload: '{"senderUid":"chat123"}',
+      );
+      expect(active.id, 1);
+      expect(active.tag, 'chat123');
+      expect(active.payload, contains('chat123'));
+    });
+  });
+
+  group('GroupModel Fallback Robustness Tests', () {
+    test('GroupModel fallback initializes safely with all required fields', () {
+      final fallback = GroupModel(
+        senderId: '',
+        name: 'Test Group',
+        groupId: 'grp_001',
+        lastMessage: '',
+        groupPic: '',
+        membersUid: [],
+        timeSent: DateTime.now(),
+        fcmTokens: [],
+        unseenMessages: {},
+        chatBackgroundUrl: null,
+        wish: null,
+        queendom: null,
+      );
+
+      expect(fallback.groupId, 'grp_001');
+      expect(fallback.name, 'Test Group');
+      expect(fallback.hasUnseenForUser('any_user'), isFalse);
+      expect(fallback.fcmTokens, isEmpty);
+    });
   });
 }

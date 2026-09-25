@@ -5,12 +5,13 @@ import 'package:hive_flutter/adapters.dart';
 import 'package:intl/intl.dart';
 import 'dart:developer';
 import 'package:worship_chat/common/providers/message_reply_provider.dart';
-import 'package:worship_chat/common/widgets/loader.dart';
+import 'package:worship_chat/common/widgets/skeleton_loader.dart';
 import 'package:worship_chat/common/widgets/user_avatar.dart';
 import 'package:worship_chat/features/chat/controller/chat_controller.dart';
 import 'package:worship_chat/features/chat/widgets/sender_message_card.dart';
 import 'package:worship_chat/models/one_to_one_message_model.dart';
 import 'package:worship_chat/features/chat/widgets/my_message_card.dart';
+import 'package:worship_chat/colors.dart';
 import 'package:worship_chat/models/user_model.dart';
 
 class OneToOneChatListWidget extends ConsumerStatefulWidget {
@@ -37,14 +38,41 @@ class _OneToOneChatListWidgetState extends ConsumerState<OneToOneChatListWidget>
   List<OneToOneMessageModel> _displayMessages = [];
   String currentUserProfilePic = "";
 
+  // ── Scroll to Load (Pagination) ──────────────────────────────────────────
+  static const int _pageSize = 30;
+  int _visibleCount = _pageSize;
+  bool _isLoadingMore = false;
+  int _prevTotalMessages = 0;
+
   @override
   bool get wantKeepAlive => true;
 
   @override
   void initState() {
     super.initState();
+    _loadInitialCachedMessages();
     _initializeUserProfile();
     _setupScrollListener();
+  }
+
+  void _loadInitialCachedMessages() {
+    try {
+      final currentUserId = FirebaseAuth.instance.currentUser?.uid;
+      if (currentUserId == null) return;
+      final localKey = '${currentUserId}_${widget.receiverUserId}';
+      if (Hive.isBoxOpen('messages')) {
+        final box = Hive.box('messages');
+        final cachedData = box.get(localKey, defaultValue: []);
+        if (cachedData is List && cachedData.isNotEmpty) {
+          _displayMessages = cachedData.cast<OneToOneMessageModel>();
+          _lastMessageId = _displayMessages.last.messageId;
+          _prevTotalMessages = _displayMessages.length;
+          log('⚡ Pre-seeded ${_displayMessages.length} messages from Hive in initState');
+        }
+      }
+    } catch (e) {
+      log('Error pre-seeding cached messages: $e');
+    }
   }
 
   void _initializeUserProfile() {
@@ -60,10 +88,34 @@ class _OneToOneChatListWidgetState extends ConsumerState<OneToOneChatListWidget>
   void _setupScrollListener() {
     messageController.addListener(() {
       if (!messageController.hasClients) return;
-      final position = messageController.position.pixels;
-      final atBottom = position <= 10.0;
+      final position = messageController.position;
+      final atBottom = position.pixels <= 10.0;
       if (atBottom != _isAtBottom) {
         setState(() => _isAtBottom = atBottom);
+      }
+
+      // Check if user is scrolling up towards older messages (near top in reverse list)
+      if (position.pixels >= position.maxScrollExtent - 250 &&
+          !_isLoadingMore &&
+          _visibleCount < _displayMessages.length) {
+        _loadMoreMessages();
+      }
+    });
+  }
+
+  void _loadMoreMessages() {
+    if (_isLoadingMore || _visibleCount >= _displayMessages.length) return;
+    setState(() {
+      _isLoadingMore = true;
+    });
+
+    Future.delayed(const Duration(milliseconds: 150), () {
+      if (mounted) {
+        setState(() {
+          _visibleCount =
+              (_visibleCount + _pageSize).clamp(0, _displayMessages.length);
+          _isLoadingMore = false;
+        });
       }
     });
   }
@@ -162,7 +214,7 @@ class _OneToOneChatListWidgetState extends ConsumerState<OneToOneChatListWidget>
             if (_displayMessages.isNotEmpty) {
               return _buildMessageList(_displayMessages);
             }
-            return const Loader();
+            return const ChatMessagesSkeleton();
           }
 
           if (snapshot.hasError) {
@@ -179,6 +231,7 @@ class _OneToOneChatListWidgetState extends ConsumerState<OneToOneChatListWidget>
                     onPressed: () => setState(() {
                       _displayMessages = [];
                       _lastMessageId = null;
+                      _visibleCount = _pageSize;
                     }),
                     child: const Text('Retry'),
                   ),
@@ -190,6 +243,7 @@ class _OneToOneChatListWidgetState extends ConsumerState<OneToOneChatListWidget>
           if (!snapshot.hasData || snapshot.data!.isEmpty) {
             _displayMessages = [];
             _lastMessageId = null;
+            _prevTotalMessages = 0;
             return const Center(
               child: Text('No messages yet. Start the conversation!'),
             );
@@ -200,22 +254,43 @@ class _OneToOneChatListWidgetState extends ConsumerState<OneToOneChatListWidget>
               ? newMessages.last.messageId
               : null;
 
-          final hasSeenChanges = _hasSeenStatusChanged(newMessages);
-          final isNewData =
-              newLastMessageId != _lastMessageId || hasSeenChanges;
-
-          if (isNewData) {
-            log('📨 Messages updated: ${newMessages.length} total');
-            final oldMessageCount = _displayMessages.length;
-            final hasNewMessage = newMessages.length > oldMessageCount;
-            _lastMessageId = newLastMessageId;
-            _displayMessages = newMessages;
-
-            if (_isAtBottom && hasNewMessage) {
+          final currentUserId = FirebaseAuth.instance.currentUser?.uid;
+          if (currentUserId != null) {
+            final hasUnseenIncoming = newMessages.any(
+              (m) => m.receiverId == currentUserId && !m.isSeen,
+            );
+            if (hasUnseenIncoming) {
               WidgetsBinding.instance.addPostFrameCallback((_) {
-                if (mounted) _scrollToBottom();
+                if (mounted) {
+                  ref
+                      .read(chatControllerProvider)
+                      .markChatAsSeen(widget.receiverUserId);
+                }
               });
             }
+          }
+
+          final oldMessageCount = _displayMessages.length;
+          final hasStatusChanges = _hasDeliveryOrSeenStatusChanged(newMessages);
+          final hasNewMessage = newMessages.length > oldMessageCount ||
+              (newMessages.isNotEmpty && newLastMessageId != _lastMessageId);
+          final addedCount = newMessages.length - _prevTotalMessages;
+
+          if (addedCount > 0 && _prevTotalMessages > 0) {
+            _visibleCount += addedCount;
+          } else if (_visibleCount == _pageSize ||
+              _visibleCount > newMessages.length) {
+            _visibleCount = _pageSize.clamp(0, newMessages.length);
+          }
+
+          _prevTotalMessages = newMessages.length;
+          _lastMessageId = newLastMessageId;
+          _displayMessages = newMessages;
+
+          if (_isAtBottom && (hasNewMessage || hasStatusChanges)) {
+            WidgetsBinding.instance.addPostFrameCallback((_) {
+              if (mounted) _scrollToBottom();
+            });
           }
 
           return _buildMessageList(_displayMessages);
@@ -224,74 +299,92 @@ class _OneToOneChatListWidgetState extends ConsumerState<OneToOneChatListWidget>
     );
   }
 
-  bool _hasSeenStatusChanged(List<OneToOneMessageModel> newMessages) {
-    if (_displayMessages.length != newMessages.length) return false;
-    for (int i = 0; i < _displayMessages.length; i++) {
-      if (_displayMessages[i].messageId == newMessages[i].messageId &&
-          _displayMessages[i].isSeen != newMessages[i].isSeen) {
+  bool _hasDeliveryOrSeenStatusChanged(List<OneToOneMessageModel> newMessages) {
+    if (_displayMessages.length != newMessages.length) return true;
+    for (int i = 0; i < newMessages.length; i++) {
+      if (_displayMessages[i].messageId != newMessages[i].messageId ||
+          _displayMessages[i].isSeen != newMessages[i].isSeen ||
+          _displayMessages[i].isDelivered != newMessages[i].isDelivered ||
+          _displayMessages[i].isSending != newMessages[i].isSending ||
+          _displayMessages[i].text != newMessages[i].text) {
         return true;
       }
     }
     return false;
   }
 
-  Widget _buildMessageList(List<OneToOneMessageModel> messages) {
-    if (messages.isEmpty) {
+  Widget _buildMessageList(List<OneToOneMessageModel> allMessages) {
+    if (allMessages.isEmpty) {
       return const Center(
         child: Text('No messages yet. Start the conversation!'),
       );
     }
+
+    final totalCount = allMessages.length;
+    final effectiveCount = _visibleCount.clamp(0, totalCount);
+    final startIndex =
+        totalCount > effectiveCount ? totalCount - effectiveCount : 0;
+    final visibleMessages = allMessages.sublist(startIndex);
+    final hasMore = startIndex > 0;
 
     return NotificationListener<OverscrollIndicatorNotification>(
       onNotification: (notification) {
         notification.disallowIndicator();
         return true;
       },
-      child: ListView.custom(
+      child: ListView.builder(
         controller: messageController,
         reverse: true,
         physics: const AlwaysScrollableScrollPhysics(),
-        childrenDelegate: SliverChildBuilderDelegate(
-          (context, index) {
-            final reversedIndex = messages.length - 1 - index;
-            final messageData = messages[reversedIndex];
-            final currentUserId = FirebaseAuth.instance.currentUser?.uid;
-            if (currentUserId == null) return const SizedBox.shrink();
-
-            final isMyMessage = messageData.senderId == currentUserId;
-            final previousMessage = reversedIndex > 0
-                ? messages[reversedIndex - 1]
-                : null;
-            final showDateSeparator = _shouldShowDateSeparator(
-              messageData,
-              previousMessage,
+        itemCount: visibleMessages.length + (hasMore ? 1 : 0),
+        itemBuilder: (context, index) {
+          // Top spinner for loading older messages in reverse list
+          if (index == visibleMessages.length) {
+            return Padding(
+              padding: const EdgeInsets.symmetric(vertical: 14),
+              child: Center(
+                child: SizedBox(
+                  width: 20,
+                  height: 20,
+                  child: CircularProgressIndicator(
+                    strokeWidth: 2,
+                    color: tabColor,
+                  ),
+                ),
+              ),
             );
+          }
 
-            _markMessageAsSeen(messageData);
+          final reversedIndex = visibleMessages.length - 1 - index;
+          final messageData = visibleMessages[reversedIndex];
+          final currentUserId = FirebaseAuth.instance.currentUser?.uid;
+          if (currentUserId == null) return const SizedBox.shrink();
 
-            return _MessageItemWidget(
-              key: ValueKey('${messageData.messageId}_${messageData.isSeen}'),
-              messageData: messageData,
-              isMyMessage: isMyMessage,
-              showDateSeparator: showDateSeparator,
-              currentUserProfilePic: currentUserProfilePic,
-              receiverProfilePic: widget.profilePic,
-              onMessageSwipe: onMessageSwipe,
-              getDateSeparatorText: _getDateSeparatorText,
-            );
-          },
-          childCount: messages.length,
-          findChildIndexCallback: (Key key) {
-            final valueKey = key as ValueKey<String>;
-            final keyMessageId = valueKey.value.split('_').first;
-            final index = messages.indexWhere(
-              (msg) => msg.messageId == keyMessageId,
-            );
-            return index == -1 ? null : messages.length - 1 - index;
-          },
-          addAutomaticKeepAlives: true,
-          addRepaintBoundaries: true,
-        ),
+          final isMyMessage = messageData.senderId == currentUserId;
+
+          // Global index in allMessages to check date separator accurately across pages
+          final globalIndex = startIndex + reversedIndex;
+          final previousMessage = globalIndex > 0
+              ? allMessages[globalIndex - 1]
+              : null;
+          final showDateSeparator = _shouldShowDateSeparator(
+            messageData,
+            previousMessage,
+          );
+
+          _markMessageAsSeen(messageData);
+
+          return _MessageItemWidget(
+            key: ValueKey(messageData.messageId),
+            messageData: messageData,
+            isMyMessage: isMyMessage,
+            showDateSeparator: showDateSeparator,
+            currentUserProfilePic: currentUserProfilePic,
+            receiverProfilePic: widget.profilePic,
+            onMessageSwipe: onMessageSwipe,
+            getDateSeparatorText: _getDateSeparatorText,
+          );
+        },
       ),
     );
   }
@@ -323,7 +416,7 @@ class _MessageItemWidget extends StatelessWidget {
         margin: const EdgeInsets.symmetric(vertical: 16),
         padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
         decoration: BoxDecoration(
-          color: Colors.black.withOpacity(0.5),
+          color: Colors.black.withValues(alpha: 0.5),
           borderRadius: BorderRadius.circular(20),
         ),
         child: Text(
@@ -338,16 +431,17 @@ class _MessageItemWidget extends StatelessWidget {
     );
   }
 
-  Widget _buildProfileAvatar(String profilePic, bool isCurrentUser) {
+  Widget _buildProfileAvatar(String? profilePic, bool isCurrentUser) {
     final padding = isCurrentUser
-        ? const EdgeInsets.only(left: 0.0, right: 8.0, bottom: 7)
-        : const EdgeInsets.only(left: 8.0, right: 0.0, bottom: 7);
+        ? const EdgeInsets.only(left: 2.0, right: 6.0, bottom: 2.0)
+        : const EdgeInsets.only(left: 6.0, right: 2.0, bottom: 2.0);
 
+    final pic = profilePic ?? "";
     return Padding(
       padding: padding,
       child: UserAvatar(
-        url: profilePic.isNotEmpty ? profilePic : null,
-        radius: 23,
+        url: pic.isNotEmpty ? pic : null,
+        radius: 17.5,
       ),
     );
   }
@@ -355,6 +449,9 @@ class _MessageItemWidget extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final timeSent = DateFormat.jm().format(messageData.timeSent);
+    final seen = messageData.isSeen;
+    final delivered = messageData.isDelivered;
+    final sending = messageData.isSending;
 
     return Column(
       children: [
@@ -364,22 +461,28 @@ class _MessageItemWidget extends StatelessWidget {
                 mainAxisAlignment: MainAxisAlignment.end,
                 crossAxisAlignment: CrossAxisAlignment.end,
                 children: [
-                  MyMessageCard(
-                    key: ValueKey('my_${messageData.messageId}'),
-                    message: messageData.text,
-                    date: timeSent,
-                    messageType: messageData.messageType,
-                    fileMessageData: messageData.fileMessageData,
-                    repliedText: messageData.repliedMessage,
-                    username: messageData.repliedTo,
-                    repliedMessageType: messageData.repliedMessageType,
-                    onLeftSwipe: () => onMessageSwipe(
-                      messageData.text,
-                      true,
-                      messageData.messageType,
-                      messageData.fileMessageData ?? "",
+                  Flexible(
+                    child: MyMessageCard(
+                      key: ValueKey(
+                        'my_${messageData.messageId}_${sending}_${delivered}_$seen',
+                      ),
+                      message: messageData.text,
+                      date: timeSent,
+                      messageType: messageData.messageType,
+                      fileMessageData: messageData.fileMessageData,
+                      repliedText: messageData.repliedMessage,
+                      username: messageData.repliedTo,
+                      repliedMessageType: messageData.repliedMessageType,
+                      onLeftSwipe: () => onMessageSwipe(
+                        messageData.text,
+                        true,
+                        messageData.messageType,
+                        messageData.fileMessageData ?? "",
+                      ),
+                      isSeen: seen,
+                      isDelivered: delivered,
+                      isSending: sending,
                     ),
-                    isSeen: messageData.isSeen,
                   ),
                   _buildProfileAvatar(currentUserProfilePic, true),
                 ],
@@ -388,20 +491,22 @@ class _MessageItemWidget extends StatelessWidget {
                 crossAxisAlignment: CrossAxisAlignment.end,
                 children: [
                   _buildProfileAvatar(receiverProfilePic, false),
-                  SenderMessageCard(
-                    key: ValueKey('sender_${messageData.messageId}'),
-                    message: messageData.text,
-                    date: timeSent,
-                    messageType: messageData.messageType,
-                    fileMessageData: messageData.fileMessageData,
-                    repliedText: messageData.repliedMessage,
-                    username: messageData.repliedTo,
-                    repliedMessageType: messageData.repliedMessageType,
-                    onRightSwipe: () => onMessageSwipe(
-                      messageData.text,
-                      false,
-                      messageData.messageType,
-                      messageData.fileMessageData ?? "",
+                  Flexible(
+                    child: SenderMessageCard(
+                      key: ValueKey('sender_${messageData.messageId}'),
+                      message: messageData.text,
+                      date: timeSent,
+                      messageType: messageData.messageType,
+                      fileMessageData: messageData.fileMessageData,
+                      repliedText: messageData.repliedMessage,
+                      username: messageData.repliedTo,
+                      repliedMessageType: messageData.repliedMessageType,
+                      onRightSwipe: () => onMessageSwipe(
+                        messageData.text,
+                        false,
+                        messageData.messageType,
+                        messageData.fileMessageData ?? "",
+                      ),
                     ),
                   ),
                 ],

@@ -8,12 +8,12 @@ import 'package:cached_network_image/cached_network_image.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:video_player/video_player.dart';
 import 'package:visibility_detector/visibility_detector.dart';
-import 'package:worship_chat/common/utils/gif_viewer.dart';
 import 'package:worship_chat/common/utils/media_cache_service.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:photo_view/photo_view.dart';
 import 'dart:developer';
+import 'package:worship_chat/colors.dart';
 
 // Enhanced MediaPreviewWidget with download and fullscreen
 class MediaPreviewWidget extends StatefulWidget {
@@ -430,10 +430,10 @@ class _MediaPreviewWidgetState extends State<MediaPreviewWidget> {
                                     overlayShape: const RoundSliderOverlayShape(
                                       overlayRadius: 12,
                                     ),
-                                    activeTrackColor: Colors.pink,
+                                    activeTrackColor: tabColor,
                                     inactiveTrackColor: Colors.white30,
                                     thumbColor: Colors.white,
-                                    overlayColor: Colors.pink.withOpacity(0.2),
+                                    overlayColor: tabColor.withOpacity(0.2),
                                   ),
                                   child: Slider(
                                     value: _videoController!
@@ -836,7 +836,7 @@ class _DisplayMessagesState extends State<DisplayMessages> {
           text: url,
           style: TextStyle(
             fontSize: isSmallScreen ? 14 : 16,
-            color: Colors.blue,
+            color: tabColor,
             decoration: TextDecoration.underline,
           ),
           recognizer: TapGestureRecognizer()
@@ -958,6 +958,7 @@ class _DisplayMessagesState extends State<DisplayMessages> {
     switch (widget.messageType) {
       case 'text':
         content = Column(
+          mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             _buildTextWithLinks(widget.message, context, isSmallScreen),
@@ -1259,10 +1260,10 @@ class _DisplayMessagesState extends State<DisplayMessages> {
                                           const RoundSliderOverlayShape(
                                             overlayRadius: 12,
                                           ),
-                                      activeTrackColor: Colors.pink,
+                                      activeTrackColor: tabColor,
                                       inactiveTrackColor: Colors.white30,
                                       thumbColor: Colors.white,
-                                      overlayColor: Colors.pink.withOpacity(
+                                      overlayColor: tabColor.withOpacity(
                                         0.2,
                                       ),
                                     ),
@@ -1315,9 +1316,9 @@ class _DisplayMessagesState extends State<DisplayMessages> {
         break;
 
       case 'gif':
-        log(
-          'Rendering GIF with data: ${Uint8List.fromList(utf8.encode(widget.fileMessageData!))}',
-        );
+        if (widget.fileMessageData != null && widget.fileMessageData!.isNotEmpty) {
+          log('Rendering GIF with data length: ${widget.fileMessageData!.length}');
+        }
         content =
             widget.fileMessageData != null && widget.fileMessageData!.isNotEmpty
             ? Image.memory(
@@ -1385,7 +1386,32 @@ class _CachedImageWidgetState extends State<_CachedImageWidget> {
   @override
   void initState() {
     super.initState();
-    _loadImage();
+    // Fast synchronous check — if already cached in memory or on disk, no loading flicker!
+    final fastSync = MediaCacheService().getCachedSync(widget.imageUrl);
+    if (fastSync != null) {
+      _localPath = fastSync;
+      _isLoading = false;
+      _hasError = false;
+    } else {
+      _loadImage();
+    }
+  }
+
+  @override
+  void didUpdateWidget(covariant _CachedImageWidget oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.imageUrl != widget.imageUrl) {
+      final fastSync = MediaCacheService().getCachedSync(widget.imageUrl);
+      if (fastSync != null) {
+        setState(() {
+          _localPath = fastSync;
+          _isLoading = false;
+          _hasError = false;
+        });
+      } else {
+        _loadImage();
+      }
+    }
   }
 
   Future<void> _loadImage() async {
@@ -1429,6 +1455,7 @@ class _CachedImageWidgetState extends State<_CachedImageWidget> {
     return Image.file(
       File(_localPath!),
       fit: BoxFit.contain,
+      gaplessPlayback: true,
       errorBuilder: (context, error, stackTrace) {
         return Container(
           constraints: BoxConstraints(maxWidth: widget.screenWidth * 0.8),

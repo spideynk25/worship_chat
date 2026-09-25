@@ -68,7 +68,7 @@ class _RegisterScreenState extends ConsumerState<RegisterScreen> {
                   decoration: BoxDecoration(
                     color: Colors.black.withOpacity(0.3),
                     borderRadius: BorderRadius.circular(35),
-                    border: Border.all(color: Colors.pinkAccent, width: 2),
+                    border: Border.all(color: tabColor, width: 2),
                   ),
                   child: Form(
                     key: _formKey,

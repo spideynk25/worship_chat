@@ -132,21 +132,32 @@ class EventController extends StateNotifier<EventState> {
     try {
       await _repository.updateEvent(event);
 
-      // Update local state
+      // Update local state:
+      // Remove from all existing date entries in case date was modified
+      final updatedEvents = Map<DateTime, List<Event>>.from(state.events);
+      for (final key in updatedEvents.keys.toList()) {
+        final list = List<Event>.from(updatedEvents[key]!);
+        list.removeWhere((e) => e.id == event.id);
+        if (list.isEmpty) {
+          updatedEvents.remove(key);
+        } else {
+          updatedEvents[key] = list;
+        }
+      }
+
+      // Add to new date bucket
       final eventDate = DateTime(
         event.date.year,
         event.date.month,
         event.date.day,
       );
-      final updatedEvents = Map<DateTime, List<Event>>.from(state.events);
 
-      if (updatedEvents[eventDate] != null) {
-        final index = updatedEvents[eventDate]!
-            .indexWhere((e) => e.id == event.id);
-        if (index != -1) {
-          updatedEvents[eventDate]![index] = event;
-        }
+      if (updatedEvents[eventDate] == null) {
+        updatedEvents[eventDate] = [];
+      } else {
+        updatedEvents[eventDate] = List<Event>.from(updatedEvents[eventDate]!);
       }
+      updatedEvents[eventDate]!.add(event);
 
       state = state.copyWith(events: updatedEvents);
     } catch (e) {
@@ -181,6 +192,11 @@ class EventController extends StateNotifier<EventState> {
     
     // Combine regular events and recurring events
     return [...regularEvents, ...recurringEvents];
+  }
+
+  // Check if user can edit event
+  bool canEditEvent(Event event) {
+    return _repository.canEditEvent(event);
   }
 
   // Check if user can delete event

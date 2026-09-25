@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:worship_chat/colors.dart';
 import 'package:worship_chat/common/providers/message_reply_provider.dart';
 import 'package:worship_chat/features/chat/widgets/display_messages.dart';
 import 'package:cached_network_image/cached_network_image.dart';
@@ -86,14 +87,14 @@ class MessageReplyPreview extends ConsumerWidget {
           Positioned.fill(
             child: Container(
               decoration: BoxDecoration(
-                color: Colors.black.withOpacity(0.3),
+                color: Colors.black.withValues(alpha: 0.3),
                 borderRadius: BorderRadius.circular(6),
               ),
               child: Center(
                 child: Container(
                   padding: const EdgeInsets.all(6),
                   decoration: BoxDecoration(
-                    color: Colors.white.withOpacity(0.9),
+                    color: Colors.white.withValues(alpha: 0.9),
                     shape: BoxShape.circle,
                   ),
                   child: Icon(
@@ -116,28 +117,43 @@ class MessageReplyPreview extends ConsumerWidget {
     final isPhoto = messageReply!.messageType == 'image';
     final isVideo = messageReply.messageType == 'video';
     final isMedia = isPhoto || isVideo;
+    final fileData = messageReply.fileMessageData;
 
     return Container(
       decoration: BoxDecoration(
-        color: Theme.of(context).colorScheme.surface,
+        color: const Color(0xFF161524),
+        borderRadius: const BorderRadius.vertical(top: Radius.circular(16)),
         border: Border(
           top: BorderSide(
-            color: Theme.of(context).dividerColor.withOpacity(0.1),
+            color: Colors.white.withValues(alpha: 0.08),
+            width: 1,
+          ),
+          left: BorderSide(
+            color: Colors.white.withValues(alpha: 0.04),
+            width: 1,
+          ),
+          right: BorderSide(
+            color: Colors.white.withValues(alpha: 0.04),
             width: 1,
           ),
         ),
       ),
-      padding: const EdgeInsets.fromLTRB(16, 12, 12, 12),
+      margin: const EdgeInsets.symmetric(horizontal: 10),
+      padding: const EdgeInsets.fromLTRB(14, 10, 10, 10),
       child: IntrinsicHeight(
         child: Row(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            // Accent line
+            // Gradient accent line
             Container(
-              width: 3,
+              width: 3.5,
               decoration: BoxDecoration(
-                color: Colors.pinkAccent,
-                borderRadius: BorderRadius.circular(1.5),
+                gradient: const LinearGradient(
+                  begin: Alignment.topCenter,
+                  end: Alignment.bottomCenter,
+                  colors: [tabColor, accentOrange],
+                ),
+                borderRadius: BorderRadius.circular(2),
               ),
             ),
 
@@ -149,14 +165,13 @@ class MessageReplyPreview extends ConsumerWidget {
                 onTap: isMedia
                     ? () {
                         // Open media preview
-                        if (messageReply.fileMessageData != null &&
-                            messageReply.fileMessageData!.isNotEmpty) {
+                        if (fileData.isNotEmpty) {
                           Navigator.push(
                             context,
                             MaterialPageRoute(
                               builder: (context) => MediaPreviewWidget(
                                 mediaType: messageReply.messageType,
-                                mediaUrl: messageReply.fileMessageData!,
+                                mediaUrl: fileData,
                               ),
                             ),
                           );
@@ -167,9 +182,9 @@ class MessageReplyPreview extends ConsumerWidget {
                   children: [
                     // Media preview (if applicable)
                     if (isPhoto)
-                      _buildPhotoPreview(messageReply.fileMessageData),
+                      _buildPhotoPreview(fileData),
                     if (isVideo)
-                      _buildVideoPreview(messageReply.fileMessageData),
+                      _buildVideoPreview(fileData),
 
                     if (isMedia) const SizedBox(width: 12),
 
@@ -186,7 +201,7 @@ class MessageReplyPreview extends ConsumerWidget {
                                 Icon(
                                   isPhoto ? Icons.camera_alt : Icons.videocam,
                                   size: 14,
-                                  color: Colors.pinkAccent.withOpacity(0.8),
+                                  color: tabColor.withValues(alpha: 0.8),
                                 ),
                                 const SizedBox(width: 4),
                                 Flexible(
@@ -201,7 +216,7 @@ class MessageReplyPreview extends ConsumerWidget {
                                     style: TextStyle(
                                       fontSize: 13,
                                       fontWeight: FontWeight.w600,
-                                      color: Colors.pinkAccent.withOpacity(0.9),
+                                      color: tabColor.withValues(alpha: 0.9),
                                     ),
                                     overflow: TextOverflow.ellipsis,
                                   ),
@@ -214,11 +229,11 @@ class MessageReplyPreview extends ConsumerWidget {
                               style: TextStyle(
                                 fontSize: 13,
                                 fontWeight: FontWeight.w600,
-                                color: Colors.pinkAccent.withOpacity(0.9),
+                                color: tabColor.withValues(alpha: 0.9),
                               ),
                             ),
 
-                          const SizedBox(height: 4),
+                          const SizedBox(height: 3),
 
                           if (isPhoto || isVideo)
                             Text(
@@ -227,18 +242,18 @@ class MessageReplyPreview extends ConsumerWidget {
                                 fontSize: 12,
                                 color: Theme.of(
                                   context,
-                                ).colorScheme.onSurface.withOpacity(0.5),
+                                ).colorScheme.onSurface.withValues(alpha: 0.5),
                               ),
                             )
                           else
                             Text(
                               messageReply.message,
                               style: TextStyle(
-                                fontSize: 14,
+                                fontSize: 13.5,
                                 color: Theme.of(
                                   context,
-                                ).colorScheme.onSurface.withOpacity(0.6),
-                                height: 1.4,
+                                ).colorScheme.onSurface.withValues(alpha: 0.75),
+                                height: 1.35,
                               ),
                               maxLines: 2,
                               overflow: TextOverflow.ellipsis,
@@ -254,17 +269,24 @@ class MessageReplyPreview extends ConsumerWidget {
             const SizedBox(width: 8),
 
             // Close button
-            InkWell(
-              onTap: () => cancelReply(ref),
-              borderRadius: BorderRadius.circular(16),
-              child: Padding(
-                padding: const EdgeInsets.all(4),
-                child: Icon(
-                  Icons.close,
-                  size: 20,
-                  color: Theme.of(
-                    context,
-                  ).colorScheme.onSurface.withOpacity(0.5),
+            Center(
+              child: Material(
+                color: Colors.transparent,
+                child: InkWell(
+                  onTap: () => cancelReply(ref),
+                  borderRadius: BorderRadius.circular(16),
+                  child: Container(
+                    padding: const EdgeInsets.all(5),
+                    decoration: BoxDecoration(
+                      color: Colors.white.withValues(alpha: 0.08),
+                      shape: BoxShape.circle,
+                    ),
+                    child: const Icon(
+                      Icons.close_rounded,
+                      size: 16,
+                      color: greyColor,
+                    ),
+                  ),
                 ),
               ),
             ),

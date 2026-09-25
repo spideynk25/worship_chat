@@ -3,14 +3,15 @@ import 'dart:async';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:font_awesome_flutter/font_awesome_flutter.dart';
 import 'package:hive_flutter/hive_flutter.dart';
 import 'package:share_handler/share_handler.dart';
 import 'package:worship_chat/colors.dart';
 import 'package:worship_chat/common/screens/combined_contact_screen.dart';
+import 'package:worship_chat/common/utils/fcm_token_manager.dart';
 import 'package:worship_chat/common/utils/share_intent_service.dart';
-import 'package:worship_chat/common/utils/utils.dart';
 import 'package:worship_chat/features/auth/controller/auth_controller.dart';
 import 'package:worship_chat/features/chat/controller/chat_controller.dart';
 import 'package:worship_chat/features/chat/widgets/all_user_screen.dart';
@@ -26,6 +27,7 @@ import 'package:worship_chat/features/share/screens/share_upload_screen.dart';
 import 'package:worship_chat/features/status/controller/status_controller.dart';
 import 'package:worship_chat/models/chat_contact.dart';
 import 'package:worship_chat/models/group.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:worship_chat/models/user_model.dart';
 import 'package:worship_chat/common/widgets/user_avatar.dart';
 
@@ -41,6 +43,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
   int _selectedIndex = 0;
   late final PageController _pageController;
   StreamSubscription? _shareSubscription;
+  StreamSubscription<DocumentSnapshot>? _userSubscription;
   bool _initialShareProcessed = false;
 
   final List<Widget> _screens = const [
@@ -57,9 +60,27 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
     WidgetsBinding.instance.addObserver(this);
     _pageController = PageController(initialPage: _selectedIndex);
 
+    final uid = FirebaseAuth.instance.currentUser?.uid ?? '';
+    if (uid.isNotEmpty) {
+      _userSubscription = FirebaseFirestore.instance
+          .collection('users')
+          .doc(uid)
+          .snapshots()
+          .listen((snapshot) {
+        if (snapshot.exists && snapshot.data() != null) {
+          final user = UserModel.fromMap(snapshot.data() as Map<String, dynamic>);
+          Hive.box<UserModel>('userBox').put('currentUser', user);
+        }
+      }, onError: (err) {
+        debugPrint('⚠️ HomeScreen user listener error: $err');
+      });
+    }
+
     // Delay so widget tree is fully ready before pushing routes
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _initShareHandler();
+      FCMTokenManager.refreshAndSaveFCMToken();
+      ref.read(authControllerProvider).getUsetData();
     });
   }
 
@@ -105,6 +126,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
   @override
   void dispose() {
     _shareSubscription?.cancel();
+    _userSubscription?.cancel();
     _pageController.dispose();
     WidgetsBinding.instance.removeObserver(this);
     super.dispose();
@@ -191,17 +213,37 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
   Widget build(BuildContext context) {
     final currentUserUid = FirebaseAuth.instance.currentUser?.uid ?? '';
 
-    return ValueListenableBuilder(
+    return ValueListenableBuilder<Box<UserModel>>(
       valueListenable: Hive.box<UserModel>('userBox').listenable(),
       builder: (context, Box<UserModel> userBox, _) {
         final user = userBox.get('currentUser');
+        final authUser = FirebaseAuth.instance.currentUser;
+
+        final displayName = (user?.name != null && user!.name!.trim().isNotEmpty)
+            ? user.name!.trim()
+            : (authUser?.displayName != null && authUser!.displayName!.trim().isNotEmpty)
+                ? authUser.displayName!.trim()
+                : 'User';
+
+        final displayUserName = (user?.userName != null && user!.userName!.trim().isNotEmpty)
+            ? user.userName!.trim()
+            : (authUser?.displayName != null && authUser!.displayName!.trim().isNotEmpty)
+                ? authUser.displayName!.trim()
+                : 'User';
+
+        final rawPic = (user?.profilePic != null && user!.profilePic!.trim().isNotEmpty)
+            ? user.profilePic!.trim()
+            : (authUser?.photoURL != null && authUser!.photoURL!.trim().isNotEmpty)
+                ? authUser.photoURL!.trim()
+                : null;
+
+        final displayPic = UserAvatar.sanitizeUrl(rawPic);
 
         return Scaffold(
           appBar: AppBar(
             toolbarHeight: 90,
             backgroundColor: appBarColor,
             elevation: 0,
-            shadowColor: Colors.grey,
             title: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               mainAxisAlignment: MainAxisAlignment.center,
@@ -225,15 +267,15 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
                   crossAxisAlignment: CrossAxisAlignment.end,
                   children: [
                     Text(
-                      user?.name ?? 'User',
+                      displayName,
                       style: const TextStyle(
                         fontWeight: FontWeight.w700,
                         fontSize: 12,
-                        color: Colors.pink,
+                        color: tabColor,
                       ),
                     ),
                     Text(
-                      user?.userName ?? 'User',
+                      displayUserName,
                       style: const TextStyle(
                         fontWeight: FontWeight.w400,
                         fontSize: 12,
@@ -244,9 +286,11 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
               ),
               PopupMenuButton(
                 position: PopupMenuPosition.under,
+                padding: EdgeInsets.zero,
+                iconSize: 50,
                 icon: Hero(
-                  tag: user?.uid ?? "profile_icon",
-                  child: UserAvatar(url: user?.profilePic, radius: 25),
+                  tag: user?.uid ?? (currentUserUid.isNotEmpty ? currentUserUid : "profile_icon"),
+                  child: UserAvatar(url: displayPic, radius: 24),
                 ),
                 itemBuilder: (context) => [
                   PopupMenuItem(
@@ -353,46 +397,11 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
                               final chatTabBadge =
                                   unreadChatsCount + unseenStatusCount;
 
-                              return BottomNavigationBar(
-                                currentIndex: _selectedIndex,
-                                selectedItemColor: tabColor,
-                                unselectedItemColor: Colors.grey,
-                                onTap: _onItemTapped,
-                                type: BottomNavigationBarType.fixed,
-                                items: [
-                                  const BottomNavigationBarItem(
-                                    icon: Icon(Icons.home),
-                                    label: '',
-                                  ),
-                                  BottomNavigationBarItem(
-                                    icon: _buildBadgedIcon(
-                                      icon: const Icon(Icons.chat_bubble),
-                                      count: chatTabBadge,
-                                    ),
-                                    label: '',
-                                  ),
-                                  BottomNavigationBarItem(
-                                    icon: _buildBadgedIcon(
-                                      icon: const FaIcon(FontAwesomeIcons.crown),
-                                      count: poojaUnseenCount,
-                                    ),
-                                    label: '',
-                                  ),
-                                  BottomNavigationBarItem(
-                                    icon: _buildBadgedIcon(
-                                      icon: const FaIcon(FontAwesomeIcons.crown),
-                                      count: rashmikaUnseenCount,
-                                    ),
-                                    label: '',
-                                  ),
-                                  BottomNavigationBarItem(
-                                    icon: _buildBadgedIcon(
-                                      icon: const Icon(Icons.group),
-                                      count: generalUnseenCount,
-                                    ),
-                                    label: '',
-                                  ),
-                                ],
+                              return _buildModernBottomNavBar(
+                                chatTabBadge: chatTabBadge,
+                                poojaUnseenCount: poojaUnseenCount,
+                                rashmikaUnseenCount: rashmikaUnseenCount,
+                                generalUnseenCount: generalUnseenCount,
                               );
                             },
                           );
@@ -419,44 +428,219 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
     );
   }
 
-  // ── Badged icon widget ─────────────────────────────────────────────────────
+  // ── Modern Bottom Navigation Bar ──────────────────────────────────────────
 
-  Widget _buildBadgedIcon({required Widget icon, required int count}) {
-    if (count == 0) return icon;
+  Widget _buildModernBottomNavBar({
+    required int chatTabBadge,
+    required int poojaUnseenCount,
+    required int rashmikaUnseenCount,
+    required int generalUnseenCount,
+  }) {
+    final navItems = [
+      _NavBarItemConfig(
+        iconBuilder: (isSelected) => Icon(
+          Icons.grid_view_rounded,
+          size: isSelected ? 21 : 22,
+          color: isSelected ? tabColor : Colors.white.withValues(alpha: 0.45),
+        ),
+        label: 'Home',
+        badgeCount: 0,
+      ),
+      _NavBarItemConfig(
+        iconBuilder: (isSelected) => Icon(
+          Icons.chat_bubble_rounded,
+          size: isSelected ? 21 : 22,
+          color: isSelected ? tabColor : Colors.white.withValues(alpha: 0.45),
+        ),
+        label: 'Chats',
+        badgeCount: chatTabBadge,
+      ),
+      _NavBarItemConfig(
+        iconBuilder: (isSelected) => FaIcon(
+          FontAwesomeIcons.crown,
+          size: isSelected ? 18 : 19,
+          color: isSelected ? tabColor : Colors.white.withValues(alpha: 0.45),
+        ),
+        label: 'Pooja',
+        badgeCount: poojaUnseenCount,
+      ),
+      _NavBarItemConfig(
+        iconBuilder: (isSelected) => FaIcon(
+          FontAwesomeIcons.crown,
+          size: isSelected ? 18 : 19,
+          color: isSelected ? tabColor : Colors.white.withValues(alpha: 0.45),
+        ),
+        label: 'Rashmika',
+        badgeCount: rashmikaUnseenCount,
+      ),
+      _NavBarItemConfig(
+        iconBuilder: (isSelected) => Icon(
+          Icons.groups_rounded,
+          size: isSelected ? 21 : 22,
+          color: isSelected ? tabColor : Colors.white.withValues(alpha: 0.45),
+        ),
+        label: 'Groups',
+        badgeCount: generalUnseenCount,
+      ),
+    ];
+
+    return Container(
+      decoration: BoxDecoration(
+        color: const Color(0xFF14131B),
+        border: Border(
+          top: BorderSide(
+            color: Colors.white.withValues(alpha: 0.08),
+            width: 1.0,
+          ),
+        ),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withValues(alpha: 0.45),
+            blurRadius: 16,
+            offset: const Offset(0, -4),
+          ),
+        ],
+        borderRadius: const BorderRadius.vertical(
+          top: Radius.circular(22),
+        ),
+      ),
+      child: SafeArea(
+        top: false,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.spaceAround,
+            children: List.generate(navItems.length, (index) {
+              final item = navItems[index];
+              final isSelected = _selectedIndex == index;
+
+              return GestureDetector(
+                behavior: HitTestBehavior.opaque,
+                onTap: () {
+                  HapticFeedback.lightImpact();
+                  _onItemTapped(index);
+                },
+                child: AnimatedContainer(
+                  duration: const Duration(milliseconds: 240),
+                  curve: Curves.easeInOutCubic,
+                  padding: isSelected
+                      ? const EdgeInsets.symmetric(horizontal: 14, vertical: 8)
+                      : const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+                  decoration: isSelected
+                      ? BoxDecoration(
+                          gradient: LinearGradient(
+                            colors: [
+                              tabColor.withValues(alpha: 0.22),
+                              accentOrange.withValues(alpha: 0.12),
+                            ],
+                            begin: Alignment.topLeft,
+                            end: Alignment.bottomRight,
+                          ),
+                          borderRadius: BorderRadius.circular(16),
+                          border: Border.all(
+                            color: tabColor.withValues(alpha: 0.45),
+                            width: 1,
+                          ),
+                          boxShadow: [
+                            BoxShadow(
+                              color: tabColor.withValues(alpha: 0.18),
+                              blurRadius: 10,
+                              offset: const Offset(0, 2),
+                            ),
+                          ],
+                        )
+                      : const BoxDecoration(
+                          color: Colors.transparent,
+                        ),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      _buildNavIcon(item: item, isSelected: isSelected),
+                      ClipRect(
+                        child: AnimatedSize(
+                          duration: const Duration(milliseconds: 220),
+                          curve: Curves.easeOutCubic,
+                          child: isSelected
+                              ? Row(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    const SizedBox(width: 7),
+                                    Text(
+                                      item.label,
+                                      maxLines: 1,
+                                      style: const TextStyle(
+                                        color: tabColor,
+                                        fontSize: 12,
+                                        fontWeight: FontWeight.w700,
+                                        letterSpacing: 0.2,
+                                      ),
+                                    ),
+                                  ],
+                                )
+                              : const SizedBox.shrink(),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              );
+            }),
+          ),
+        ),
+      ),
+    );
+  }
+
+  // ── Modern badged nav icon ────────────────────────────────────────────────
+
+  Widget _buildNavIcon({
+    required _NavBarItemConfig item,
+    required bool isSelected,
+  }) {
+    final iconWidget = item.iconBuilder(isSelected);
+
+    if (item.badgeCount <= 0) {
+      return iconWidget;
+    }
 
     return Stack(
       clipBehavior: Clip.none,
       children: [
-        icon,
+        iconWidget,
         Positioned(
-          right: -6,
+          right: -7,
           top: -6,
           child: Container(
-            padding: const EdgeInsets.all(4),
+            padding: const EdgeInsets.symmetric(horizontal: 4.5, vertical: 1.5),
             decoration: BoxDecoration(
-              color: Colors.red,
-              shape: BoxShape.circle,
-              border: Border.all(color: backgroundColor, width: 2),
+              gradient: const LinearGradient(
+                colors: [tabColor, accentOrange],
+                begin: Alignment.topLeft,
+                end: Alignment.bottomRight,
+              ),
+              borderRadius: BorderRadius.circular(10),
+              border: Border.all(color: const Color(0xFF14131B), width: 1.5),
               boxShadow: [
                 BoxShadow(
-                  color: Colors.red.withOpacity(0.5),
-                  blurRadius: 4,
-                  offset: const Offset(0, 2),
+                  color: tabColor.withValues(alpha: 0.45),
+                  blurRadius: 5,
+                  offset: const Offset(0, 1.5),
                 ),
               ],
             ),
-            constraints: const BoxConstraints(minWidth: 18, minHeight: 18),
+            constraints: const BoxConstraints(minWidth: 16, minHeight: 16),
             child: Center(
               child: Text(
-                count > 99
+                item.badgeCount > 99
                     ? '99+'
-                    : count > 9
-                    ? '9+'
-                    : '$count',
+                    : item.badgeCount > 9
+                        ? '9+'
+                        : '${item.badgeCount}',
                 style: const TextStyle(
                   color: Colors.white,
                   fontSize: 9,
-                  fontWeight: FontWeight.bold,
+                  fontWeight: FontWeight.w800,
+                  height: 1.1,
                 ),
                 textAlign: TextAlign.center,
               ),
@@ -466,4 +650,16 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
       ],
     );
   }
+}
+
+class _NavBarItemConfig {
+  final Widget Function(bool isSelected) iconBuilder;
+  final String label;
+  final int badgeCount;
+
+  const _NavBarItemConfig({
+    required this.iconBuilder,
+    required this.label,
+    required this.badgeCount,
+  });
 }

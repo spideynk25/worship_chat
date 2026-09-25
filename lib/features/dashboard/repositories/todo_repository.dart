@@ -18,8 +18,7 @@ class TodoRepository {
     );
   }
 
-  String? get _userId => _auth.currentUser?.uid;
-
+  String? get currentUserId => _auth.currentUser?.uid;
   // Shared collection for all users
   CollectionReference get _todosCollection => 
       _firestore.collection('shared_tasks');

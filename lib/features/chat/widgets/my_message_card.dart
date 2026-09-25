@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:swipe_to/swipe_to.dart';
-import 'package:worship_chat/colors.dart';
+import 'package:worship_chat/common/enums/message_status_enum.dart';
 import 'display_messages.dart';
 
 class MyMessageCard extends StatelessWidget {
@@ -14,6 +14,8 @@ class MyMessageCard extends StatelessWidget {
   final String username;
   final String repliedMessageType;
   final bool isSeen;
+  final bool isDelivered;
+  final bool isSending;
 
   const MyMessageCard({
     super.key,
@@ -26,6 +28,8 @@ class MyMessageCard extends StatelessWidget {
     required this.username,
     required this.repliedMessageType,
     required this.isSeen,
+    this.isDelivered = false,
+    this.isSending = false,
   });
 
   void _copyMessage(BuildContext context) {
@@ -33,11 +37,11 @@ class MyMessageCard extends StatelessWidget {
     if (textToCopy.isNotEmpty) {
       Clipboard.setData(ClipboardData(text: textToCopy));
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: const Text('Message copied'),
-          duration: const Duration(seconds: 2),
+        const SnackBar(
+          content: Text('Message copied'),
+          duration: Duration(seconds: 2),
           behavior: SnackBarBehavior.floating,
-          margin: const EdgeInsets.only(bottom: 80, left: 16, right: 16),
+          margin: EdgeInsets.only(bottom: 80, left: 16, right: 16),
         ),
       );
     }
@@ -49,126 +53,90 @@ class MyMessageCard extends StatelessWidget {
     final screenWidth = MediaQuery.of(context).size.width;
     final isSmallScreen = screenWidth < 600;
 
+    final isMedia = messageType == 'image' ||
+        messageType == 'video' ||
+        messageType == 'gif';
+    final hasCaption = isMedia &&
+        message.isNotEmpty &&
+        message != fileMessageData;
+    final isPureMedia = isMedia && !hasCaption;
+
+    // Compact single-line detection for short messages (like "hi", "ok", "yes")
+    final isShortSingleLine = messageType == 'text' &&
+        !isReplying &&
+        !message.contains('\n') &&
+        !message.contains('http://') &&
+        !message.contains('https://') &&
+        message.length <= 25;
+
+    final deliveryStatus = MessageDeliveryStatus.fromFlags(
+      isSeen: isSeen,
+      isDelivered: isDelivered,
+      isSending: isSending,
+    );
+
+    // Asymmetrical tail pointing towards user's avatar on the right
+    const bubbleRadius = BorderRadius.only(
+      topLeft: Radius.circular(18),
+      topRight: Radius.circular(18),
+      bottomLeft: Radius.circular(18),
+      bottomRight: Radius.circular(4),
+    );
+
     return SwipeTo(
       iconSize: 0,
       swipeSensitivity: 8,
       onLeftSwipe: (details) => onLeftSwipe(),
       child: Align(
-        alignment: Alignment.centerRight,
+        alignment: Alignment.bottomRight,
         child: ConstrainedBox(
-          constraints: BoxConstraints(maxWidth: screenWidth * 0.8),
+          constraints: BoxConstraints(maxWidth: screenWidth * 0.75),
           child: GestureDetector(
             onLongPress: () => _copyMessage(context),
-            child: Card(
-              elevation: 3,
-              shadowColor: Colors.black.withOpacity(0.1),
-              shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(12),
-              ),
-              color: Colors.pinkAccent.withAlpha(130),
+            child: Container(
               margin: EdgeInsets.symmetric(
-                horizontal: isSmallScreen ? 5 : 15,
-                vertical: 6,
+                horizontal: isSmallScreen ? 3 : 6,
+                vertical: 2,
               ),
-              child: Container(
-                decoration: BoxDecoration(
-                  borderRadius: BorderRadius.circular(12),
-
-                  color: Colors.transparent,
-                ),
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 12,
-                  vertical: 8,
-                ),
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    if (isReplying)
-                      Container(
-                        padding: const EdgeInsets.all(8),
-                        margin: const EdgeInsets.only(bottom: 8),
-                        decoration: BoxDecoration(
-                          color: Theme.of(
-                            context,
-                          ).colorScheme.surface.withOpacity(0.3),
-                          borderRadius: BorderRadius.circular(8),
-                          border: Border(
-                            left: BorderSide(
-                              color: Theme.of(
-                                context,
-                              ).colorScheme.primary.withOpacity(0.5),
-                              width: 2,
-                            ),
-                          ),
-                        ),
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Text(
-                              username,
-                              style: TextStyle(
-                                fontWeight: FontWeight.w600,
-                                fontSize: isSmallScreen ? 14 : 16,
-                                color: Theme.of(
-                                  context,
-                                ).colorScheme.onSurface.withOpacity(0.9),
-                              ),
-                            ),
-                            const SizedBox(height: 4),
-                            DisplayMessages(
-                              message: repliedText,
-                              messageType: repliedMessageType,
-                              fileMessageData: repliedText,
-                              isPreviewable: false,
-                              useCachedMedia:
-                                  true, // Use cached media for replies
-                            ),
-                          ],
-                        ),
-                      ),
-                    ClipRRect(
-                      borderRadius: BorderRadius.circular(8),
-                      child: DisplayMessages(
-                        message: message,
-                        messageType: messageType,
-                        fileMessageData: fileMessageData,
-                        isPreviewable: true,
-                      ),
-                    ),
-                    const SizedBox(height: 6),
-                    Row(
-                      mainAxisSize: MainAxisSize.min,
-                      mainAxisAlignment: MainAxisAlignment.end,
-                      children: [
-                        Text(
-                          date,
-                          style: TextStyle(
-                            fontSize: isSmallScreen ? 12 : 13,
-                            color: Theme.of(
-                              context,
-                            ).colorScheme.onSurface.withOpacity(0.6),
-                          ),
-                        ),
-                        const SizedBox(width: 6),
-                        Icon(
-                          isSeen
-                              ? Icons.visibility
-                              : Icons.mark_email_read, // or Icons.mail
-                          size: isSmallScreen ? 18 : 20,
-                          color: isSeen
-                              ? Theme.of(context).colorScheme.primary
-                              : Theme.of(
-                                  context,
-                                ).colorScheme.onSurface.withOpacity(0.6),
-                          semanticLabel: isSeen
-                              ? 'Message seen'
-                              : 'Message delivered',
-                        ),
-                      ],
-                    ),
+              decoration: BoxDecoration(
+                borderRadius: bubbleRadius,
+                gradient: const LinearGradient(
+                  begin: Alignment.topLeft,
+                  end: Alignment.bottomRight,
+                  colors: [
+                    Color(0xFF6E1C4B), // Rich luxury wine
+                    Color(0xFF4E1135), // Deep velvety burgundy
                   ],
                 ),
+                border: Border.all(
+                  color: Colors.white.withValues(alpha: 0.12),
+                  width: 0.8,
+                ),
+                boxShadow: [
+                  BoxShadow(
+                    color: Colors.black.withValues(alpha: 0.25),
+                    blurRadius: 8,
+                    offset: const Offset(0, 3),
+                  ),
+                ],
+              ),
+              child: ClipRRect(
+                borderRadius: bubbleRadius,
+                child: isPureMedia
+                    ? _buildPureMedia(context, deliveryStatus, isReplying)
+                    : isShortSingleLine
+                        ? _buildShortSingleLine(
+                            context,
+                            deliveryStatus,
+                            isSmallScreen,
+                          )
+                        : _buildDynamicContent(
+                            context,
+                            deliveryStatus,
+                            isReplying,
+                            isMedia,
+                            isSmallScreen,
+                          ),
               ),
             ),
           ),
@@ -176,33 +144,214 @@ class MyMessageCard extends StatelessWidget {
       ),
     );
   }
-  // Add these methods to your MyMessageCard class
 
-  @override
-  bool operator ==(Object other) {
-    if (identical(this, other)) return true;
-    return other is MyMessageCard &&
-        other.message == message &&
-        other.date == date &&
-        other.messageType == messageType &&
-        other.fileMessageData == fileMessageData &&
-        other.repliedText == repliedText &&
-        other.username == username &&
-        other.repliedMessageType == repliedMessageType &&
-        other.isSeen == isSeen;
+  /// Compact single-line bubble: text & timestamp side-by-side with dynamic snug fit
+  Widget _buildShortSingleLine(
+    BuildContext context,
+    MessageDeliveryStatus deliveryStatus,
+    bool isSmallScreen,
+  ) {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(12, 7, 10, 7),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.center,
+        children: [
+          Text(
+            message,
+            style: TextStyle(
+              fontSize: isSmallScreen ? 14 : 15,
+              color: Colors.white,
+              height: 1.2,
+            ),
+          ),
+          const SizedBox(width: 8),
+          Row(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.center,
+            children: [
+              Text(
+                date,
+                style: TextStyle(
+                  fontSize: isSmallScreen ? 11 : 12,
+                  fontWeight: FontWeight.w400,
+                  color: Colors.white.withValues(alpha: 0.65),
+                  height: 1.2,
+                ),
+              ),
+              const SizedBox(width: 4),
+              MessageStatusIcon(
+                status: deliveryStatus,
+                size: isSmallScreen ? 14 : 15,
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
   }
 
-  @override
-  int get hashCode {
-    return Object.hash(
-      message,
-      date,
-      messageType,
-      fileMessageData,
-      repliedText,
-      username,
-      repliedMessageType,
-      isSeen,
+  /// Edge-to-edge media with a floating frosted pill for timestamp & delivery ticks
+  Widget _buildPureMedia(
+    BuildContext context,
+    MessageDeliveryStatus deliveryStatus,
+    bool isReplying,
+  ) {
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        if (isReplying)
+          Padding(
+            padding: const EdgeInsets.fromLTRB(8, 8, 8, 4),
+            child: _buildReplyHeader(context),
+          ),
+        Stack(
+          children: [
+            DisplayMessages(
+              message: message,
+              messageType: messageType,
+              fileMessageData: fileMessageData,
+              isPreviewable: true,
+            ),
+            // Floating frosted pill for timestamp & status
+            Positioned(
+              bottom: 8,
+              right: 8,
+              child: Container(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 7,
+                  vertical: 3,
+                ),
+                decoration: BoxDecoration(
+                  color: Colors.black.withValues(alpha: 0.55),
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(
+                    color: Colors.white.withValues(alpha: 0.15),
+                    width: 0.5,
+                  ),
+                ),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Text(
+                      date,
+                      style: TextStyle(
+                        fontSize: 11,
+                        fontWeight: FontWeight.w500,
+                        color: Colors.white.withValues(alpha: 0.9),
+                      ),
+                    ),
+                    const SizedBox(width: 4),
+                    MessageStatusIcon(status: deliveryStatus, size: 14),
+                  ],
+                ),
+              ),
+            ),
+          ],
+        ),
+      ],
+    );
+  }
+
+  /// Multi-line or captioned content that dynamically sizes to the message width
+  Widget _buildDynamicContent(
+    BuildContext context,
+    MessageDeliveryStatus deliveryStatus,
+    bool isReplying,
+    bool isMedia,
+    bool isSmallScreen,
+  ) {
+    return Padding(
+      padding: isMedia
+          ? EdgeInsets.zero
+          : const EdgeInsets.fromLTRB(12, 8, 12, 6),
+      child: IntrinsicWidth(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            if (isReplying)
+              Padding(
+                padding: isMedia
+                    ? const EdgeInsets.fromLTRB(8, 8, 8, 4)
+                    : const EdgeInsets.only(bottom: 6),
+                child: _buildReplyHeader(context),
+              ),
+            DisplayMessages(
+              message: message,
+              messageType: messageType,
+              fileMessageData: fileMessageData,
+              isPreviewable: true,
+            ),
+            // Dynamic bottom row without Spacer to hug message bounds
+            Padding(
+              padding: isMedia
+                  ? const EdgeInsets.fromLTRB(10, 4, 10, 6)
+                  : const EdgeInsets.only(top: 3),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                mainAxisAlignment: MainAxisAlignment.end,
+                crossAxisAlignment: CrossAxisAlignment.center,
+                children: [
+                  const SizedBox(width: 14), // Minimum separation
+                  Text(
+                    date,
+                    style: TextStyle(
+                      fontSize: isSmallScreen ? 11 : 12,
+                      fontWeight: FontWeight.w400,
+                      color: Colors.white.withValues(alpha: 0.65),
+                    ),
+                  ),
+                  const SizedBox(width: 4),
+                  MessageStatusIcon(
+                    status: deliveryStatus,
+                    size: isSmallScreen ? 14 : 15,
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// Sleek glassy reply preview quote
+  Widget _buildReplyHeader(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+      decoration: BoxDecoration(
+        color: Colors.black.withValues(alpha: 0.22),
+        borderRadius: BorderRadius.circular(10),
+        border: const Border(
+          left: BorderSide(
+            color: Color(0xFFFF6584), // Premium coral pink accent
+            width: 3.5,
+          ),
+        ),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            username,
+            style: const TextStyle(
+              fontWeight: FontWeight.w700,
+              fontSize: 13,
+              color: Color(0xFFFF85A1),
+            ),
+          ),
+          const SizedBox(height: 2),
+          DisplayMessages(
+            message: repliedText,
+            messageType: repliedMessageType,
+            fileMessageData: repliedText,
+            isPreviewable: false,
+            useCachedMedia: true,
+          ),
+        ],
+      ),
     );
   }
 }

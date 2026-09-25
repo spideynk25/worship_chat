@@ -11,6 +11,7 @@ import 'package:worship_chat/common/providers/message_reply_provider.dart';
 import 'package:worship_chat/common/utils/fcm_token_manager.dart';
 import 'package:worship_chat/common/utils/file_messages.dart';
 import 'package:worship_chat/common/utils/firebase_notification_service.dart';
+import 'package:worship_chat/common/utils/media_cache_service.dart';
 import 'package:worship_chat/common/utils/utils.dart';
 import 'package:worship_chat/models/chat_contact.dart';
 import 'package:worship_chat/models/group.dart' as model;
@@ -30,8 +31,6 @@ class GroupRepository {
   final FirebaseFirestore firestore;
   final FirebaseAuth auth;
   final ProviderRef ref;
-
-  final Map<String, Set<String>> _deletionQueue = {};
 
   GroupRepository({
     required this.firestore,
@@ -253,8 +252,25 @@ class GroupRepository {
     }
   }
 
-  Stream<List<GroupChatMessageModel>> getGroupChatStream(String groupId) {
-    return firestore
+  Stream<List<GroupChatMessageModel>> getGroupChatStream(
+      String groupId) async* {
+    // 1. Immediately emit cached messages from Hive (0ms)
+    try {
+      if (Hive.isBoxOpen('messages')) {
+        final box = Hive.box('messages');
+        final cachedData = box.get(groupId, defaultValue: []);
+        if (cachedData is List && cachedData.isNotEmpty) {
+          final cachedMessages = cachedData.cast<GroupChatMessageModel>();
+          log('⚡ [Instant Cache] Emitted ${cachedMessages.length} cached group messages for $groupId');
+          yield cachedMessages;
+        }
+      }
+    } catch (e) {
+      log('❌ Error emitting cached group messages: $e');
+    }
+
+    // 2. Stream updates from Firestore and keep Hive in sync
+    yield* firestore
         .collection('groups')
         .doc(groupId)
         .collection('chats')
@@ -267,6 +283,19 @@ class GroupRepository {
             log('❌ Error processing group messages: $e');
             return <GroupChatMessageModel>[];
           }
+        })
+        .distinct((prev, next) {
+          if (prev.length != next.length) return false;
+          for (int i = 0; i < prev.length; i++) {
+            if (prev[i].messageId != next[i].messageId ||
+                prev[i].isSeen != next[i].isSeen ||
+                prev[i].isDelivered != next[i].isDelivered ||
+                prev[i].isSending != next[i].isSending ||
+                prev[i].text != next[i].text) {
+              return false;
+            }
+          }
+          return true;
         });
   }
 
@@ -327,14 +356,10 @@ class GroupRepository {
 
     log('📊 Total unique messages: ${allMessages.length}');
 
-    // ✅ Save merged list to Hive immediately
+    // ✅ Save merged list to Hive immediately, then batch clean seen/old messages from Firestore
     if (box != null) {
-      _saveToHiveAsync(box, localKey, allMessages);
+      _saveToHiveAsync(box, localKey, allMessages, groupId, firestoreMessages);
     }
-
-    // ✅ REMOVED: _deleteSeenGroupMessagesAsync from stream processing
-    // Deletion now only happens in setChatMessageSeen after isSeen
-    // is confirmed written, preventing the disappearing message race condition
 
     return allMessages;
   }
@@ -343,6 +368,8 @@ class GroupRepository {
     Box box,
     String key,
     List<GroupChatMessageModel> messages,
+    String groupId,
+    List<GroupChatMessageModel> firestoreMessages,
   ) {
     Future.microtask(() async {
       try {
@@ -354,72 +381,42 @@ class GroupRepository {
     });
   }
 
-  // ✅ Only called from setChatMessageSeen, never from stream
-  void _deleteSeenGroupMessagesAsync(
-    String groupId,
-    List<GroupChatMessageModel> seenMessages,
-  ) {
-    _deletionQueue[groupId] ??= {};
 
-    final messagesToDelete = seenMessages
-        .where((m) => !_deletionQueue[groupId]!.contains(m.messageId))
-        .toList();
 
-    if (messagesToDelete.isEmpty) return;
-
-    for (var msg in messagesToDelete) {
-      _deletionQueue[groupId]!.add(msg.messageId);
-    }
-
-    Future.microtask(() async {
-      try {
-        final messagesRef = firestore
-            .collection('groups')
-            .doc(groupId)
-            .collection('chats');
-
-        const batchSize = 100;
-        int totalDeleted = 0;
-
-        for (int i = 0; i < messagesToDelete.length; i += batchSize) {
-          final batch = firestore.batch();
-          final end = (i + batchSize < messagesToDelete.length)
-              ? i + batchSize
-              : messagesToDelete.length;
-
-          for (int j = i; j < end; j++) {
-            batch.delete(messagesRef.doc(messagesToDelete[j].messageId));
-          }
-
-          await batch.commit();
-          totalDeleted += (end - i);
-
-          if (i + batchSize < messagesToDelete.length) {
-            await Future.delayed(const Duration(milliseconds: 100));
-          }
-        }
-
-        log('✅ Deleted $totalDeleted seen group messages from Firestore');
-
-        Future.delayed(const Duration(seconds: 5), () {
-          for (var msg in messagesToDelete) {
-            _deletionQueue[groupId]?.remove(msg.messageId);
-          }
-        });
-      } catch (e) {
-        log('❌ Error deleting from Firestore: $e');
-        for (var msg in messagesToDelete) {
-          _deletionQueue[groupId]?.remove(msg.messageId);
+  List<GroupModel> getCachedGroups(String category) {
+    final currentUser = auth.currentUser;
+    if (currentUser == null) return [];
+    try {
+      if (Hive.isBoxOpen('groups_cache')) {
+        final box = Hive.box('groups_cache');
+        final cachedRaw =
+            box.get('${category}_${currentUser.uid}', defaultValue: []);
+        if (cachedRaw is List && cachedRaw.isNotEmpty) {
+          return cachedRaw
+              .map((item) =>
+                  GroupModel.fromMap(Map<String, dynamic>.from(item as Map)))
+              .toList();
         }
       }
-    });
+    } catch (e) {
+      log('Error reading cached groups: $e');
+    }
+    return [];
   }
 
-  Stream<List<GroupModel>> getQueenPoojaStream() {
+  Stream<List<GroupModel>> getQueenPoojaStream() async* {
     final currentUser = auth.currentUser;
-    if (currentUser == null) return const Stream.empty();
+    if (currentUser == null) return;
 
-    return firestore
+    // 1. Immediately emit cached Pooja groups from Hive (0ms)
+    final cached = getCachedGroups('groups_pooja');
+    if (cached.isNotEmpty) {
+      log('⚡ [Instant Cache] Emitted ${cached.length} Queen Pooja groups from Hive');
+      yield cached;
+    }
+
+    // 2. Stream from Firestore and update Hive
+    yield* firestore
         .collection('groups')
         .where('queendom', isEqualTo: 'Queen Pooja')
         .orderBy('order')
@@ -436,15 +433,35 @@ class GroupRepository {
               log("Error parsing group: $e");
             }
           }
+
+          try {
+            if (Hive.isBoxOpen('groups_cache')) {
+              Hive.box('groups_cache').put(
+                'groups_pooja_${currentUser.uid}',
+                groups.map((g) => g.toMap()).toList(),
+              );
+            }
+          } catch (e) {
+            log('Error saving Pooja groups to Hive: $e');
+          }
+
           return groups;
         });
   }
 
-  Stream<List<GroupModel>> getQueenRashmikaStream() {
+  Stream<List<GroupModel>> getQueenRashmikaStream() async* {
     final currentUser = auth.currentUser;
-    if (currentUser == null) return const Stream.empty();
+    if (currentUser == null) return;
 
-    return firestore
+    // 1. Immediately emit cached Rashmika groups from Hive (0ms)
+    final cached = getCachedGroups('groups_rashmika');
+    if (cached.isNotEmpty) {
+      log('⚡ [Instant Cache] Emitted ${cached.length} Queen Rashmika groups from Hive');
+      yield cached;
+    }
+
+    // 2. Stream from Firestore and update Hive
+    yield* firestore
         .collection('groups')
         .where('queendom', isEqualTo: 'Queen Rashmika')
         .orderBy('order')
@@ -461,15 +478,35 @@ class GroupRepository {
               log("Error parsing group: $e");
             }
           }
+
+          try {
+            if (Hive.isBoxOpen('groups_cache')) {
+              Hive.box('groups_cache').put(
+                'groups_rashmika_${currentUser.uid}',
+                groups.map((g) => g.toMap()).toList(),
+              );
+            }
+          } catch (e) {
+            log('Error saving Rashmika groups to Hive: $e');
+          }
+
           return groups;
         });
   }
 
-  Stream<List<GroupModel>> getChatGroups() {
+  Stream<List<GroupModel>> getChatGroups() async* {
     final currentUser = auth.currentUser;
-    if (currentUser == null) return const Stream.empty();
+    if (currentUser == null) return;
 
-    return firestore
+    // 1. Immediately emit cached chat groups from Hive (0ms)
+    final cached = getCachedGroups('groups_none');
+    if (cached.isNotEmpty) {
+      log('⚡ [Instant Cache] Emitted ${cached.length} chat groups from Hive');
+      yield cached;
+    }
+
+    // 2. Stream from Firestore and update Hive
+    yield* firestore
         .collection('groups')
         .where('queendom', isEqualTo: 'None')
         .snapshots()
@@ -485,6 +522,18 @@ class GroupRepository {
               log("Error parsing group: $e");
             }
           }
+
+          try {
+            if (Hive.isBoxOpen('groups_cache')) {
+              Hive.box('groups_cache').put(
+                'groups_none_${currentUser.uid}',
+                groups.map((g) => g.toMap()).toList(),
+              );
+            }
+          } catch (e) {
+            log('Error saving chat groups to Hive: $e');
+          }
+
           return groups;
         });
   }
@@ -514,15 +563,12 @@ class GroupRepository {
             .doc(groupId)
             .collection('chats')
             .doc(messageId)
-            .update({'isSeen': true});
+            .update({'isSeen': true, 'isDelivered': true});
 
         log('✅ Marked message $messageId as seen in Firestore');
 
         // ✅ Update Hive cache immediately so UI reflects change
         await _updateSeenInHive(groupId, messageId);
-
-        // ✅ Schedule deletion only after seen is confirmed
-        _scheduleSeenMessageDeletion(currentUserId, groupId, messageId);
       } else {
         log('⚠️ Message $messageId not in Firestore — updating Hive only');
         await _updateSeenInHive(groupId, messageId);
@@ -539,6 +585,80 @@ class GroupRepository {
     }
   }
 
+  /// Mark all unread group messages as seen and clear the group badge for current user
+  Future<void> markGroupAsSeen(String groupId) async {
+    final currentUserId = auth.currentUser?.uid;
+    if (currentUserId == null || groupId.isEmpty) return;
+
+    // 1. Immediately clear unseen badge on the group document for current user
+    try {
+      await firestore.collection('groups').doc(groupId).update({
+        'unseenMessages.$currentUserId': false,
+      });
+      log('✅ Cleared unseen badge on group $groupId for user $currentUserId');
+    } catch (e) {
+      log('Note: could not update group unseenMessages: $e');
+    }
+
+    // 2. Find any unseen messages not sent by current user and mark them as seen
+    try {
+      final unreadDocs = await firestore
+          .collection('groups')
+          .doc(groupId)
+          .collection('chats')
+          .where('isSeen', isEqualTo: false)
+          .get();
+
+      final toUpdate = unreadDocs.docs.where((doc) {
+        final data = doc.data();
+        return data['senderId'] != currentUserId;
+      }).toList();
+
+      if (toUpdate.isNotEmpty) {
+        log('👁️ Found ${toUpdate.length} unread group messages to mark seen');
+        final batch = firestore.batch();
+        for (var doc in toUpdate) {
+          batch.update(doc.reference, {'isSeen': true, 'isDelivered': true});
+        }
+        await batch.commit();
+        log('✅ Batch marked ${toUpdate.length} group messages as seen in Firestore');
+      }
+    } catch (e) {
+      log('❌ Error batch marking group messages seen in Firestore: $e');
+    }
+
+    // 3. Update Hive cache
+    await _markGroupSeenInHive(groupId, currentUserId);
+  }
+
+  Future<void> _markGroupSeenInHive(String groupId, String currentUserId) async {
+    try {
+      final box = Hive.isBoxOpen('messages')
+          ? Hive.box('messages')
+          : await Hive.openBox('messages');
+
+      final cachedData = box.get(groupId, defaultValue: []);
+      if (cachedData is List) {
+        final messages = cachedData.cast<GroupChatMessageModel>();
+        bool changed = false;
+        final updated = messages.map((m) {
+          if (m.senderId != currentUserId && (!m.isSeen || !m.isDelivered)) {
+            changed = true;
+            return m.copyWith(isSeen: true, isDelivered: true);
+          }
+          return m;
+        }).toList();
+
+        if (changed) {
+          await box.put(groupId, updated);
+          log('✅ Hive cache updated: all messages marked seen for group $groupId');
+        }
+      }
+    } catch (e) {
+      log('❌ Error updating Hive cache for seen group: $e');
+    }
+  }
+
   // ✅ Awaitable Hive update (was fire-and-forget before)
   Future<void> _updateSeenInHive(String groupId, String messageId) async {
     try {
@@ -550,7 +670,7 @@ class GroupRepository {
       if (cachedData is List) {
         final messages = cachedData.cast<GroupChatMessageModel>();
         final updated = messages.map((m) {
-          return m.messageId == messageId ? m.copyWith(isSeen: true) : m;
+          return m.messageId == messageId ? m.copyWith(isSeen: true, isDelivered: true) : m;
         }).toList();
         await box.put(groupId, updated);
         log('💾 Updated message $messageId as seen in Hive');
@@ -558,38 +678,6 @@ class GroupRepository {
     } catch (e) {
       log('❌ Error updating Hive: $e');
     }
-  }
-
-  // ✅ Delete a single message from Firestore after seen is confirmed
-  void _scheduleSeenMessageDeletion(
-    String currentUserId,
-    String groupId,
-    String messageId,
-  ) {
-    _deletionQueue[groupId] ??= {};
-
-    if (_deletionQueue[groupId]!.contains(messageId)) return;
-    _deletionQueue[groupId]!.add(messageId);
-
-    Future.delayed(const Duration(seconds: 2), () async {
-      try {
-        await firestore
-            .collection('groups')
-            .doc(groupId)
-            .collection('chats')
-            .doc(messageId)
-            .delete();
-
-        log('🗑️ Deleted seen group message $messageId from Firestore');
-
-        Future.delayed(const Duration(seconds: 5), () {
-          _deletionQueue[groupId]?.remove(messageId);
-        });
-      } catch (e) {
-        log('❌ Error deleting seen group message: $e');
-        _deletionQueue[groupId]?.remove(messageId);
-      }
-    });
   }
 
   void _saveMessageToMessageSubcollection({
@@ -665,15 +753,40 @@ class GroupRepository {
   }) {
     Future.microtask(() async {
       try {
-        final validTokens = fcmToken
-            .where((token) => token.isNotEmpty)
-            .toList();
+        log('📢 _sendGroupNotificationAsync called with ${fcmToken.length} candidate tokens for group "$groupName" ($groupId)');
         final currentUserToken = await FirebaseMessaging.instance.getToken();
-        final receiverTokens = validTokens
-            .where((token) => token != currentUserToken)
+
+        List<String> validTokens = fcmToken
+            .where((token) => token.isNotEmpty && token != currentUserToken)
+            .toSet()
             .toList();
 
-        if (receiverTokens.isEmpty) return;
+        // If candidate tokens empty, attempt emergency fallback from group document in Firestore
+        if (validTokens.isEmpty) {
+          log('⚠️ Candidate tokens empty/filtered, checking group document in Firestore as emergency fallback...');
+          try {
+            final groupDoc =
+                await firestore.collection('groups').doc(groupId).get();
+            if (groupDoc.exists && groupDoc.data() != null) {
+              final storedTokens =
+                  List<String>.from(groupDoc.data()!['fcmTokens'] ?? []);
+              validTokens = storedTokens
+                  .where((t) => t.isNotEmpty && t != currentUserToken)
+                  .toSet()
+                  .toList();
+              log('🔄 Fallback found ${validTokens.length} stored tokens from group doc');
+            }
+          } catch (e) {
+            log('❌ Fallback failed: $e');
+          }
+        }
+
+        if (validTokens.isEmpty) {
+          log('⚠️ No recipient tokens found for group $groupId. Skipping notification.');
+          return;
+        }
+
+        log('🚀 Sending group notification to ${validTokens.length} recipients for group: "$groupName"');
 
         String body;
         if (messageReply != null) {
@@ -713,17 +826,18 @@ class GroupRepository {
         }
 
         await sendMultipleNotification(
-          receiverTokens,
+          validTokens,
           groupName,
           "$name: $body",
           data: {
             'type': 'group',
             'groupId': groupId,
             'groupName': groupName,
+            'tag': groupId,
           },
         );
       } catch (e) {
-        log("❌ Error sending notifications: $e");
+        log("❌ Error in _sendGroupNotificationAsync: $e");
       }
     });
   }
@@ -780,6 +894,11 @@ class GroupRepository {
           .cast<String>()
           .toList();
 
+      final currentStoredTokens =
+          List<String>.from(groupData['fcmTokens'] ?? []);
+      final updatedFcmTokens =
+          freshFcmTokens.isNotEmpty ? freshFcmTokens : currentStoredTokens;
+
       Map<String, bool> unseenMessages = {};
       for (var uid in membersUid) {
         unseenMessages[uid] = (uid != currentUserId);
@@ -790,7 +909,7 @@ class GroupRepository {
         'lastMessage': lastMessage,
         'timeSent': DateTime.now().millisecondsSinceEpoch,
         'unseenMessages': unseenMessages,
-        'fcmTokens': freshFcmTokens,
+        'fcmTokens': updatedFcmTokens,
       });
     } catch (e) {
       log('❌ Error updating group: $e');
@@ -812,21 +931,66 @@ class GroupRepository {
   }) async {
     try {
       String? fileData;
+      var timeSent = DateTime.now();
+      var messageId = const Uuid().v1();
+
+      final currentUserId = auth.currentUser?.uid ?? senderUser.uid ?? '';
+      if (currentUserId.isEmpty) {
+        log('❌ Error: currentUserId is empty');
+        return;
+      }
+      final senderName = senderUser.name ?? senderUser.userName ?? 'User';
+      final senderUsername = senderUser.userName ?? senderUser.name ?? 'User';
+
+      final optimisticMessage = GroupChatMessageModel(
+        senderId: currentUserId,
+        receiverIds: receiverIds,
+        groupId: groupId,
+        text: text,
+        messageType: messageType,
+        timeSent: timeSent,
+        messageId: messageId,
+        isSeen: false,
+        isDelivered: false,
+        isSending: true,
+        fileMessageData: file is File ? file.path : (file is String ? file : null),
+        repliedMessage: messageReply == null
+            ? ''
+            : messageReply.messageType == 'text'
+            ? messageReply.message
+            : messageReply.fileMessageData,
+        repliedTo: messageReply == null
+            ? ''
+            : messageReply.isMe
+            ? senderName
+            : '',
+        repliedMessageType: messageReply == null ? 'text' : messageReply.messageType,
+      );
+      _saveOptimisticGroupMessageToHive(groupId, optimisticMessage);
 
       if (messageType == "image" && file != null) {
         fileData = await uploadImageToCloudinary(file, type);
+        if (file is File && fileData != null && fileData.isNotEmpty) {
+          MediaCacheService().registerLocalMapping(fileData, file.path);
+        }
       } else if (messageType == "video" && file != null) {
         fileData = await uploadVideoToCloudinary(file, type);
+        if (file is File && fileData != null && fileData.isNotEmpty) {
+          MediaCacheService().registerLocalMapping(fileData, file.path);
+        }
       } else if (messageType == "url" && file != null) {
         fileData = file;
       }
 
-      var timeSent = DateTime.now();
-      var messageId = const Uuid().v1();
-
       List<String> freshFcmTokens = await FCMTokenManager.getGroupMemberTokens(
         groupId,
       );
+
+      // Fall back to passed fcmToken from widget if fresh lookup returned empty
+      if (freshFcmTokens.isEmpty && fcmToken.isNotEmpty) {
+        log('⚠️ freshFcmTokens was empty in sendTextMessage, using passed fcmToken (${fcmToken.length} tokens)');
+        freshFcmTokens = List<String>.from(fcmToken);
+      }
 
       Future.microtask(() {
         _saveDataToContactsSubCollection(
@@ -845,11 +1009,11 @@ class GroupRepository {
         timeSent: timeSent,
         messageType: messageType,
         messageId: messageId,
-        name: senderUser.name!,
-        username: senderUser.userName!,
+        name: senderName,
+        username: senderUsername,
         fileMessageData: fileData,
         receiverUserName: "",
-        senderUsername: senderUser.name!,
+        senderUsername: senderName,
         messageReplyType: messageReply == null
             ? "text"
             : messageReply.messageType,
@@ -860,8 +1024,50 @@ class GroupRepository {
       );
     } catch (e) {
       log("❌ Error sending message: $e");
+      _removeOptimisticGroupMessageFromHive(groupId);
       showSnackBar(context: context, content: e.toString());
     }
+  }
+
+  void _saveOptimisticGroupMessageToHive(
+    String groupId,
+    GroupChatMessageModel message,
+  ) async {
+    try {
+      final box = Hive.isBoxOpen('messages')
+          ? Hive.box('messages')
+          : await Hive.openBox('messages');
+
+      final cachedData = box.get(groupId, defaultValue: []);
+      List<GroupChatMessageModel> messages = [];
+      if (cachedData is List) {
+        messages = cachedData.cast<GroupChatMessageModel>().toList();
+      }
+      final existingIndex = messages.indexWhere((m) => m.messageId == message.messageId);
+      if (existingIndex >= 0) {
+        messages[existingIndex] = message;
+      } else {
+        messages.add(message);
+      }
+      await box.put(groupId, messages);
+      log('🕒 Saved optimistic sending group message to Hive: ${message.messageId}');
+    } catch (e) {
+      log('❌ Error saving optimistic group message to Hive: $e');
+    }
+  }
+
+  void _removeOptimisticGroupMessageFromHive(String groupId) async {
+    try {
+      if (Hive.isBoxOpen('messages')) {
+        final box = Hive.box('messages');
+        final cachedData = box.get(groupId, defaultValue: []);
+        if (cachedData is List) {
+          final messages = cachedData.cast<GroupChatMessageModel>().toList();
+          messages.removeWhere((m) => m.isSending);
+          await box.put(groupId, messages);
+        }
+      }
+    } catch (_) {}
   }
 
   Future<List<GroupChatMessageModel>> getSharedGroupMedia(

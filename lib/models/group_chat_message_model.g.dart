@@ -17,25 +17,26 @@ class GroupChatMessageModelAdapter extends TypeAdapter<GroupChatMessageModel> {
       for (int i = 0; i < numOfFields; i++) reader.readByte(): reader.read(),
     };
     return GroupChatMessageModel(
-      senderId: fields[0] as String,
-      receiverIds: (fields[1] as List).cast<String>(),
-      text: fields[3] as String,
-      messageType: fields[4] as String,
-      timeSent: fields[5] as DateTime,
-      messageId: fields[6] as String,
-      isSeen: fields[7] as bool,
+      senderId: fields[0] as String? ?? '',
+      receiverIds: (fields[1] as List?)?.cast<String>() ?? <String>[],
+      text: fields[3] as String? ?? '',
+      messageType: fields[4] as String? ?? 'text',
+      timeSent: fields[5] as DateTime? ?? DateTime.now(),
+      messageId: fields[6] as String? ?? '',
+      isSeen: fields[7] as bool? ?? false,
       fileMessageData: fields[8] as String?,
-      repliedMessage: fields[9] as String,
-      repliedTo: fields[10] as String,
-      repliedMessageType: fields[11] as String,
-      groupId: fields[2] as String,
+      repliedMessage: fields[9] as String? ?? '',
+      repliedTo: fields[10] as String? ?? '',
+      repliedMessageType: fields[11] as String? ?? 'text',
+      groupId: fields[2] as String? ?? '',
+      isDelivered: fields[12] as bool? ?? false,
     );
   }
 
   @override
   void write(BinaryWriter writer, GroupChatMessageModel obj) {
     writer
-      ..writeByte(12)
+      ..writeByte(13)
       ..writeByte(0)
       ..write(obj.senderId)
       ..writeByte(1)
@@ -59,7 +60,9 @@ class GroupChatMessageModelAdapter extends TypeAdapter<GroupChatMessageModel> {
       ..writeByte(10)
       ..write(obj.repliedTo)
       ..writeByte(11)
-      ..write(obj.repliedMessageType);
+      ..write(obj.repliedMessageType)
+      ..writeByte(12)
+      ..write(obj.isDelivered);
   }
 
   @override

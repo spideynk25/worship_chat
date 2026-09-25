@@ -7,10 +7,8 @@ import 'package:worship_chat/features/auth/screens/user_information_screen.dart'
 import 'package:worship_chat/features/chat/screens/one_to_one_chat_screen.dart';
 import 'package:worship_chat/features/chat/widgets/all_user_screen.dart';
 import 'package:worship_chat/features/group/screens/create_group_screen.dart';
-import 'package:worship_chat/features/group/screens/edit_group_screen.dart';
 import 'package:worship_chat/features/status/screens/confirm_status_screen.dart';
 import 'package:worship_chat/features/status/screens/view_status_screen.dart';
-import 'package:worship_chat/models/group.dart';
 import 'package:worship_chat/features/dashboard/widgets/todo_page.dart';
 import 'package:worship_chat/features/dashboard/screens/event_calender_page.dart';
 
@@ -69,8 +67,15 @@ Route<dynamic> generateRoute(RouteSettings settings) {
       return MaterialPageRoute(builder: (context) => const TodoPage());
 
     case EventsCalendarPage.routeName:
+      final args = settings.arguments;
+      DateTime? initialDate;
+      if (args is DateTime) {
+        initialDate = args;
+      } else if (args is Map<String, dynamic> && args['initialDate'] is DateTime) {
+        initialDate = args['initialDate'] as DateTime;
+      }
       return MaterialPageRoute(
-        builder: (context) => const EventsCalendarPage(),
+        builder: (context) => EventsCalendarPage(initialSelectedDay: initialDate),
       );
 
     default:

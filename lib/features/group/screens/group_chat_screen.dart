@@ -8,8 +8,11 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:hive_flutter/hive_flutter.dart';
 import 'package:image_cropper/image_cropper.dart';
 import 'package:worship_chat/colors.dart';
+import 'package:worship_chat/common/utils/active_chat_notifier.dart';
 import 'package:worship_chat/common/utils/file_messages.dart';
+import 'package:worship_chat/common/utils/firebase_notification_service.dart';
 import 'package:worship_chat/common/utils/utils.dart';
+import 'package:worship_chat/common/widgets/chat_status_indicator.dart';
 import 'package:worship_chat/features/chat/screens/one_to_one_chat_screen.dart';
 import 'package:worship_chat/features/group/controller/group_controller.dart';
 import 'package:worship_chat/features/group/screens/edit_group_screen.dart';
@@ -49,17 +52,67 @@ class GroupChatScreen extends ConsumerStatefulWidget {
   ConsumerState<GroupChatScreen> createState() => _GroupChatScreenState();
 }
 
-class _GroupChatScreenState extends ConsumerState<GroupChatScreen> {
+class _GroupChatScreenState extends ConsumerState<GroupChatScreen>
+    with WidgetsBindingObserver {
   late List<String> receiverIds;
+
+  Color get _accentColor {
+    if (widget.color != null) {
+      final hsl = HSLColor.fromColor(widget.color!);
+      if (hsl.lightness < 0.25) {
+        return hsl.withLightness(0.55).withSaturation(0.7).toColor();
+      }
+      return widget.color!;
+    }
+    if (widget.queendom == 'Queen Pooja') {
+      return const Color(0xFFFFD700);
+    } else if (widget.queendom == 'Queen Rashmika') {
+      return const Color(0xFFFF4081);
+    }
+    return tabColor;
+  }
 
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
+    ActiveChatNotifier.instance.enter(widget.groupId, chatName: widget.name);
+    FirebaseNotificationService.cancelNotificationsForChat(
+      widget.groupId,
+      chatName: widget.name,
+    );
     displayOrHideImage();
     String? currentUserUid = FirebaseAuth.instance.currentUser?.uid;
     receiverIds = widget.membersUid
         .where((uid) => uid != currentUserUid)
         .toList();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) {
+        ref.read(groupControllerProvider).markGroupAsSeen(widget.groupId);
+      }
+    });
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    super.didChangeAppLifecycleState(state);
+    if (state == AppLifecycleState.resumed) {
+      ActiveChatNotifier.instance.enter(widget.groupId, chatName: widget.name);
+      FirebaseNotificationService.cancelNotificationsForChat(
+        widget.groupId,
+        chatName: widget.name,
+      );
+      if (mounted) {
+        ref.read(groupControllerProvider).markGroupAsSeen(widget.groupId);
+      }
+    }
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    ActiveChatNotifier.instance.leave();
+    super.dispose();
   }
 
   void _openGroupInfo() {
@@ -249,167 +302,139 @@ class _GroupChatScreenState extends ConsumerState<GroupChatScreen> {
     ref.read(displayImageProvider.notifier).state = !currentDisplayImage;
   }
 
-  String _formatTypingUsers(Map<String, String> typingUsers) {
-    if (typingUsers.isEmpty) return '';
-
-    final names = typingUsers.values.toList();
-    if (names.length == 1) {
-      return '${names[0]} is typing';
-    } else if (names.length == 2) {
-      return '${names[0]} and ${names[1]} are typing';
-    } else {
-      return '${names[0]} and ${names.length - 1} others are typing';
-    }
-  }
-
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
         titleSpacing: 0,
-        toolbarHeight: 100,
+        toolbarHeight: 105,
         backgroundColor: widget.color != null
             ? widget.color!.withAlpha(90)
             : appBarColor,
         elevation: 0,
         leadingWidth: 0,
         automaticallyImplyLeading: false,
-        title: GestureDetector(
-          onTap: _openGroupInfo,
-          behavior: HitTestBehavior.opaque,
-          child: Padding(
-            padding: const EdgeInsets.symmetric(vertical: 0, horizontal: 0),
-            child: Row(
-              spacing: 0,
-              mainAxisSize: MainAxisSize.min,
-              mainAxisAlignment: MainAxisAlignment.start,
-              children: [
-                IconButton(
-                  alignment: Alignment.centerLeft,
-                  onPressed: () => Navigator.pop(context),
-                  icon: const Icon(CupertinoIcons.back),
-                  padding: EdgeInsets.zero,
-                ),
-                Container(
-                  decoration: BoxDecoration(
-                    borderRadius: BorderRadius.circular(10),
-                    border: Border.all(
-                      color: widget.color != null
-                          ? widget.color!
-                          : Colors.white.withOpacity(0.3),
-                      width: 2,
-                    ),
-                  ),
-                  child: widget.groupPic != null
-                      ? ClipRRect(
-                          borderRadius: BorderRadius.circular(8),
-                          child: Image.network(
-                            widget.groupPic!,
-                            width: 70,
-                            height: 70,
-                            fit: BoxFit.cover,
-                          ),
-                        )
-                      : CircleAvatar(
-                          backgroundColor: Theme.of(
-                            context,
-                          ).colorScheme.primaryContainer,
-                          child: Icon(
-                            Icons.group,
-                            color: Theme.of(
-                              context,
-                            ).colorScheme.onPrimaryContainer,
-                          ),
-                        ),
-                ),
-                const SizedBox(width: 12),
-                Flexible(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    mainAxisSize: MainAxisSize.min,
+        title: Padding(
+          padding: const EdgeInsets.only(left: 4, right: 4),
+          child: Row(
+            children: [
+              IconButton(
+                alignment: Alignment.centerLeft,
+                onPressed: () => Navigator.pop(context),
+                icon: const Icon(CupertinoIcons.back),
+                padding: EdgeInsets.zero,
+                constraints: const BoxConstraints(minWidth: 32, minHeight: 36),
+              ),
+              Expanded(
+                child: GestureDetector(
+                  onTap: _openGroupInfo,
+                  behavior: HitTestBehavior.opaque,
+                  child: Row(
                     children: [
-                      SizedBox(
-                        width: 900,
-                        child: Text(
-                          widget.name,
-                          style: const TextStyle(
-                            fontSize: 16,
-                            fontWeight: FontWeight.w600,
-                            letterSpacing: 0.1,
+                      Container(
+                        decoration: BoxDecoration(
+                          borderRadius: BorderRadius.circular(10),
+                          border: Border.all(
+                            color: widget.color != null
+                                ? widget.color!
+                                : Colors.white.withOpacity(0.3),
+                            width: 2,
                           ),
-                          overflow: TextOverflow.visible,
-                          softWrap: true,
                         ),
-                      ),
-                      // Typing indicator
-                      StreamBuilder<Map<String, String>>(
-                        stream: ref
-                            .watch(groupControllerProvider)
-                            .getGroupTypingStatus(widget.groupId),
-                        builder: (context, typingSnapshot) {
-                          final typingUsers = typingSnapshot.data ?? {};
-
-                          if (typingUsers.isNotEmpty) {
-                            return Row(
-                              children: [
-                                Flexible(
-                                  child: Text(
-                                    _formatTypingUsers(typingUsers),
-                                    style: TextStyle(
-                                      fontWeight: FontWeight.normal,
-                                      fontSize: 12,
-                                      color: Colors.green.shade300,
+                        child:
+                            widget.groupPic != null &&
+                                widget.groupPic!.isNotEmpty
+                            ? ClipRRect(
+                                borderRadius: BorderRadius.circular(8),
+                                child: Image.network(
+                                  widget.groupPic!,
+                                  width: 70,
+                                  height: 70,
+                                  fit: BoxFit.cover,
+                                  errorBuilder: (_, __, ___) => CircleAvatar(
+                                    radius: 35,
+                                    backgroundColor: Theme.of(
+                                      context,
+                                    ).colorScheme.primaryContainer,
+                                    child: Icon(
+                                      Icons.group,
+                                      color: Theme.of(
+                                        context,
+                                      ).colorScheme.onPrimaryContainer,
                                     ),
-                                    overflow: TextOverflow.ellipsis,
                                   ),
                                 ),
-                                const SizedBox(width: 4),
-                                SizedBox(
-                                  width: 20,
-                                  height: 12,
-                                  child: Row(
-                                    mainAxisAlignment: MainAxisAlignment.center,
-                                    children: [
-                                      _TypingDot(delay: 0),
-                                      const SizedBox(width: 2),
-                                      _TypingDot(delay: 200),
-                                      const SizedBox(width: 2),
-                                      _TypingDot(delay: 400),
-                                    ],
-                                  ),
+                              )
+                            : CircleAvatar(
+                                radius: 35,
+                                backgroundColor: Theme.of(
+                                  context,
+                                ).colorScheme.primaryContainer,
+                                child: Icon(
+                                  Icons.group,
+                                  color: Theme.of(
+                                    context,
+                                  ).colorScheme.onPrimaryContainer,
                                 ),
-                              ],
-                            );
-                          }
-
-                          // Show member count when no one is typing
-                          return Text(
-                            '${widget.membersUid.length} members',
-                            style: const TextStyle(
-                              fontWeight: FontWeight.normal,
-                              fontSize: 12,
+                              ),
+                      ),
+                      const SizedBox(width: 10),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Text(
+                              widget.name,
+                              style: const TextStyle(
+                                fontSize: 15.5,
+                                fontWeight: FontWeight.w600,
+                                letterSpacing: 0.1,
+                                height: 1.15,
+                              ),
+                              softWrap: true,
+                              maxLines: null,
+                              overflow: TextOverflow.visible,
                             ),
-                          );
-                        },
+                            const SizedBox(height: 2),
+                            // Typing & members indicator
+                            StreamBuilder<Map<String, String>>(
+                              stream: ref
+                                  .watch(groupControllerProvider)
+                                  .getGroupTypingStatus(widget.groupId),
+                              builder: (context, typingSnapshot) {
+                                final typingUsers = typingSnapshot.data ?? {};
+                                return GroupAppBarStatusSubtitle(
+                                  typingUsers: typingUsers,
+                                  memberCount: widget.membersUid.length,
+                                  accentColor: _accentColor,
+                                );
+                              },
+                            ),
+                          ],
+                        ),
                       ),
                     ],
                   ),
                 ),
-              ],
-            ),
+              ),
+            ],
           ),
         ),
         centerTitle: false,
         actions: [
           IconButton(
             icon: const Icon(Icons.photo_library_outlined),
+            padding: const EdgeInsets.symmetric(horizontal: 4),
+            constraints: const BoxConstraints(minWidth: 36, minHeight: 40),
             onPressed: () => Navigator.push(
               context,
               MaterialPageRoute(
                 builder: (_) => GroupGalleryScreen(
                   groupId: widget.groupId,
                   groupName: widget.name,
-                  accentColor: widget.color!,
+                  accentColor: _accentColor,
                 ),
               ),
             ),
@@ -423,6 +448,8 @@ class _GroupChatScreenState extends ConsumerState<GroupChatScreen> {
             builder: (context, snapshot) {
               return PopupMenuButton<String>(
                 icon: const Icon(Icons.more_vert),
+                padding: const EdgeInsets.only(left: 2, right: 8),
+                constraints: const BoxConstraints(minWidth: 36, minHeight: 40),
                 tooltip: 'More options',
                 shape: RoundedRectangleBorder(
                   borderRadius: BorderRadius.circular(12),
@@ -540,6 +567,27 @@ class _GroupChatScreenState extends ConsumerState<GroupChatScreen> {
           Column(
             children: [
               Expanded(child: GroupChatListWidget(groupId: widget.groupId)),
+              // Floating in-chat typing bubble for groups
+              StreamBuilder<Map<String, String>>(
+                stream: ref
+                    .watch(groupControllerProvider)
+                    .getGroupTypingStatus(widget.groupId),
+                builder: (context, snapshot) {
+                  final typingUsers = snapshot.data ?? {};
+                  if (typingUsers.isEmpty) return const SizedBox.shrink();
+                  final names = typingUsers.values.toList();
+                  final text = names.length == 1
+                      ? names[0]
+                      : names.length == 2
+                      ? '${names[0]} & ${names[1]}'
+                      : '${names[0]} & ${names.length - 1} others';
+                  return InChatTypingBubble(
+                    isTyping: true,
+                    userName: text,
+                    accentColor: _accentColor,
+                  );
+                },
+              ),
               GroupBottomChatFieldWidget(
                 groupId: widget.groupId,
                 fcmToken: widget.fcmToken,
@@ -553,67 +601,6 @@ class _GroupChatScreenState extends ConsumerState<GroupChatScreen> {
           ),
         ],
       ),
-    );
-  }
-}
-
-// Animated typing dot widget
-class _TypingDot extends StatefulWidget {
-  final int delay;
-
-  const _TypingDot({required this.delay});
-
-  @override
-  State<_TypingDot> createState() => _TypingDotState();
-}
-
-class _TypingDotState extends State<_TypingDot>
-    with SingleTickerProviderStateMixin {
-  late AnimationController _controller;
-  late Animation<double> _animation;
-
-  @override
-  void initState() {
-    super.initState();
-    _controller = AnimationController(
-      duration: const Duration(milliseconds: 600),
-      vsync: this,
-    );
-
-    _animation = Tween<double>(
-      begin: 0.0,
-      end: 1.0,
-    ).animate(CurvedAnimation(parent: _controller, curve: Curves.easeInOut));
-
-    Future.delayed(Duration(milliseconds: widget.delay), () {
-      if (mounted) {
-        _controller.repeat(reverse: true);
-      }
-    });
-  }
-
-  @override
-  void dispose() {
-    _controller.dispose();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return AnimatedBuilder(
-      animation: _animation,
-      builder: (context, child) {
-        return Container(
-          width: 4,
-          height: 4,
-          decoration: BoxDecoration(
-            color: Colors.green.shade300.withOpacity(
-              0.3 + (_animation.value * 0.7),
-            ),
-            shape: BoxShape.circle,
-          ),
-        );
-      },
     );
   }
 }

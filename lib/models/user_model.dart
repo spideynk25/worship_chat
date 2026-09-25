@@ -53,11 +53,24 @@ class UserModel {
   }
 
   factory UserModel.fromMap(Map<String, dynamic> map) {
+    final rawPic = map['profilePic']?.toString() ??
+        map['photoUrl']?.toString() ??
+        map['photoURL']?.toString();
+    String? cleanPic;
+    if (rawPic != null) {
+      final trimmed = rawPic.trim();
+      if (trimmed.isNotEmpty && trimmed != 'null') {
+        cleanPic = trimmed.startsWith('http://')
+            ? trimmed.replaceFirst('http://', 'https://')
+            : trimmed;
+      }
+    }
+
     return UserModel(
       userName: map['userName'] ?? '',
       name: map['name'] ?? '',
       uid: map['uid'] ?? '',
-      profilePic: map['profilePic'],
+      profilePic: cleanPic,
       isOnline: map['isOnline'] ?? false,
       email: map['email'] ?? '',
       groupId: List<String>.from(map['groupId'] ?? []),

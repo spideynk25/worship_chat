@@ -3,7 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:intl/intl.dart';
 import 'package:worship_chat/colors.dart';
-import 'package:worship_chat/common/widgets/loader.dart';
+import 'package:worship_chat/common/widgets/skeleton_loader.dart';
 import 'package:worship_chat/features/chat/controller/chat_controller.dart';
 import 'package:worship_chat/features/chat/screens/one_to_one_chat_screen.dart';
 import 'package:worship_chat/models/chat_contact.dart';
@@ -18,12 +18,16 @@ class ContactList extends ConsumerWidget {
       padding: const EdgeInsets.only(top: 10),
       child: SingleChildScrollView(
         child: StreamBuilder<List<ChatContact>>(
+          initialData: ref
+              .watch(chatControllerProvider)
+              .getCachedContacts(isAllChats: isAllChats),
           stream: isAllChats
               ? ref.watch(chatControllerProvider).fetchAllContacts()
               : ref.watch(chatControllerProvider).chatContacts(),
           builder: (context, snapshot) {
-            if (snapshot.connectionState == ConnectionState.waiting) {
-              return const Loader();
+            if (snapshot.connectionState == ConnectionState.waiting &&
+                (!snapshot.hasData || snapshot.data!.isEmpty)) {
+              return const ContactListSkeleton();
             }
             if (!snapshot.hasData ||
                 snapshot.hasError ||
@@ -89,7 +93,7 @@ class ContactList extends ConsumerWidget {
                                       ),
                                       style: const TextStyle(
                                         fontSize: 15,
-                                        color: Colors.grey,
+                                        color: greyColor,
                                       ),
                                     )
                                   : Text(""),
