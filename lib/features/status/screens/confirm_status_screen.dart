@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:video_player/video_player.dart';
 import 'package:worship_chat/colors.dart';
+import 'package:worship_chat/common/utils/utils.dart';
 import 'package:worship_chat/features/auth/controller/auth_controller.dart';
 import 'package:worship_chat/features/status/controller/status_controller.dart';
 
@@ -80,9 +81,7 @@ class _ConfirmStatusScreenState extends ConsumerState<ConfirmStatusScreen> {
       setState(() => _isUploading = false);
       _videoController?.play();
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text("Could not load user data. Try again.")),
-        );
+        AppSnackBar.error(context, "Could not load user data. Try again.");
       }
       return;
     }

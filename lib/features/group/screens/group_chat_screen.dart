@@ -18,8 +18,10 @@ import 'package:worship_chat/features/group/controller/group_controller.dart';
 import 'package:worship_chat/features/group/screens/edit_group_screen.dart';
 import 'package:worship_chat/features/group/screens/group_gallery_screen.dart';
 import 'package:worship_chat/features/group/screens/group_info_screen.dart';
+import 'package:worship_chat/features/dashboard/repositories/event_repository.dart';
 import 'package:worship_chat/features/group/widgets/group_bottom_chat_field_widget.dart';
 import 'package:worship_chat/features/group/widgets/group_chat_list_widget.dart';
+import 'package:worship_chat/models/event.dart';
 import 'package:worship_chat/models/group.dart';
 
 class GroupChatScreen extends ConsumerStatefulWidget {
@@ -55,6 +57,7 @@ class GroupChatScreen extends ConsumerStatefulWidget {
 class _GroupChatScreenState extends ConsumerState<GroupChatScreen>
     with WidgetsBindingObserver {
   late List<String> receiverIds;
+  final Set<String> _dismissedBannerEventIds = {};
 
   Color get _accentColor {
     if (widget.color != null) {
@@ -87,6 +90,10 @@ class _GroupChatScreenState extends ConsumerState<GroupChatScreen>
         .where((uid) => uid != currentUserUid)
         .toList();
     WidgetsBinding.instance.addPostFrameCallback((_) {
+      FirebaseNotificationService.cancelNotificationsForChat(
+        widget.groupId,
+        chatName: widget.name,
+      );
       if (mounted) {
         ref.read(groupControllerProvider).markGroupAsSeen(widget.groupId);
       }
@@ -112,6 +119,10 @@ class _GroupChatScreenState extends ConsumerState<GroupChatScreen>
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     ActiveChatNotifier.instance.leave();
+    FirebaseNotificationService.cancelNotificationsForChat(
+      widget.groupId,
+      chatName: widget.name,
+    );
     super.dispose();
   }
 
@@ -205,12 +216,7 @@ class _GroupChatScreenState extends ConsumerState<GroupChatScreen>
     } catch (e) {
       log('Error cropping image: $e');
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Error cropping image: $e'),
-            backgroundColor: Colors.red,
-          ),
-        );
+        AppSnackBar.error(context, 'Error cropping image: $e');
       }
       return null;
     }
@@ -258,33 +264,17 @@ class _GroupChatScreenState extends ConsumerState<GroupChatScreen>
             .updateChatBackground(widget.groupId, imageUrl);
 
         if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(
-              content: Text('Background updated successfully!'),
-              backgroundColor: Colors.green,
-              duration: Duration(seconds: 2),
-            ),
-          );
+          AppSnackBar.success(context, 'Background updated successfully!');
         }
       } else {
         if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(
-              content: Text('Failed to upload image'),
-              backgroundColor: Colors.red,
-            ),
-          );
+          AppSnackBar.error(context, 'Failed to upload image');
         }
       }
     } catch (e) {
       if (mounted) {
         Navigator.pop(context); // Dismiss loading dialog
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Error uploading image: $e'),
-            backgroundColor: Colors.red,
-          ),
-        );
+        AppSnackBar.error(context, 'Error uploading image: $e');
       }
       log('Error uploading cropped image: $e');
     }
@@ -566,6 +556,7 @@ class _GroupChatScreenState extends ConsumerState<GroupChatScreen>
           ),
           Column(
             children: [
+              _buildGroupBirthdayMention(),
               Expanded(child: GroupChatListWidget(groupId: widget.groupId)),
               // Floating in-chat typing bubble for groups
               StreamBuilder<Map<String, String>>(
@@ -601,6 +592,143 @@ class _GroupChatScreenState extends ConsumerState<GroupChatScreen>
           ),
         ],
       ),
+    );
+  }
+
+  Widget _buildGroupBirthdayMention() {
+    return StreamBuilder<List<Event>>(
+      stream: ref.watch(eventRepositoryProvider).eventsStream(),
+      builder: (context, snapshot) {
+        if (!snapshot.hasData || snapshot.data == null) {
+          return const SizedBox.shrink();
+        }
+
+        final now = DateTime.now();
+        final today = DateTime(now.year, now.month, now.day);
+
+        // Filter events strictly connected to THIS specific group
+        final matchingEvents = snapshot.data!.where((event) {
+          if (_dismissedBannerEventIds.contains(event.id)) return false;
+          return event.connectedGroupId == widget.groupId;
+        }).toList();
+
+        if (matchingEvents.isEmpty) return const SizedBox.shrink();
+
+        // Calculate occurrences
+        Event? activeEvent;
+        int lowestDiff = 999;
+
+        for (final event in matchingEvents) {
+          DateTime occurrence;
+          if (event.isRecurring) {
+            final thisYear = DateTime(
+              now.year,
+              event.date.month,
+              event.date.day,
+            );
+            if (thisYear.isBefore(today)) {
+              occurrence = DateTime(
+                now.year + 1,
+                event.date.month,
+                event.date.day,
+              );
+            } else {
+              occurrence = thisYear;
+            }
+          } else {
+            occurrence = DateTime(
+              event.date.year,
+              event.date.month,
+              event.date.day,
+            );
+          }
+
+          final diff = occurrence.difference(today).inDays;
+          if (diff >= 0 && diff <= 7 && diff < lowestDiff) {
+            lowestDiff = diff;
+            activeEvent = event;
+          }
+        }
+
+        if (activeEvent == null) return const SizedBox.shrink();
+
+        final isToday = lowestDiff == 0;
+        final accent = _accentColor;
+
+        return Center(
+          child: Container(
+            margin: const EdgeInsets.symmetric(vertical: 5, horizontal: 16),
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 5),
+            decoration: BoxDecoration(
+              color: const Color(0xFF1E1C2E).withValues(alpha: 0.9),
+              borderRadius: BorderRadius.circular(20),
+              border: Border.all(
+                color: isToday
+                    ? const Color(0xFFFFD700).withValues(alpha: 0.6)
+                    : Colors.white.withValues(alpha: 0.15),
+                width: isToday ? 1.2 : 0.8,
+              ),
+              boxShadow: [
+                BoxShadow(
+                  color: Colors.black.withValues(alpha: 0.25),
+                  blurRadius: 6,
+                  offset: const Offset(0, 2),
+                ),
+              ],
+            ),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(
+                  Icons.cake_rounded,
+                  size: 14,
+                  color: isToday ? const Color(0xFFFFD700) : accent,
+                ),
+                const SizedBox(width: 6),
+                Flexible(
+                  child: Text(
+                    isToday
+                        ? 'Birthday: ${activeEvent.title} (Today)'
+                        : 'Birthday: ${activeEvent.title} (in $lowestDiff day${lowestDiff > 1 ? 's' : ''})',
+                    style: TextStyle(
+                      color: isToday ? const Color(0xFFFFD700) : Colors.white70,
+                      fontSize: 11.5,
+                      fontWeight: isToday ? FontWeight.w700 : FontWeight.w500,
+                      letterSpacing: 0.1,
+                    ),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ),
+                if (isToday) ...[
+                  const SizedBox(width: 4),
+                  const Text('✨', style: TextStyle(fontSize: 10)),
+                ],
+                const SizedBox(width: 8),
+                GestureDetector(
+                  onTap: () {
+                    setState(() {
+                      _dismissedBannerEventIds.add(activeEvent!.id);
+                    });
+                  },
+                  child: Container(
+                    padding: const EdgeInsets.all(2),
+                    decoration: BoxDecoration(
+                      color: Colors.white.withValues(alpha: 0.08),
+                      shape: BoxShape.circle,
+                    ),
+                    child: const Icon(
+                      Icons.close_rounded,
+                      size: 12,
+                      color: Colors.white60,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        );
+      },
     );
   }
 }

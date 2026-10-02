@@ -6,6 +6,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:worship_chat/colors.dart';
+import 'package:worship_chat/common/utils/utils.dart';
 import 'package:worship_chat/features/dashboard/controller/todo_controller.dart';
 import 'package:worship_chat/features/dashboard/providers/todo_providers.dart';
 import 'package:worship_chat/models/subtasks.dart';
@@ -217,7 +218,6 @@ class _SubtasksPageState extends ConsumerState<SubtasksPage> {
                           if (title.isEmpty) return;
 
                           final navigator = Navigator.of(bottomSheetContext);
-                          final messenger = ScaffoldMessenger.of(context);
 
                           try {
                             await ref
@@ -228,21 +228,9 @@ class _SubtasksPageState extends ConsumerState<SubtasksPage> {
                                   description: description,
                                 );
                             navigator.pop();
-                            messenger.showSnackBar(
-                              const SnackBar(
-                                content: Text('Subtask added'),
-                                backgroundColor: mobileChatBoxColor,
-                                behavior: SnackBarBehavior.floating,
-                              ),
-                            );
+                            AppSnackBar.success(context, 'Subtask added');
                           } catch (e) {
-                            messenger.showSnackBar(
-                              SnackBar(
-                                content: Text('Error: $e'),
-                                backgroundColor: Colors.redAccent,
-                                behavior: SnackBarBehavior.floating,
-                              ),
-                            );
+                            AppSnackBar.error(context, 'Error: $e');
                           }
                         },
                         style: ElevatedButton.styleFrom(
@@ -443,7 +431,6 @@ class _SubtasksPageState extends ConsumerState<SubtasksPage> {
                           if (title.isEmpty) return;
 
                           final navigator = Navigator.of(bottomSheetContext);
-                          final messenger = ScaffoldMessenger.of(context);
 
                           try {
                             await ref
@@ -456,21 +443,9 @@ class _SubtasksPageState extends ConsumerState<SubtasksPage> {
                                   parentTaskId: widget.taskId,
                                 );
                             navigator.pop();
-                            messenger.showSnackBar(
-                              const SnackBar(
-                                content: Text('Subtask updated'),
-                                backgroundColor: mobileChatBoxColor,
-                                behavior: SnackBarBehavior.floating,
-                              ),
-                            );
+                            AppSnackBar.success(context, 'Subtask updated');
                           } catch (e) {
-                            messenger.showSnackBar(
-                              SnackBar(
-                                content: Text('Error: $e'),
-                                backgroundColor: Colors.redAccent,
-                                behavior: SnackBarBehavior.floating,
-                              ),
-                            );
+                            AppSnackBar.error(context, 'Error: $e');
                           }
                         },
                         style: ElevatedButton.styleFrom(
@@ -565,26 +540,13 @@ class _SubtasksPageState extends ConsumerState<SubtasksPage> {
     );
 
     if (confirm == true && mounted) {
-      final messenger = ScaffoldMessenger.of(context);
       try {
         await ref
             .read(todoControllerProvider.notifier)
             .deleteSubtask(subtask.id!, widget.taskId);
-        messenger.showSnackBar(
-          const SnackBar(
-            content: Text('Subtask deleted'),
-            backgroundColor: mobileChatBoxColor,
-            behavior: SnackBarBehavior.floating,
-          ),
-        );
+        AppSnackBar.success(context, 'Subtask deleted');
       } catch (e) {
-        messenger.showSnackBar(
-          SnackBar(
-            content: Text('Failed to delete: $e'),
-            backgroundColor: Colors.redAccent,
-            behavior: SnackBarBehavior.floating,
-          ),
-        );
+        AppSnackBar.error(context, 'Failed to delete: $e');
       }
     }
   }
@@ -604,13 +566,7 @@ class _SubtasksPageState extends ConsumerState<SubtasksPage> {
     } catch (e) {
       log('Launch error: $e');
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Could not open link: $url'),
-            backgroundColor: Colors.redAccent,
-            behavior: SnackBarBehavior.floating,
-          ),
-        );
+        AppSnackBar.error(context, 'Could not open link: $url');
       }
     }
   }

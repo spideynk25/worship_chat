@@ -1,4 +1,5 @@
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:hive_flutter/hive_flutter.dart';
@@ -11,6 +12,7 @@ import 'package:worship_chat/features/group/controller/group_controller.dart';
 import 'package:worship_chat/models/group_chat_message_model.dart';
 import 'package:worship_chat/colors.dart';
 import 'package:worship_chat/features/chat/widgets/my_message_card.dart';
+import 'package:worship_chat/features/chat/widgets/forward_message_sheet.dart';
 
 class GroupChatListWidget extends ConsumerStatefulWidget {
   final String groupId;
@@ -29,6 +31,7 @@ class _GroupChatListWidgetState extends ConsumerState<GroupChatListWidget>
   bool _isAtBottom = true;
   String? _lastMessageId;
   List<GroupChatMessageModel> _displayMessages = [];
+  late Stream<List<GroupChatMessageModel>> _groupChatStream;
 
   // ── Scroll to Load (Pagination) ──────────────────────────────────────────
   static const int _pageSize = 30;
@@ -42,8 +45,20 @@ class _GroupChatListWidgetState extends ConsumerState<GroupChatListWidget>
   @override
   void initState() {
     super.initState();
+    _groupChatStream =
+        ref.read(groupControllerProvider).getGroupChat(widget.groupId);
     _loadInitialCachedMessages();
     _setupScrollListener();
+  }
+
+  @override
+  void didUpdateWidget(covariant GroupChatListWidget oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.groupId != widget.groupId) {
+      _groupChatStream =
+          ref.read(groupControllerProvider).getGroupChat(widget.groupId);
+      _loadInitialCachedMessages();
+    }
   }
 
   void _loadInitialCachedMessages() {
@@ -53,10 +68,23 @@ class _GroupChatListWidgetState extends ConsumerState<GroupChatListWidget>
         final box = Hive.box('messages');
         final cachedData = box.get(localKey, defaultValue: []);
         if (cachedData is List && cachedData.isNotEmpty) {
-          _displayMessages = cachedData.cast<GroupChatMessageModel>();
-          _lastMessageId = _displayMessages.last.messageId;
-          _prevTotalMessages = _displayMessages.length;
-          log('⚡ Pre-seeded ${_displayMessages.length} group messages from Hive in initState');
+          final List<GroupChatMessageModel> parsed = [];
+          for (final item in cachedData) {
+            if (item is GroupChatMessageModel) {
+              parsed.add(item);
+            } else if (item is Map) {
+              try {
+                parsed.add(GroupChatMessageModel.fromMap(
+                    Map<String, dynamic>.from(item)));
+              } catch (_) {}
+            }
+          }
+          if (parsed.isNotEmpty) {
+            _displayMessages = parsed;
+            _lastMessageId = _displayMessages.last.messageId;
+            _prevTotalMessages = _displayMessages.length;
+            log('⚡ Pre-seeded ${_displayMessages.length} group messages from Hive in initState');
+          }
         }
       }
     } catch (e) {
@@ -183,7 +211,7 @@ class _GroupChatListWidgetState extends ConsumerState<GroupChatListWidget>
     return currentDate != previousDate;
   }
 
-  // ✅ Check if delivery, sending, seen, or text changed on any message
+  // ✅ Check if delivery, sending, seen, text, fileMessageData, or reactions changed on any message
   bool _hasDeliveryOrSeenStatusChanged(List<GroupChatMessageModel> newMessages) {
     if (_displayMessages.length != newMessages.length) return true;
     for (int i = 0; i < newMessages.length; i++) {
@@ -191,7 +219,9 @@ class _GroupChatListWidgetState extends ConsumerState<GroupChatListWidget>
           _displayMessages[i].isSeen != newMessages[i].isSeen ||
           _displayMessages[i].isDelivered != newMessages[i].isDelivered ||
           _displayMessages[i].isSending != newMessages[i].isSending ||
-          _displayMessages[i].text != newMessages[i].text) {
+          _displayMessages[i].text != newMessages[i].text ||
+          _displayMessages[i].fileMessageData != newMessages[i].fileMessageData ||
+          !mapEquals(_displayMessages[i].reactions, newMessages[i].reactions)) {
         return true;
       }
     }
@@ -204,7 +234,7 @@ class _GroupChatListWidgetState extends ConsumerState<GroupChatListWidget>
 
     return SizedBox.expand(
       child: StreamBuilder<List<GroupChatMessageModel>>(
-        stream: ref.watch(groupControllerProvider).getGroupChat(widget.groupId),
+        stream: _groupChatStream,
         builder: (context, snapshot) {
           if (snapshot.connectionState == ConnectionState.waiting) {
             if (_displayMessages.isNotEmpty) {
@@ -221,7 +251,8 @@ class _GroupChatListWidgetState extends ConsumerState<GroupChatListWidget>
                 children: [
                   const Icon(Icons.error_outline, size: 48, color: Colors.red),
                   const SizedBox(height: 16),
-                  Text('Error: ${snapshot.error}'),
+                  Text('Error: ${snapshot.error}',
+                      style: const TextStyle(color: Colors.white70)),
                   const SizedBox(height: 16),
                   ElevatedButton(
                     onPressed: () => setState(() {
@@ -237,12 +268,12 @@ class _GroupChatListWidgetState extends ConsumerState<GroupChatListWidget>
           }
 
           if (!snapshot.hasData || snapshot.data!.isEmpty) {
-            _displayMessages = [];
+            if (_displayMessages.isNotEmpty) {
+              return _buildMessageList(_displayMessages);
+            }
             _lastMessageId = null;
             _prevTotalMessages = 0;
-            return const Center(
-              child: Text('No messages yet. Start the conversation!'),
-            );
+            return _buildEmptyState();
           }
 
           final newMessages = snapshot.data!;
@@ -300,11 +331,66 @@ class _GroupChatListWidgetState extends ConsumerState<GroupChatListWidget>
     );
   }
 
+  Widget _buildEmptyState() {
+    return Center(
+      child: SingleChildScrollView(
+        padding: const EdgeInsets.symmetric(horizontal: 32, vertical: 24),
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Container(
+              padding: const EdgeInsets.all(16),
+              decoration: BoxDecoration(
+                shape: BoxShape.circle,
+                gradient: LinearGradient(
+                  colors: [
+                    tabColor.withValues(alpha: 0.6),
+                    Colors.purpleAccent.withValues(alpha: 0.4),
+                  ],
+                ),
+                boxShadow: [
+                  BoxShadow(
+                    color: tabColor.withValues(alpha: 0.25),
+                    blurRadius: 20,
+                    spreadRadius: 2,
+                  ),
+                ],
+              ),
+              child: const Icon(
+                Icons.groups_rounded,
+                size: 48,
+                color: Colors.white,
+              ),
+            ),
+            const SizedBox(height: 18),
+            const Text(
+              'No messages yet',
+              style: TextStyle(
+                color: Colors.white,
+                fontSize: 18,
+                fontWeight: FontWeight.bold,
+                letterSpacing: 0.3,
+              ),
+            ),
+            const SizedBox(height: 8),
+            Text(
+              'Start the conversation with your group members! 💬',
+              textAlign: TextAlign.center,
+              style: TextStyle(
+                color: Colors.white.withValues(alpha: 0.65),
+                fontSize: 13,
+                height: 1.4,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   Widget _buildMessageList(List<GroupChatMessageModel> allMessages) {
     if (allMessages.isEmpty) {
-      return const Center(
-        child: Text('No messages yet. Start the conversation!'),
-      );
+      return _buildEmptyState();
     }
 
     final totalCount = allMessages.length;
@@ -362,9 +448,16 @@ class _GroupChatListWidgetState extends ConsumerState<GroupChatListWidget>
 
           _markMessageAsSeen(messageData);
 
+          final reactionsKey = messageData.reactions.entries
+              .map((e) => '${e.key}:${e.value}')
+              .join('_');
+
           return _GroupMessageItemWidget(
-            key: ValueKey(messageData.messageId),
+            key: ValueKey(
+              '${messageData.messageId}_$reactionsKey',
+            ),
             messageData: messageData,
+            currentUserId: currentUserId,
             isMyMessage: isMyMessage,
             showDateSeparator: showDateSeparator,
             onMessageSwipe: onMessageSwipe,
@@ -376,8 +469,9 @@ class _GroupChatListWidgetState extends ConsumerState<GroupChatListWidget>
   }
 }
 
-class _GroupMessageItemWidget extends StatelessWidget {
+class _GroupMessageItemWidget extends ConsumerWidget {
   final GroupChatMessageModel messageData;
+  final String currentUserId;
   final bool isMyMessage;
   final bool showDateSeparator;
   final Function(String, bool, String, String) onMessageSwipe;
@@ -386,6 +480,7 @@ class _GroupMessageItemWidget extends StatelessWidget {
   const _GroupMessageItemWidget({
     super.key,
     required this.messageData,
+    required this.currentUserId,
     required this.isMyMessage,
     required this.showDateSeparator,
     required this.onMessageSwipe,
@@ -414,11 +509,14 @@ class _GroupMessageItemWidget extends StatelessWidget {
   }
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
     final timeSent = DateFormat.jm().format(messageData.timeSent);
     final seen = messageData.isSeen;
     final delivered = messageData.isDelivered;
     final sending = messageData.isSending;
+    final reactionsKey = messageData.reactions.entries
+        .map((e) => '${e.key}:${e.value}')
+        .join('_');
 
     return Column(
       children: [
@@ -426,7 +524,7 @@ class _GroupMessageItemWidget extends StatelessWidget {
         isMyMessage
             ? MyMessageCard(
                 key: ValueKey(
-                  'my_${messageData.messageId}_${sending}_${delivered}_$seen',
+                  'my_${messageData.messageId}_$reactionsKey',
                 ),
                 message: messageData.text,
                 date: timeSent,
@@ -444,9 +542,32 @@ class _GroupMessageItemWidget extends StatelessWidget {
                 isSeen: seen,
                 isDelivered: delivered,
                 isSending: sending,
+                messageId: messageData.messageId,
+                currentUserId: currentUserId,
+                reactions: messageData.reactions,
+                onReactionSelected: (emoji) {
+                  ref.read(groupControllerProvider).toggleGroupReaction(
+                        groupId: messageData.groupId,
+                        messageId: messageData.messageId,
+                        emoji: emoji,
+                      );
+                },
+                onForward: () {
+                  ForwardMessageSheet.show(
+                    context,
+                    ForwardMessagePayload(
+                      text: messageData.text,
+                      messageType: messageData.messageType,
+                      fileMessageData: messageData.fileMessageData,
+                      sourceGroupId: messageData.groupId,
+                    ),
+                  );
+                },
               )
             : SenderMessageCard(
-                key: ValueKey('sender_${messageData.messageId}'),
+                key: ValueKey(
+                  'sender_${messageData.messageId}_$reactionsKey',
+                ),
                 message: messageData.text,
                 date: timeSent,
                 messageType: messageData.messageType,
@@ -460,6 +581,27 @@ class _GroupMessageItemWidget extends StatelessWidget {
                   messageData.messageType,
                   messageData.fileMessageData ?? "",
                 ),
+                messageId: messageData.messageId,
+                currentUserId: currentUserId,
+                reactions: messageData.reactions,
+                onReactionSelected: (emoji) {
+                  ref.read(groupControllerProvider).toggleGroupReaction(
+                        groupId: messageData.groupId,
+                        messageId: messageData.messageId,
+                        emoji: emoji,
+                      );
+                },
+                onForward: () {
+                  ForwardMessageSheet.show(
+                    context,
+                    ForwardMessagePayload(
+                      text: messageData.text,
+                      messageType: messageData.messageType,
+                      fileMessageData: messageData.fileMessageData,
+                      sourceGroupId: messageData.groupId,
+                    ),
+                  );
+                },
               ),
       ],
     );

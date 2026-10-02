@@ -9,7 +9,11 @@ class Event {
   final TimeOfDay time;
   final String createdBy;
   final String userId;
-  final bool isRecurring; // New field for recurring events
+  final bool isRecurring; // Field for recurring events
+  final String? connectedGroupId; // Linked Queendom Group ID
+  final String? connectedGroupName; // Linked Queendom Group Name
+  final String? connectedGroupPic; // Linked Queendom Group Avatar
+  final String? connectedQueendom; // 'Queen Pooja' or 'Queen Rashmika'
 
   Event({
     required this.id,
@@ -19,7 +23,11 @@ class Event {
     required this.time,
     required this.createdBy,
     required this.userId,
-    this.isRecurring = false, // Default to false
+    this.isRecurring = false,
+    this.connectedGroupId,
+    this.connectedGroupName,
+    this.connectedGroupPic,
+    this.connectedQueendom,
   });
 
   // Convert Event to Map for Firestore
@@ -33,6 +41,10 @@ class Event {
       'createdBy': createdBy,
       'userId': userId,
       'isRecurring': isRecurring,
+      'connectedGroupId': connectedGroupId,
+      'connectedGroupName': connectedGroupName,
+      'connectedGroupPic': connectedGroupPic,
+      'connectedQueendom': connectedQueendom,
       'createdAt': FieldValue.serverTimestamp(),
     };
   }
@@ -46,6 +58,10 @@ class Event {
       'timeHour': time.hour,
       'timeMinute': time.minute,
       'isRecurring': isRecurring,
+      'connectedGroupId': connectedGroupId,
+      'connectedGroupName': connectedGroupName,
+      'connectedGroupPic': connectedGroupPic,
+      'connectedQueendom': connectedQueendom,
       'updatedAt': FieldValue.serverTimestamp(),
     };
   }
@@ -77,6 +93,10 @@ class Event {
       createdBy: data['createdBy'] as String? ?? 'Anonymous',
       userId: data['userId'] as String? ?? '',
       isRecurring: data['isRecurring'] as bool? ?? false,
+      connectedGroupId: data['connectedGroupId'] as String?,
+      connectedGroupName: data['connectedGroupName'] as String?,
+      connectedGroupPic: data['connectedGroupPic'] as String?,
+      connectedQueendom: data['connectedQueendom'] as String?,
     );
   }
 
@@ -90,6 +110,11 @@ class Event {
     String? createdBy,
     String? userId,
     bool? isRecurring,
+    String? connectedGroupId,
+    String? connectedGroupName,
+    String? connectedGroupPic,
+    String? connectedQueendom,
+    bool clearConnectedGroup = false,
   }) {
     return Event(
       id: id ?? this.id,
@@ -100,6 +125,10 @@ class Event {
       createdBy: createdBy ?? this.createdBy,
       userId: userId ?? this.userId,
       isRecurring: isRecurring ?? this.isRecurring,
+      connectedGroupId: clearConnectedGroup ? null : (connectedGroupId ?? this.connectedGroupId),
+      connectedGroupName: clearConnectedGroup ? null : (connectedGroupName ?? this.connectedGroupName),
+      connectedGroupPic: clearConnectedGroup ? null : (connectedGroupPic ?? this.connectedGroupPic),
+      connectedQueendom: clearConnectedGroup ? null : (connectedQueendom ?? this.connectedQueendom),
     );
   }
 }

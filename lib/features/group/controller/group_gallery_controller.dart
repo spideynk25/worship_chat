@@ -47,6 +47,25 @@ class GroupGalleryController {
     }
   }
 
+  Future<bool> addGalleryImageFromUrl({
+    required String groupId,
+    required String imageUrl,
+    required String uploaderName,
+    String? caption,
+  }) async {
+    try {
+      return await repository.addGalleryImageFromUrl(
+        groupId: groupId,
+        imageUrl: imageUrl,
+        uploaderName: uploaderName,
+        caption: caption,
+      );
+    } catch (e) {
+      log('❌ GroupGalleryController.addGalleryImageFromUrl error: $e');
+      return false;
+    }
+  }
+
   Future<int> getGalleryCount(String groupId) async {
     return repository.getGalleryCount(groupId);
   }

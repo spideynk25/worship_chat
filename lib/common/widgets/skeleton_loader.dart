@@ -188,6 +188,9 @@ class ChatMessagesSkeleton extends StatelessWidget {
     ];
 
     return ShimmerEffect(
+      // Use visible dark-gray colors so skeleton is visible on dark backgrounds
+      baseColor: const Color(0xFF2A2A3A),
+      highlightColor: const Color(0xFF3D3D55),
       child: ListView.builder(
         padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 16),
         itemCount: bubbleCount,

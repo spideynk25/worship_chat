@@ -3,19 +3,36 @@ import 'dart:developer';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:dio/dio.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+import 'package:uuid/uuid.dart';
 import 'package:worship_chat/common/utils/active_chat_notifier.dart';
+import 'package:worship_chat/common/utils/fcm_token_manager.dart';
 import 'package:worship_chat/features/chat/screens/one_to_one_chat_screen.dart';
 import 'package:worship_chat/features/group/screens/group_chat_screen.dart';
+import 'package:worship_chat/models/chat_contact.dart';
 import 'package:worship_chat/models/group.dart';
+import 'package:worship_chat/models/group_chat_message_model.dart';
+import 'package:worship_chat/models/one_to_one_message_model.dart';
 import 'package:worship_chat/models/user_model.dart';
 
-// ─── Background handler (top-level, required by FCM) ─────────────────────────
+// ─── Background Notification Action Handler (top-level, required by Android) ─
 @pragma('vm:entry-point')
-Future<void> _firebaseMessagingBackgroundHandler(RemoteMessage message) async {
-  log("Handling a background message: ${message.messageId}");
+void notificationActionBackgroundHandler(NotificationResponse response) async {
+  WidgetsFlutterBinding.ensureInitialized();
+  try {
+    await Firebase.initializeApp();
+  } catch (_) {}
+  await FirebaseNotificationService.ensureStaticInitialized();
+  log('Background notification action: ${response.actionId}, payload: ${response.payload}');
+  if (response.actionId == 'action_mark_read') {
+    await FirebaseNotificationService.handleMarkAsReadAction(response);
+  } else if (response.actionId == 'action_reply') {
+    await FirebaseNotificationService.handleReplyAction(response);
+  }
 }
 
 // ─── Android notification channels ───────────────────────────────────────────
@@ -40,27 +57,7 @@ const AndroidNotificationChannel _legacyChannel = AndroidNotificationChannel(
 
 /// Creates and registers notification channels with Android system NotificationManager early at boot
 Future<void> createDefaultNotificationChannels() async {
-  try {
-    final localNotifications = FlutterLocalNotificationsPlugin();
-    const androidSettings =
-        AndroidInitializationSettings('@mipmap/launcher_icon');
-    const darwinSettings = DarwinInitializationSettings();
-    await localNotifications.initialize(
-      const InitializationSettings(
-        android: androidSettings,
-        iOS: darwinSettings,
-      ),
-    );
-
-    final androidPlugin = localNotifications
-        .resolvePlatformSpecificImplementation<
-            AndroidFlutterLocalNotificationsPlugin>();
-    await androidPlugin?.createNotificationChannel(_highImportanceChannel);
-    await androidPlugin?.createNotificationChannel(_legacyChannel);
-    log('✅ Default Android notification channels initialized');
-  } catch (e) {
-    log('⚠️ Error creating default notification channels: $e');
-  }
+  await FirebaseNotificationService.ensureStaticInitialized();
 }
 
 // ─── Service ──────────────────────────────────────────────────────────────────
@@ -267,10 +264,101 @@ class FirebaseNotificationService {
 
   static final FlutterLocalNotificationsPlugin _staticLocalNotifications =
       FlutterLocalNotificationsPlugin();
+  static bool _isStaticInitialized = false;
+
+  /// Ensures FlutterLocalNotificationsPlugin is statically initialized with action callbacks and channels.
+  /// Safe to call repeatedly across main isolate, background FCM isolate, and notification action isolate.
+  static Future<void> ensureStaticInitialized({
+    void Function(NotificationResponse)? onForegroundResponse,
+  }) async {
+    if (_isStaticInitialized && onForegroundResponse == null) return;
+    try {
+      const androidSettings =
+          AndroidInitializationSettings('@mipmap/launcher_icon');
+      const darwinSettings = DarwinInitializationSettings(
+        requestAlertPermission: true,
+        requestBadgePermission: true,
+        requestSoundPermission: true,
+      );
+      const initSettings = InitializationSettings(
+        android: androidSettings,
+        iOS: darwinSettings,
+      );
+
+      await _staticLocalNotifications.initialize(
+        initSettings,
+        onDidReceiveNotificationResponse: onForegroundResponse ??
+            (response) {
+              log('Foreground notification tapped: ${response.payload}');
+              _instance?._onLocalNotificationTapped(response);
+            },
+        onDidReceiveBackgroundNotificationResponse:
+            notificationActionBackgroundHandler,
+      );
+
+      final androidPlugin = _staticLocalNotifications
+          .resolvePlatformSpecificImplementation<
+              AndroidFlutterLocalNotificationsPlugin>();
+      await androidPlugin?.createNotificationChannel(_highImportanceChannel);
+      await androidPlugin?.createNotificationChannel(_legacyChannel);
+
+      _isStaticInitialized = true;
+      log('✅ FlutterLocalNotificationsPlugin statically initialized with channels');
+    } catch (e) {
+      log('⚠️ Error statically initializing notifications: $e');
+    }
+  }
+
+  static Future<List<Map<String, dynamic>>> _getPersistedNotificationMessages(
+    String chatId,
+  ) async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final rawList = prefs.getStringList('notif_msgs_$chatId');
+      if (rawList != null && rawList.isNotEmpty) {
+        return rawList
+            .map((item) => Map<String, dynamic>.from(jsonDecode(item) as Map))
+            .toList();
+      }
+      final oldLines = prefs.getStringList('notif_lines_$chatId') ?? [];
+      return oldLines.map((line) => {
+        'text': line,
+        'timestamp': DateTime.now().millisecondsSinceEpoch,
+        'senderName': null,
+        'senderKey': null,
+      }).toList();
+    } catch (e) {
+      log('Error reading notification messages from prefs: $e');
+      return [];
+    }
+  }
+
+  static Future<void> _savePersistedNotificationMessages(
+    String chatId,
+    List<Map<String, dynamic>> messages,
+  ) async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final jsonList = messages.map((m) => jsonEncode(m)).toList();
+      await prefs.setStringList('notif_msgs_$chatId', jsonList);
+    } catch (e) {
+      log('Error saving notification messages to prefs: $e');
+    }
+  }
+
+  static Future<void> _clearPersistedNotificationMessages(String chatId) async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.remove('notif_msgs_$chatId');
+      await prefs.remove('notif_lines_$chatId');
+    } catch (e) {
+      log('Error clearing notification messages in prefs: $e');
+    }
+  }
 
   /// Dismisses all notifications currently showing in the system notification shade/tray
-  /// that correspond to the given [chatId] (either senderUid for 1-on-1 or groupId for groups).
-  /// Matches on tag, deterministic ID, payload data, and optional [chatName].
+  /// that correspond strictly to the given [chatId] (either senderUid for 1-on-1 or groupId for groups).
+  /// Matches on tag, deterministic ID, and active notification properties.
   static Future<void> cancelNotificationsForChat(
     String chatId, {
     String? chatName,
@@ -278,9 +366,11 @@ class FirebaseNotificationService {
     final cleanChatId = chatId.trim();
     if (cleanChatId.isEmpty) return;
 
+    await _clearPersistedNotificationMessages(cleanChatId);
+
     try {
-      final plugin =
-          _instance?._localNotifications ?? _staticLocalNotifications;
+      await ensureStaticInitialized();
+      final plugin = _staticLocalNotifications;
       final notifId = cleanChatId.hashCode.abs() % 2147483647;
 
       // 1. Cancel directly by deterministic ID with tag and without tag
@@ -288,51 +378,30 @@ class FirebaseNotificationService {
       await plugin.cancel(notifId);
 
       // 2. Query all currently active notifications in the Android notification shade
+      // and dismiss strictly matching notifications for this specific chat.
       final activeList = await plugin.getActiveNotifications();
-      final cleanName = chatName?.trim().toLowerCase();
-
       for (final notif in activeList) {
         bool match = false;
 
-        // Check tag
-        if (notif.tag == cleanChatId) {
-          match = true;
-        }
-
-        // Check notification ID
-        if (!match && notif.id == notifId) {
-          match = true;
-        }
-
-        // Check payload
-        if (!match && notif.payload != null && notif.payload!.isNotEmpty) {
-          try {
-            final data = jsonDecode(notif.payload!);
-            if (data is Map) {
-              final sUid = (data['senderUid'] ??
-                      data['uid'] ??
-                      data['senderId'])
-                  ?.toString();
-              final gId = (data['groupId'] ?? data['id'])?.toString();
-              if (sUid == cleanChatId || gId == cleanChatId) {
-                match = true;
-              }
-            }
-          } catch (_) {}
-        }
-
-        // Check title matching chatName (for notifications posted by FCM in background)
-        if (!match && cleanName != null && cleanName.isNotEmpty) {
-          final notifTitle = notif.title?.trim().toLowerCase();
-          if (notifTitle != null &&
-              (notifTitle == cleanName || notifTitle.contains(cleanName))) {
+        // Check exact tag match
+        if (notif.tag != null) {
+          final t = notif.tag!.trim().toLowerCase();
+          if (t == cleanChatId.toLowerCase()) {
             match = true;
           }
         }
 
+        // Check deterministic ID match
+        if (!match && notif.id == notifId) {
+          match = true;
+        }
+
         if (match && notif.id != null) {
-          log('🧹 Dismissed notification for chat $cleanChatId (id: ${notif.id}, tag: ${notif.tag}, title: ${notif.title})');
-          await plugin.cancel(notif.id!, tag: notif.tag);
+          log('🧹 Dismissed notification for chat $cleanChatId (id: ${notif.id}, tag: ${notif.tag})');
+          if (notif.tag != null) {
+            await plugin.cancel(notif.id!, tag: notif.tag);
+          }
+          await plugin.cancel(notif.id!);
         }
       }
     } catch (e) {
@@ -341,28 +410,72 @@ class FirebaseNotificationService {
   }
 
   final FirebaseMessaging _firebaseMessaging = FirebaseMessaging.instance;
-  final FlutterLocalNotificationsPlugin _localNotifications =
-      FlutterLocalNotificationsPlugin();
 
   // ── Public entry point ─────────────────────────────────────────────────────
   Future<void> initialize() async {
     _instance = this;
+
+    // 1. Ensure static notification plugin and channels are ready
+    await ensureStaticInitialized(
+      onForegroundResponse: _onLocalNotificationTapped,
+    );
+
+    // 2. Request Android 13+ POST_NOTIFICATIONS runtime permission
+    try {
+      final androidPlugin = _staticLocalNotifications
+          .resolvePlatformSpecificImplementation<
+              AndroidFlutterLocalNotificationsPlugin>();
+      final granted = await androidPlugin?.requestNotificationsPermission();
+      log('Android 13+ POST_NOTIFICATIONS runtime permission granted: $granted');
+    } catch (e) {
+      log('Error requesting Android 13+ notification permission: $e');
+    }
+
+    // Cache current user info for background actions
+    try {
+      final user = FirebaseAuth.instance.currentUser;
+      if (user != null) {
+        final prefs = await SharedPreferences.getInstance();
+        await prefs.setString('cached_current_user_id', user.uid);
+        if (user.displayName != null && user.displayName!.isNotEmpty) {
+          await prefs.setString('cached_current_user_name', user.displayName!);
+        }
+        if (user.photoURL != null && user.photoURL!.isNotEmpty) {
+          await prefs.setString('cached_current_user_pic', user.photoURL!);
+        }
+      }
+    } catch (_) {}
+
+    FirebaseAuth.instance.authStateChanges().listen((user) async {
+      if (user != null) {
+        try {
+          final prefs = await SharedPreferences.getInstance();
+          await prefs.setString('cached_current_user_id', user.uid);
+          if (user.displayName != null && user.displayName!.isNotEmpty) {
+            await prefs.setString('cached_current_user_name', user.displayName!);
+          }
+          if (user.photoURL != null && user.photoURL!.isNotEmpty) {
+            await prefs.setString('cached_current_user_pic', user.photoURL!);
+          }
+        } catch (_) {}
+      }
+    });
 
     // Automatically dismiss notifications whenever any chat is entered
     ActiveChatNotifier.instance.onChatEntered = (chatId, chatName) {
       cancelNotificationsForChat(chatId, chatName: chatName);
     };
 
-    // 1. Immediately listen for notification clicks when app is in BACKGROUND
+    // 3. Immediately listen for notification clicks when app is in BACKGROUND
     FirebaseMessaging.onMessageOpenedApp.listen((message) {
       log('onMessageOpenedApp tapped: ${message.data}');
       _navigateFromNotificationData(message.data);
     });
 
-    // 2. Immediately listen for FOREGROUND messages
+    // 4. Immediately listen for FOREGROUND messages
     FirebaseMessaging.onMessage.listen(_handleForegroundMessage);
 
-    // 3. Request permissions
+    // 5. Request permissions from FCM
     final settings = await _firebaseMessaging.requestPermission(
       alert: true,
       badge: true,
@@ -370,31 +483,10 @@ class FirebaseNotificationService {
     );
     log('FCM permission: ${settings.authorizationStatus}');
 
-    // 4. Create Android channels (registers with system NotificationManager)
-    final androidPlugin = _localNotifications
-        .resolvePlatformSpecificImplementation<
-            AndroidFlutterLocalNotificationsPlugin>();
-    await androidPlugin?.createNotificationChannel(_highImportanceChannel);
-    await androidPlugin?.createNotificationChannel(_legacyChannel);
-
-    // 5. Init local notifications with tap callback
-    const androidSettings =
-        AndroidInitializationSettings('@mipmap/launcher_icon');
-    const darwinSettings = DarwinInitializationSettings();
-    const initSettings = InitializationSettings(
-      android: androidSettings,
-      iOS: darwinSettings,
-    );
-
-    await _localNotifications.initialize(
-      initSettings,
-      onDidReceiveNotificationResponse: _onLocalNotificationTapped,
-    );
-
     // 6. App was KILLED and launched by tapping a LOCAL notification
     if (!_initialNotificationHandled) {
       final launchDetails =
-          await _localNotifications.getNotificationAppLaunchDetails();
+          await _staticLocalNotifications.getNotificationAppLaunchDetails();
       if (launchDetails?.didNotificationLaunchApp ?? false) {
         final response = launchDetails?.notificationResponse;
         if (response != null &&
@@ -414,75 +506,242 @@ class FirebaseNotificationService {
     }
   }
 
+  // ── Unified Notification Builder (used by BOTH foreground and background FCM) ───
+  static Future<void> showNotificationFromRemoteMessage(
+    RemoteMessage message,
+  ) async {
+    try {
+      await ensureStaticInitialized();
+      log('Processing remote notification message: ${message.messageId}, data: ${message.data}');
+
+      final msgType = message.data['type']?.toString().trim();
+      final senderUid = (message.data['senderUid'] ??
+              message.data['uid'] ??
+              message.data['senderId'])
+          ?.toString()
+          .trim();
+      final groupId = (message.data['groupId'] ??
+              (msgType == 'group' ? message.data['id'] : null))
+          ?.toString()
+          .trim();
+      final chatId = (groupId != null && groupId.isNotEmpty)
+          ? groupId
+          : ((senderUid != null && senderUid.isNotEmpty)
+              ? senderUid
+              : (message.data['chatId']?.toString().trim() ?? 'general'));
+
+      // 1. Suppress notification if user is currently inside this chat
+      final activeChatId = ActiveChatNotifier.instance.activeChatUid;
+      if (activeChatId != null &&
+          (activeChatId == chatId ||
+              (senderUid != null && activeChatId == senderUid) ||
+              (groupId != null && activeChatId == groupId))) {
+        log('🚫 Suppressing notification for currently opened chat: $activeChatId');
+        return;
+      }
+
+      // 2. Extract title & body
+      final rawTitle = message.notification?.title ??
+          message.data['title'] ??
+          message.data['groupName'] ??
+          message.data['name'];
+      final safeTitle = (rawTitle != null && rawTitle.toString().trim().isNotEmpty)
+          ? rawTitle.toString().trim()
+          : 'New Message';
+
+      final rawBody = message.notification?.body ??
+          message.data['body'] ??
+          message.data['text'];
+      final safeBody = (rawBody != null && rawBody.toString().trim().isNotEmpty)
+          ? rawBody.toString().trim()
+          : 'Tap to view message';
+
+      if (safeTitle == 'New Message' &&
+          (rawBody == null || rawBody.toString().trim().isEmpty)) {
+        return;
+      }
+
+      final senderName = (message.data['name'] ?? '').toString().trim();
+      final isGroup = (groupId != null && groupId.isNotEmpty);
+
+      // 3. Append new message to existing conversation thread in SharedPreferences
+      // Persisted so that messages from the same conversation tile append sequentially!
+      final existingMessages = await _getPersistedNotificationMessages(chatId);
+      final isDuplicate = existingMessages.isNotEmpty &&
+          existingMessages.last['text'] == safeBody &&
+          (existingMessages.last['senderKey'] == (senderUid ?? chatId)) &&
+          (DateTime.now().millisecondsSinceEpoch -
+                  ((existingMessages.last['timestamp'] as int?) ?? 0))
+              .abs() < 2500;
+      if (!isDuplicate) {
+        existingMessages.add({
+          'text': safeBody,
+          'timestamp': DateTime.now().millisecondsSinceEpoch,
+          'senderName': senderName.isNotEmpty ? senderName : safeTitle,
+          'senderKey': senderUid ?? chatId,
+        });
+      }
+      List<Map<String, dynamic>> trimmedMessages = existingMessages;
+      if (trimmedMessages.length > 15) {
+        trimmedMessages = trimmedMessages.sublist(trimmedMessages.length - 15);
+      }
+      await _savePersistedNotificationMessages(chatId, trimmedMessages);
+
+      final notifId = chatId.hashCode.abs() % 2147483647;
+
+      final prefs = await SharedPreferences.getInstance();
+      final currentUserId = FirebaseAuth.instance.currentUser?.uid ??
+          prefs.getString('cached_current_user_id') ??
+          'me';
+      final currentUserName =
+          prefs.getString('cached_current_user_name') ?? 'Me';
+
+      final mePerson = Person(
+        name: currentUserName,
+        key: currentUserId,
+      );
+
+      final styleMessages = trimmedMessages.map((m) {
+        final sName = m['senderName'] as String?;
+        final sKey = m['senderKey'] as String?;
+        final isMe = (sKey != null && sKey == currentUserId) || sName == 'Me';
+        return Message(
+          m['text'] as String? ?? '',
+          DateTime.fromMillisecondsSinceEpoch(
+            m['timestamp'] as int? ?? DateTime.now().millisecondsSinceEpoch,
+          ),
+          isMe
+              ? mePerson
+              : Person(
+                  name: (sName != null && sName.isNotEmpty) ? sName : safeTitle,
+                  key: sKey ?? chatId,
+                ),
+        );
+      }).toList();
+
+      final messagingStyle = MessagingStyleInformation(
+        mePerson,
+        conversationTitle: isGroup ? safeTitle : null,
+        groupConversation: isGroup,
+        messages: styleMessages,
+      );
+
+      final actions = <AndroidNotificationAction>[
+        const AndroidNotificationAction(
+          'action_mark_read',
+          'Mark as read',
+          cancelNotification: true,
+          showsUserInterface: false,
+        ),
+        const AndroidNotificationAction(
+          'action_reply',
+          'Reply',
+          allowGeneratedReplies: true,
+          cancelNotification: false,
+          inputs: <AndroidNotificationActionInput>[
+            AndroidNotificationActionInput(
+              label: 'Type a reply...',
+              allowFreeFormInput: true,
+            ),
+          ],
+        ),
+      ];
+
+      final androidDetails = AndroidNotificationDetails(
+        _highImportanceChannel.id,
+        _highImportanceChannel.name,
+        channelDescription: _highImportanceChannel.description,
+        importance: Importance.max,
+        priority: Priority.high,
+        playSound: true,
+        enableVibration: true,
+        icon: '@mipmap/launcher_icon',
+        tag: chatId,
+        styleInformation: messagingStyle,
+        visibility: NotificationVisibility.public,
+        category: AndroidNotificationCategory.message,
+        actions: actions,
+      );
+
+      final details = NotificationDetails(
+        android: androidDetails,
+        iOS: const DarwinNotificationDetails(presentSound: true),
+      );
+
+      // Encode the entire FCM data map as JSON so action and tap handlers can read it
+      final payloadMap = Map<String, dynamic>.from(message.data);
+      if (!payloadMap.containsKey('type') ||
+          (payloadMap['type'] as String?)?.isEmpty == true) {
+        payloadMap['type'] = groupId != null ? 'group' : 'chat';
+      }
+      payloadMap['chatId'] = chatId;
+      if (groupId != null) payloadMap['groupId'] = groupId;
+      if (senderUid != null) payloadMap['senderUid'] = senderUid;
+      final payloadJson = jsonEncode(payloadMap);
+
+      try {
+        await _staticLocalNotifications.show(
+          notifId,
+          safeTitle,
+          safeBody,
+          details,
+          payload: payloadJson,
+        );
+        log('✅ Notification posted (MessagingStyle) for $chatId (id: $notifId)');
+      } catch (styleErr) {
+        log('⚠️ MessagingStyle failed, falling back to BigTextStyle: $styleErr');
+        final fallbackAndroidDetails = AndroidNotificationDetails(
+          _highImportanceChannel.id,
+          _highImportanceChannel.name,
+          channelDescription: _highImportanceChannel.description,
+          importance: Importance.max,
+          priority: Priority.high,
+          playSound: true,
+          enableVibration: true,
+          icon: '@mipmap/launcher_icon',
+          tag: chatId,
+          styleInformation: BigTextStyleInformation(safeBody, contentTitle: safeTitle),
+          visibility: NotificationVisibility.public,
+          category: AndroidNotificationCategory.message,
+          actions: actions,
+        );
+        await _staticLocalNotifications.show(
+          notifId,
+          safeTitle,
+          safeBody,
+          NotificationDetails(
+            android: fallbackAndroidDetails,
+            iOS: const DarwinNotificationDetails(presentSound: true),
+          ),
+          payload: payloadJson,
+        );
+        log('✅ Fallback notification posted for $chatId (id: $notifId)');
+      }
+    } catch (e) {
+      log('❌ Error in showNotificationFromRemoteMessage: $e');
+    }
+  }
+
   // ── Foreground: display a local notification ───────────────────────────────
   Future<void> _handleForegroundMessage(RemoteMessage message) async {
     log('Foreground message: ${message.messageId}');
-
-    // Suppress notification if the user is currently viewing this exact chat!
-    final senderUid = message.data['senderUid'] ??
-        message.data['uid'] ??
-        message.data['senderId'];
-    final groupId = message.data['groupId'] ?? message.data['id'];
-    final activeChatId = ActiveChatNotifier.instance.activeChatUid;
-
-    if (activeChatId != null) {
-      if ((senderUid != null && activeChatId == senderUid) ||
-          (groupId != null && activeChatId == groupId)) {
-        log('🚫 Suppressing foreground notification for currently opened chat: $activeChatId');
-        return;
-      }
-    }
-
-    // Support both notification block and data-only FCM messages
-    final title = message.notification?.title ??
-        message.data['title'] ??
-        message.data['name'] ??
-        'New Message';
-    final body = message.notification?.body ??
-        message.data['body'] ??
-        message.data['text'] ??
-        '';
-
-    if (title.toString().trim().isEmpty && body.toString().trim().isEmpty) {
-      return;
-    }
-    final chatId = (groupId ?? senderUid)?.toString().trim();
-    final notifId = chatId != null && chatId.isNotEmpty
-        ? (chatId.hashCode.abs() % 2147483647)
-        : message.hashCode;
-
-    final androidDetails = AndroidNotificationDetails(
-      _highImportanceChannel.id,
-      _highImportanceChannel.name,
-      channelDescription: _highImportanceChannel.description,
-      importance: Importance.max,
-      priority: Priority.high,
-      playSound: true,
-      enableVibration: true,
-      icon: '@mipmap/launcher_icon',
-      tag: chatId,
-    );
-
-    final details = NotificationDetails(
-      android: androidDetails,
-      iOS: const DarwinNotificationDetails(presentSound: true),
-    );
-
-    // Encode the entire FCM data map as JSON so the tap handler can read it
-    final payloadJson = jsonEncode(message.data);
-
-    await _localNotifications.show(
-      notifId,
-      title.toString(),
-      body.toString(),
-      details,
-      payload: payloadJson,
-    );
+    await showNotificationFromRemoteMessage(message);
   }
 
-  // ── Local notification tapped ──────────────────────────────────────────────
-  void _onLocalNotificationTapped(NotificationResponse response) {
-    log('Local notification tapped, payload: ${response.payload}');
+  // ── Local notification response (tap or action button) ─────────────────────
+  Future<void> _onLocalNotificationTapped(NotificationResponse response) async {
+    log('Local notification action: ${response.actionId}, payload: ${response.payload}');
+
+    if (response.actionId == 'action_mark_read') {
+      await handleMarkAsReadAction(response);
+      return;
+    }
+
+    if (response.actionId == 'action_reply') {
+      await handleReplyAction(response);
+      return;
+    }
+
     if (response.payload == null || response.payload!.isEmpty) return;
     try {
       final data = Map<String, dynamic>.from(
@@ -491,6 +750,410 @@ class FirebaseNotificationService {
       _navigateFromNotificationData(data);
     } catch (e) {
       log('Error parsing notification payload: $e');
+    }
+  }
+
+  // ── Notification Action: Mark as read ──────────────────────────────────────
+  static Future<void> handleMarkAsReadAction(
+    NotificationResponse response,
+  ) async {
+    try {
+      await ensureStaticInitialized();
+      if (response.payload == null || response.payload!.isEmpty) return;
+      final data = Map<String, dynamic>.from(
+        jsonDecode(response.payload!) as Map,
+      );
+      log('Mark as read requested from notification: $data');
+
+      final prefs = await SharedPreferences.getInstance();
+      var currentUserId = FirebaseAuth.instance.currentUser?.uid ??
+          prefs.getString('cached_current_user_id');
+      if (currentUserId == null) {
+        for (int i = 0; i < 15; i++) {
+          await Future.delayed(const Duration(milliseconds: 100));
+          currentUserId = FirebaseAuth.instance.currentUser?.uid ??
+              prefs.getString('cached_current_user_id');
+          if (currentUserId != null) break;
+        }
+      }
+      if (currentUserId == null) {
+        log('⚠️ User not authenticated, cannot mark as read from notification');
+        return;
+      }
+
+      String? type = data['type'] as String?;
+      final senderUid = (data['senderUid'] ??
+              data['uid'] ??
+              data['senderId'])
+          ?.toString()
+          .trim();
+      final groupId = (data['groupId'] ?? data['id'])?.toString().trim();
+
+      if (type == null || type.isEmpty) {
+        if (groupId != null && groupId.isNotEmpty) {
+          type = 'group';
+        } else if (senderUid != null && senderUid.isNotEmpty) {
+          type = 'chat';
+        }
+      }
+
+      final chatId = (groupId ?? senderUid) ?? '';
+      if (chatId.isNotEmpty) {
+        await cancelNotificationsForChat(chatId);
+      }
+
+      if (type == 'chat' && senderUid != null && senderUid.isNotEmpty) {
+        // 1. Reset unseenCount on current user's contact doc
+        try {
+          await FirebaseFirestore.instance
+              .collection('users')
+              .doc(currentUserId)
+              .collection('chats')
+              .doc(senderUid)
+              .update({'unseenCount': false});
+        } catch (e) {
+          log('Note: could not update contact unseenCount: $e');
+        }
+
+        // 2. Mark unread messages as seen in both sender and receiver subcollections
+        try {
+          final unreadDocs = await FirebaseFirestore.instance
+              .collection('users')
+              .doc(currentUserId)
+              .collection('chats')
+              .doc(senderUid)
+              .collection('messages')
+              .where('isSeen', isEqualTo: false)
+              .get();
+
+          if (unreadDocs.docs.isNotEmpty) {
+            final batch = FirebaseFirestore.instance.batch();
+            int markedCount = 0;
+            for (final doc in unreadDocs.docs) {
+              final dData = doc.data();
+              if (dData['receiverId'] != null && dData['receiverId'] != currentUserId) {
+                continue;
+              }
+              markedCount++;
+              batch.update(doc.reference, {'isSeen': true, 'isDelivered': true});
+
+              final senderMsgRef = FirebaseFirestore.instance
+                  .collection('users')
+                  .doc(senderUid)
+                  .collection('chats')
+                  .doc(currentUserId)
+                  .collection('messages')
+                  .doc(doc.id);
+              batch.update(senderMsgRef, {'isSeen': true, 'isDelivered': true});
+            }
+            if (markedCount > 0) {
+              await batch.commit();
+              log('✅ Marked $markedCount 1-to-1 messages as seen from notification');
+            }
+          }
+        } catch (e) {
+          log('❌ Error marking 1-to-1 messages seen: $e');
+        }
+      } else if (type == 'group' && groupId != null && groupId.isNotEmpty) {
+        // 1. Reset group unseenMessages flag for current user
+        try {
+          await FirebaseFirestore.instance
+              .collection('groups')
+              .doc(groupId)
+              .update({
+            'unseenMessages.$currentUserId': false,
+          });
+        } catch (e) {
+          log('Note: could not update group unseenMessages: $e');
+        }
+
+        // 2. Mark unread group messages as seen
+        try {
+          final unreadDocs = await FirebaseFirestore.instance
+              .collection('groups')
+              .doc(groupId)
+              .collection('chats')
+              .where('isSeen', isEqualTo: false)
+              .get();
+
+          if (unreadDocs.docs.isNotEmpty) {
+            final batch = FirebaseFirestore.instance.batch();
+            for (final doc in unreadDocs.docs) {
+              batch.update(doc.reference, {'isSeen': true, 'isDelivered': true});
+            }
+            await batch.commit();
+            log('✅ Marked ${unreadDocs.docs.length} group messages as seen from notification');
+          }
+        } catch (e) {
+          log('❌ Error marking group messages seen: $e');
+        }
+      }
+    } catch (e) {
+      log('❌ Error in handleMarkAsReadAction: $e');
+    }
+  }
+
+  // ── Notification Action: Reply ─────────────────────────────────────────────
+  static Future<void> handleReplyAction(
+    NotificationResponse response,
+  ) async {
+    try {
+      await ensureStaticInitialized();
+      final replyText = response.input?.trim();
+      if (replyText == null || replyText.isEmpty) {
+        log('⚠️ Empty reply input from notification, ignoring');
+        return;
+      }
+
+      if (response.payload == null || response.payload!.isEmpty) return;
+      final data = Map<String, dynamic>.from(
+        jsonDecode(response.payload!) as Map,
+      );
+      log('Reply submitted from notification: "$replyText", data: $data');
+
+      final prefs = await SharedPreferences.getInstance();
+      var currentUserId = FirebaseAuth.instance.currentUser?.uid ??
+          prefs.getString('cached_current_user_id');
+      if (currentUserId == null) {
+        for (int i = 0; i < 15; i++) {
+          await Future.delayed(const Duration(milliseconds: 100));
+          currentUserId = FirebaseAuth.instance.currentUser?.uid ??
+              prefs.getString('cached_current_user_id');
+          if (currentUserId != null) break;
+        }
+      }
+      if (currentUserId == null) {
+        log('⚠️ User not authenticated, cannot send reply from notification');
+        return;
+      }
+
+      String? type = data['type'] as String?;
+      final senderUid = (data['senderUid'] ??
+              data['uid'] ??
+              data['senderId'])
+          ?.toString()
+          .trim();
+      final groupId = (data['groupId'] ?? data['id'])?.toString().trim();
+
+      if (type == null || type.isEmpty) {
+        if (groupId != null && groupId.isNotEmpty) {
+          type = 'group';
+        } else if (senderUid != null && senderUid.isNotEmpty) {
+          type = 'chat';
+        }
+      }
+
+      final chatId = (groupId ?? senderUid) ?? '';
+      if (chatId.isNotEmpty) {
+        await cancelNotificationsForChat(chatId);
+      }
+
+      // Fetch current user details
+      UserModel? currentUser;
+      try {
+        final userDoc = await FirebaseFirestore.instance
+            .collection('users')
+            .doc(currentUserId)
+            .get();
+        if (userDoc.exists && userDoc.data() != null) {
+          currentUser = UserModel.fromMap(userDoc.data()!);
+        }
+      } catch (e) {
+        log('Warning: could not fetch current user for reply: $e');
+      }
+
+      final cachedName = prefs.getString('cached_current_user_name');
+      final cachedPic = prefs.getString('cached_current_user_pic');
+
+      final senderName = currentUser?.name ?? currentUser?.userName ?? cachedName ?? 'User';
+      final senderProfilePic = currentUser?.profilePic ?? cachedPic ?? '';
+      final timeSent = DateTime.now();
+      final messageId = const Uuid().v1();
+
+      if (type == 'chat' && senderUid != null && senderUid.isNotEmpty) {
+        // Fetch recipient's data for latest token and name
+        UserModel? receiverUser;
+        try {
+          final rDoc = await FirebaseFirestore.instance
+              .collection('users')
+              .doc(senderUid)
+              .get();
+          if (rDoc.exists && rDoc.data() != null) {
+            receiverUser = UserModel.fromMap(rDoc.data()!);
+          }
+        } catch (_) {}
+
+        final receiverName =
+            receiverUser?.name ?? (data['name'] as String?) ?? 'User';
+        final receiverToken = receiverUser?.fcmToken ?? '';
+
+        final message = OneToOneMessageModel(
+          senderId: currentUserId,
+          receiverId: senderUid,
+          text: replyText,
+          messageType: 'text',
+          timeSent: timeSent,
+          messageId: messageId,
+          isSeen: false,
+          isDelivered: false,
+          isSending: false,
+          fileMessageData: null,
+          repliedMessage: '',
+          repliedTo: '',
+          repliedMessageType: 'text',
+        );
+
+        // Atomic message write to both users
+        final batch = FirebaseFirestore.instance.batch();
+        final receiverMessageRef = FirebaseFirestore.instance
+            .collection('users')
+            .doc(senderUid)
+            .collection('chats')
+            .doc(currentUserId)
+            .collection('messages')
+            .doc(messageId);
+        final senderMessageRef = FirebaseFirestore.instance
+            .collection('users')
+            .doc(currentUserId)
+            .collection('chats')
+            .doc(senderUid)
+            .collection('messages')
+            .doc(messageId);
+
+        batch.set(receiverMessageRef, message.toMap());
+        batch.set(senderMessageRef, message.toMap());
+        await batch.commit();
+
+        // Update contacts
+        String myToken = '';
+        try {
+          myToken = await FirebaseMessaging.instance.getToken() ?? '';
+        } catch (_) {}
+        final receiverContact = ChatContact(
+          name: senderName,
+          profilePic: senderProfilePic,
+          uid: currentUserId,
+          timeSent: timeSent,
+          lastMessage: replyText,
+          fcmToken: myToken,
+          unseenCount: true,
+          chatBackgroundUrl: '',
+        );
+        await FirebaseFirestore.instance
+            .collection('users')
+            .doc(senderUid)
+            .collection('chats')
+            .doc(currentUserId)
+            .set(receiverContact.toMap(), SetOptions(merge: true));
+
+        final senderContact = ChatContact(
+          name: receiverName,
+          profilePic: receiverUser?.profilePic,
+          uid: senderUid,
+          timeSent: timeSent,
+          lastMessage: replyText,
+          fcmToken: receiverToken,
+          unseenCount: false,
+          chatBackgroundUrl: '',
+        );
+        await FirebaseFirestore.instance
+            .collection('users')
+            .doc(currentUserId)
+            .collection('chats')
+            .doc(senderUid)
+            .set(senderContact.toMap(), SetOptions(merge: true));
+
+        // Send FCM notification to recipient
+        if (receiverToken.isNotEmpty) {
+          await sendNotification(
+            receiverToken,
+            senderName,
+            replyText,
+            data: {
+              'type': 'chat',
+              'senderUid': currentUserId,
+              'name': senderName,
+              'profilePic': senderProfilePic,
+              'tag': currentUserId,
+            },
+          );
+        }
+        log('✅ Direct notification reply sent for 1-to-1 chat');
+      } else if (type == 'group' && groupId != null && groupId.isNotEmpty) {
+        final groupDoc = await FirebaseFirestore.instance
+            .collection('groups')
+            .doc(groupId)
+            .get();
+
+        if (groupDoc.exists && groupDoc.data() != null) {
+          final gData = groupDoc.data()!;
+          final groupName = (gData['name'] ??
+              data['groupName'] ??
+              'Group Chat') as String;
+          final membersUid = List<String>.from(gData['membersUid'] ?? []);
+          final receiverIds =
+              membersUid.where((m) => m != currentUserId).toList();
+
+          final groupMessage = GroupChatMessageModel(
+            senderId: currentUserId,
+            receiverIds: receiverIds,
+            groupId: groupId,
+            text: replyText,
+            messageType: 'text',
+            timeSent: timeSent,
+            messageId: messageId,
+            isSeen: false,
+            isDelivered: false,
+            isSending: false,
+            fileMessageData: null,
+            repliedMessage: '',
+            repliedTo: '',
+            repliedMessageType: 'text',
+          );
+
+          await FirebaseFirestore.instance
+              .collection('groups')
+              .doc(groupId)
+              .collection('chats')
+              .doc(messageId)
+              .set(groupMessage.toMap());
+
+          Map<String, bool> unseenMessages = {};
+          for (var uid in membersUid) {
+            unseenMessages[uid] = (uid != currentUserId);
+          }
+
+          await FirebaseFirestore.instance
+              .collection('groups')
+              .doc(groupId)
+              .update({
+            'senderId': currentUserId,
+            'lastMessage': replyText,
+            'timeSent': DateTime.now().millisecondsSinceEpoch,
+            'unseenMessages': unseenMessages,
+          });
+
+          final freshTokens =
+              await FCMTokenManager.getGroupMemberTokens(groupId);
+          if (freshTokens.isNotEmpty) {
+            await sendMultipleNotification(
+              freshTokens,
+              groupName,
+              '$senderName: $replyText',
+              data: {
+                'type': 'group',
+                'groupId': groupId,
+                'groupName': groupName,
+                'tag': groupId,
+                'name': senderName,
+              },
+            );
+          }
+          log('✅ Direct notification reply sent for group chat');
+        }
+      }
+    } catch (e) {
+      log('❌ Error in handleReplyAction: $e');
     }
   }
 

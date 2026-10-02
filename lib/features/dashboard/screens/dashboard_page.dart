@@ -9,7 +9,7 @@ import 'package:worship_chat/features/bookmark/controller/bookmark_controller.da
 import 'package:worship_chat/features/bookmark/screens/bookmark_screen.dart';
 import 'package:worship_chat/features/dashboard/screens/event_calender_page.dart';
 import 'package:worship_chat/features/dashboard/widgets/event_shortcuts_widget.dart';
-import 'package:worship_chat/features/dashboard/widgets/group_shortcuts_grid.dart';
+import 'package:worship_chat/features/dashboard/widgets/today_birthdays_slideshow_widget.dart';
 import 'package:worship_chat/features/dashboard/widgets/todo_page.dart';
 import 'package:worship_chat/models/bookmark_model.dart';
 
@@ -61,9 +61,8 @@ class _DashboardPageState extends ConsumerState<DashboardPage> {
             currentUserId: currentUserId,
           ),
 
-          // ── Group Shortcuts ───────────────────────────────────────────
-          const SizedBox(height: 24),
-          GroupShortcutsGrid(currentUserId: currentUserId),
+          // ── Today's Birthday Celebrations Slideshow (Active on birthdays) ──
+          const TodayBirthdaysSlideshowWidget(),
 
           // ── Birthday & Event Shortcuts ────────────────────────────────
           const SizedBox(height: 24),

@@ -10,6 +10,7 @@ import 'package:path_provider/path_provider.dart';
 import 'package:photo_view/photo_view.dart';
 import 'package:photo_view/photo_view_gallery.dart';
 import 'package:worship_chat/colors.dart';
+import 'package:worship_chat/common/utils/utils.dart';
 import 'package:worship_chat/common/widgets/skeleton_loader.dart';
 import 'package:worship_chat/common/widgets/user_avatar.dart';
 import 'package:worship_chat/features/bookmark/controller/bookmark_controller.dart';
@@ -555,16 +556,9 @@ class _BookmarkFullscreenViewerState
     }
   }
 
-  void _snack(String msg, Color color) {
+  void _snack(String msg, [Color? color]) {
     if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text(msg),
-        backgroundColor: color,
-        behavior: SnackBarBehavior.floating,
-        duration: const Duration(seconds: 2),
-      ),
-    );
+    AppSnackBar.show(context, message: msg);
   }
 
   Future<void> _confirmRemove() async {

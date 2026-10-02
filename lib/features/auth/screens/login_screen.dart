@@ -26,7 +26,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
         _isLoading = true;
       });
 
-      String email = _emailController.text.trim();
+      String email = _emailController.text.trim().toLowerCase();
       String password = _passwordController.text.trim();
 
       await ref
@@ -86,6 +86,9 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                       const SizedBox(height: 20),
                       TextFormField(
                         controller: _emailController,
+                        keyboardType: TextInputType.emailAddress,
+                        autocorrect: false,
+                        enableSuggestions: false,
                         style: const TextStyle(color: textColor),
                         decoration: InputDecoration(
                           labelText: 'Email',
@@ -114,6 +117,8 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                       TextFormField(
                         controller: _passwordController,
                         obscureText: _obscurePassword,
+                        autocorrect: false,
+                        enableSuggestions: false,
                         style: const TextStyle(color: Colors.white),
                         decoration: InputDecoration(
                           labelText: 'Password',

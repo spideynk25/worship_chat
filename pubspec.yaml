@@ -45,7 +45,6 @@ dependencies:
   dio: ^5.8.0+1
   cached_network_image: ^3.4.1
   video_player: ^2.9.5
-  giphy_picker: ^3.0.2
   swipe_to: ^1.0.6
   hive: ^2.2.3
   hive_flutter: ^1.1.0
@@ -70,6 +69,14 @@ dependencies:
   firebase_auth: ^5.7.0
   gallery_saver_plus: ^3.2.9
   share_handler: ^0.0.20
+  shared_preferences: ^2.5.5
+  file_picker: ^13.1.0
+  geolocator: ^14.1.1
+  open_filex: ^4.7.0
+  flutter_map: ^8.3.2
+  latlong2: ^0.10.1
+  google_mlkit_selfie_segmentation: ^0.12.1
+  google_mlkit_text_recognition: ^0.17.1
   
   
  

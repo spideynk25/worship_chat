@@ -46,6 +46,9 @@ class OneToOneMessageModel {
   final bool? _isSending;
   bool get isSending => _isSending ?? false;
 
+  @HiveField(12)
+  final Map<String, String> reactions; // userId -> emoji
+
   OneToOneMessageModel({
     required this.senderId,
     required this.receiverId,
@@ -60,11 +63,12 @@ class OneToOneMessageModel {
     required this.repliedMessage,
     required this.repliedTo,
     required this.repliedMessageType,
+    Map<String, String>? reactions,
   })  : _isSeen = isSeen ?? false,
         _isDelivered = isDelivered ?? false,
-        _isSending = isSending ?? false;
+        _isSending = isSending ?? false,
+        reactions = reactions ?? const {};
 
-  // ✅ Added copyWith - no HiveField changes so no regeneration needed
   OneToOneMessageModel copyWith({
     String? senderId,
     String? receiverId,
@@ -79,6 +83,7 @@ class OneToOneMessageModel {
     String? repliedMessage,
     String? repliedTo,
     String? repliedMessageType,
+    Map<String, String>? reactions,
   }) {
     return OneToOneMessageModel(
       senderId: senderId ?? this.senderId,
@@ -94,6 +99,7 @@ class OneToOneMessageModel {
       repliedMessage: repliedMessage ?? this.repliedMessage,
       repliedTo: repliedTo ?? this.repliedTo,
       repliedMessageType: repliedMessageType ?? this.repliedMessageType,
+      reactions: reactions ?? this.reactions,
     );
   }
 
@@ -111,6 +117,7 @@ class OneToOneMessageModel {
       'repliedMessage': repliedMessage,
       'repliedTo': repliedTo,
       'repliedMessageType': repliedMessageType,
+      'reactions': reactions,
     };
   }
 
@@ -132,6 +139,15 @@ class OneToOneMessageModel {
       parsedTime = DateTime.now();
     }
 
+    Map<String, String> parsedReactions = {};
+    if (map['reactions'] is Map) {
+      (map['reactions'] as Map).forEach((k, v) {
+        if (k != null && v != null) {
+          parsedReactions[k.toString()] = v.toString();
+        }
+      });
+    }
+
     return OneToOneMessageModel(
       senderId: map['senderId']?.toString() ?? '',
       receiverId: map['receiverId']?.toString() ?? '',
@@ -146,6 +162,7 @@ class OneToOneMessageModel {
       repliedMessage: map['repliedMessage']?.toString() ?? '',
       repliedTo: map['repliedTo']?.toString() ?? '',
       repliedMessageType: map['repliedMessageType']?.toString() ?? 'text',
+      reactions: parsedReactions,
     );
   }
 }

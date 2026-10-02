@@ -3,6 +3,7 @@ import 'dart:io';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:hive_flutter/hive_flutter.dart';
@@ -254,13 +255,15 @@ class GroupRepository {
 
   Stream<List<GroupChatMessageModel>> getGroupChatStream(
       String groupId) async* {
+    final localKey = groupId;
+
     // 1. Immediately emit cached messages from Hive (0ms)
     try {
       if (Hive.isBoxOpen('messages')) {
         final box = Hive.box('messages');
-        final cachedData = box.get(groupId, defaultValue: []);
-        if (cachedData is List && cachedData.isNotEmpty) {
-          final cachedMessages = cachedData.cast<GroupChatMessageModel>();
+        final cachedData = box.get(localKey, defaultValue: []);
+        final cachedMessages = _safeCastGroupMessages(cachedData);
+        if (cachedMessages.isNotEmpty) {
           log('⚡ [Instant Cache] Emitted ${cachedMessages.length} cached group messages for $groupId');
           yield cachedMessages;
         }
@@ -274,7 +277,6 @@ class GroupRepository {
         .collection('groups')
         .doc(groupId)
         .collection('chats')
-        .orderBy('timeSent')
         .snapshots()
         .asyncMap((event) async {
           try {
@@ -291,12 +293,33 @@ class GroupRepository {
                 prev[i].isSeen != next[i].isSeen ||
                 prev[i].isDelivered != next[i].isDelivered ||
                 prev[i].isSending != next[i].isSending ||
-                prev[i].text != next[i].text) {
+                prev[i].text != next[i].text ||
+                prev[i].fileMessageData != next[i].fileMessageData ||
+                !mapEquals(prev[i].reactions, next[i].reactions)) {
               return false;
             }
           }
           return true;
         });
+  }
+
+  List<GroupChatMessageModel> _safeCastGroupMessages(dynamic cachedData) {
+    if (cachedData is! List) return [];
+    final List<GroupChatMessageModel> result = [];
+    for (var item in cachedData) {
+      if (item is GroupChatMessageModel) {
+        result.add(item);
+      } else if (item is Map) {
+        try {
+          result.add(
+            GroupChatMessageModel.fromMap(Map<String, dynamic>.from(item)),
+          );
+        } catch (e) {
+          log('❌ Error parsing group message map from Hive: $e');
+        }
+      }
+    }
+    return result;
   }
 
   Future<List<GroupChatMessageModel>> _processGroupMessages(
@@ -327,19 +350,15 @@ class GroupRepository {
     // Build map starting from Firestore (wins on conflict)
     final Map<String, GroupChatMessageModel> allMessagesMap = {};
 
-    // ✅ FIX: Load ALL cached messages first (not just seen ones)
-    // Previously only seen cached messages were kept, causing unseen
-    // sent messages to vanish if they hadn't been seen yet
+    // Load cached messages safely
     if (box != null) {
       try {
         final cachedData = box.get(localKey, defaultValue: []);
-        if (cachedData is List) {
-          final localMessages = cachedData.cast<GroupChatMessageModel>();
-          for (var m in localMessages) {
-            allMessagesMap[m.messageId] = m;
-          }
-          log('📦 Loaded ${localMessages.length} messages from cache');
+        final localMessages = _safeCastGroupMessages(cachedData);
+        for (var m in localMessages) {
+          allMessagesMap[m.messageId] = m;
         }
+        log('📦 Loaded ${localMessages.length} messages from cache');
       } catch (e) {
         log('❌ Error loading from Hive: $e');
       }
@@ -356,7 +375,7 @@ class GroupRepository {
 
     log('📊 Total unique messages: ${allMessages.length}');
 
-    // ✅ Save merged list to Hive immediately, then batch clean seen/old messages from Firestore
+    // Save merged list to Hive immediately
     if (box != null) {
       _saveToHiveAsync(box, localKey, allMessages, groupId, firestoreMessages);
     }
@@ -538,6 +557,74 @@ class GroupRepository {
         });
   }
 
+  /// Returns all groups (Queen Pooja, Queen Rashmika, and General groups) where the user is a member.
+  Stream<List<GroupModel>> getAllUserGroups() async* {
+    final currentUser = auth.currentUser;
+    if (currentUser == null) return;
+
+    // 1. Immediately emit cached groups from Hive for instant 0ms load
+    try {
+      final pooja = getCachedGroups('groups_pooja');
+      final rashmika = getCachedGroups('groups_rashmika');
+      final general = getCachedGroups('groups_none');
+      final allCached = getCachedGroups('groups_all');
+
+      final Map<String, GroupModel> mergedMap = {};
+      for (final g in allCached) {
+        mergedMap[g.groupId] = g;
+      }
+      for (final g in pooja) {
+        mergedMap[g.groupId] = g;
+      }
+      for (final g in rashmika) {
+        mergedMap[g.groupId] = g;
+      }
+      for (final g in general) {
+        mergedMap[g.groupId] = g;
+      }
+
+      if (mergedMap.isNotEmpty) {
+        final sortedList = mergedMap.values.toList()
+          ..sort((a, b) => a.name.toLowerCase().compareTo(b.name.toLowerCase()));
+        log('⚡ [Instant Cache] Emitted ${sortedList.length} total user groups from Hive');
+        yield sortedList;
+      }
+    } catch (e) {
+      log('Error reading cached all groups: $e');
+    }
+
+    // 2. Stream all groups where user is a member from Firestore
+    yield* firestore.collection('groups').snapshots().map((event) {
+      final List<GroupModel> groups = [];
+      for (var document in event.docs) {
+        try {
+          var group = GroupModel.fromMap(document.data());
+          if (group.membersUid.contains(currentUser.uid)) {
+            groups.add(group);
+          }
+        } catch (e) {
+          log("Error parsing group ${document.id}: $e");
+        }
+      }
+
+      // Sort alphabetically for clean UI
+      groups.sort((a, b) => a.name.toLowerCase().compareTo(b.name.toLowerCase()));
+
+      try {
+        if (Hive.isBoxOpen('groups_cache')) {
+          Hive.box('groups_cache').put(
+            'groups_all_${currentUser.uid}',
+            groups.map((g) => g.toMap()).toList(),
+          );
+        }
+      } catch (e) {
+        log('Error saving all groups to Hive: $e');
+      }
+
+      return groups;
+    });
+  }
+
   Future<void> setChatMessageSeen(
     BuildContext context,
     String groupId,
@@ -589,6 +676,8 @@ class GroupRepository {
   Future<void> markGroupAsSeen(String groupId) async {
     final currentUserId = auth.currentUser?.uid;
     if (currentUserId == null || groupId.isEmpty) return;
+
+    FirebaseNotificationService.cancelNotificationsForChat(groupId);
 
     // 1. Immediately clear unseen badge on the group document for current user
     try {
@@ -820,6 +909,9 @@ class GroupRepository {
             case 'gif':
               body = '🎞️ GIF';
               break;
+            case 'document':
+              body = '📄 ${text.isNotEmpty ? text : 'Document'}';
+              break;
             default:
               body = '📎 Media message';
           }
@@ -834,6 +926,7 @@ class GroupRepository {
             'groupId': groupId,
             'groupName': groupName,
             'tag': groupId,
+            'name': name,
           },
         );
       } catch (e) {
@@ -861,6 +954,9 @@ class GroupRepository {
           break;
         case "gif":
           lastMessage = "🎮 Gif";
+          break;
+        case "document":
+          lastMessage = "📄 ${text.isNotEmpty ? text : 'Document'}";
           break;
         default:
           lastMessage = text;
@@ -916,7 +1012,7 @@ class GroupRepository {
     }
   }
 
-  void sendTextMessage({
+  Future<void> sendTextMessage({
     required BuildContext context,
     required String text,
     required List<String> receiverIds,
@@ -969,16 +1065,48 @@ class GroupRepository {
       _saveOptimisticGroupMessageToHive(groupId, optimisticMessage);
 
       if (messageType == "image" && file != null) {
-        fileData = await uploadImageToCloudinary(file, type);
-        if (file is File && fileData != null && fileData.isNotEmpty) {
-          MediaCacheService().registerLocalMapping(fileData, file.path);
+        if (file is File) {
+          fileData = await uploadImageToCloudinary(file, type);
+          if (fileData != null && fileData.isNotEmpty) {
+            MediaCacheService().registerLocalMapping(fileData, file.path);
+          }
+        } else if (file is String) {
+          fileData = file;
         }
       } else if (messageType == "video" && file != null) {
-        fileData = await uploadVideoToCloudinary(file, type);
-        if (file is File && fileData != null && fileData.isNotEmpty) {
-          MediaCacheService().registerLocalMapping(fileData, file.path);
+        if (file is File) {
+          fileData = await uploadVideoToCloudinary(file, type);
+          if (fileData != null && fileData.isNotEmpty) {
+            MediaCacheService().registerLocalMapping(fileData, file.path);
+          }
+        } else if (file is String) {
+          fileData = file;
+        }
+      } else if (messageType == "gif" && file != null) {
+        if (file is File) {
+          log("📤 Uploading GIF for group message: $messageId");
+          fileData = await uploadImageToCloudinary(file, type);
+          log("✅ GIF uploaded for group: $fileData");
+          if (fileData != null && fileData.isNotEmpty) {
+            MediaCacheService().registerLocalMapping(fileData, file.path);
+          }
+        } else if (file is String) {
+          fileData = file;
         }
       } else if (messageType == "url" && file != null) {
+        fileData = file;
+      } else if (messageType == "document" && file != null) {
+        if (file is File) {
+          log("📤 Uploading document for group message: $messageId");
+          fileData = await uploadDocumentToCloudinary(file, type);
+          log("✅ Document uploaded for group: $fileData");
+          if (fileData != null && fileData.isNotEmpty) {
+            MediaCacheService().registerLocalMapping(fileData, file.path);
+          }
+        } else if (file is String) {
+          fileData = file;
+        }
+      } else if (file is String) {
         fileData = file;
       }
 
@@ -1184,5 +1312,66 @@ class GroupRepository {
 
   bool _containsUrl(String text) {
     return RegExp(r'https?://[^\s]+', caseSensitive: false).hasMatch(text);
+  }
+
+  Future<void> toggleGroupReaction({
+    required String groupId,
+    required String messageId,
+    required String emoji,
+  }) async {
+    final currentUserId = auth.currentUser?.uid;
+    if (currentUserId == null) return;
+
+    // 1. Optimistically update local Hive cache for instant 0ms UI feedback
+    try {
+      if (Hive.isBoxOpen('messages')) {
+        final box = Hive.box('messages');
+        final cachedData = box.get(groupId, defaultValue: []);
+        final messages = _safeCastGroupMessages(cachedData);
+        final idx = messages.indexWhere((m) => m.messageId == messageId);
+        if (idx >= 0) {
+          final oldMsg = messages[idx];
+          final updatedReactions = Map<String, String>.from(oldMsg.reactions);
+          if (updatedReactions[currentUserId] == emoji) {
+            updatedReactions.remove(currentUserId);
+          } else {
+            updatedReactions[currentUserId] = emoji;
+          }
+          messages[idx] = oldMsg.copyWith(reactions: updatedReactions);
+          await box.put(groupId, messages);
+        }
+      }
+    } catch (e) {
+      log('Error optimistically updating group reaction in Hive: $e');
+    }
+
+    // 2. Persist to Firestore
+    try {
+      final msgRef = firestore
+          .collection('groups')
+          .doc(groupId)
+          .collection('chats')
+          .doc(messageId);
+
+      final snapshot = await msgRef.get();
+      if (!snapshot.exists) return;
+
+      final data = snapshot.data();
+      final reactions = (data?['reactions'] is Map)
+          ? Map<String, dynamic>.from(data!['reactions'] as Map)
+          : <String, dynamic>{};
+
+      if (reactions[currentUserId] == emoji) {
+        // Toggle OFF (remove reaction)
+        await msgRef.update({'reactions.$currentUserId': FieldValue.delete()});
+      } else {
+        // Add or change reaction
+        await msgRef.update({'reactions.$currentUserId': emoji});
+      }
+
+      log('✅ Group reaction updated: $emoji on message $messageId in group $groupId');
+    } catch (e) {
+      log('❌ Error toggling group reaction: $e');
+    }
   }
 }

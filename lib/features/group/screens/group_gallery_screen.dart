@@ -11,11 +11,14 @@ import 'package:path_provider/path_provider.dart';
 import 'package:photo_view/photo_view.dart';
 import 'package:photo_view/photo_view_gallery.dart';
 import 'package:worship_chat/colors.dart';
+import 'package:worship_chat/common/utils/utils.dart';
 import 'package:worship_chat/common/widgets/loader.dart';
 import 'package:worship_chat/features/auth/controller/auth_controller.dart';
 import 'package:worship_chat/features/bookmark/controller/bookmark_controller.dart';
+import 'package:worship_chat/features/chat/screens/ai_magic_studio_screen.dart';
 import 'package:worship_chat/features/group/controller/group_gallery_controller.dart';
 import 'package:worship_chat/features/group/screens/slide_show_screen.dart';
+import 'package:worship_chat/features/chat/widgets/forward_message_sheet.dart';
 import 'package:worship_chat/models/group_gallery_image.dart';
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -154,9 +157,7 @@ class _GroupGalleryScreenState extends ConsumerState<GroupGalleryScreen>
 
   void _snack(String msg) {
     if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text(msg), behavior: SnackBarBehavior.floating),
-    );
+    AppSnackBar.show(context, message: msg);
   }
 
   // ── Build ─────────────────────────────────────────────────────────────────
@@ -402,6 +403,29 @@ class _FullscreenViewerState extends ConsumerState<_FullscreenViewer> {
     }
   }
 
+  // ── AI Magic Studio ────────────────────────────────────────────────────────
+
+  Future<void> _openMagicStudio() async {
+    try {
+      final img = widget.images[_index];
+      final dir = await getTemporaryDirectory();
+      final filePath = '${dir.path}/magic_${img.imageId}.jpg';
+      final file = File(filePath);
+      if (!await file.exists()) {
+        await Dio().download(img.imageUrl, filePath);
+      }
+      if (!mounted) return;
+      await Navigator.push(
+        context,
+        MaterialPageRoute(
+          builder: (context) => AiMagicStudioScreen(initialImage: file),
+        ),
+      );
+    } catch (e) {
+      if (mounted) _snack('⚠️ Failed to open image in AI Studio: $e');
+    }
+  }
+
   // ── Bookmark ──────────────────────────────────────────────────────────────
 
   Future<void> _toggleBookmark() async {
@@ -419,16 +443,9 @@ class _FullscreenViewerState extends ConsumerState<_FullscreenViewer> {
         );
   }
 
-  void _snack(String msg, Color color) {
+  void _snack(String msg, [Color? color]) {
     if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text(msg),
-        backgroundColor: color,
-        behavior: SnackBarBehavior.floating,
-        duration: const Duration(seconds: 2),
-      ),
-    );
+    AppSnackBar.show(context, message: msg);
   }
 
   // ── Build ─────────────────────────────────────────────────────────────────
@@ -570,6 +587,39 @@ class _FullscreenViewerState extends ConsumerState<_FullscreenViewer> {
                               onPressed: _isDownloading
                                   ? null
                                   : _downloadCurrent,
+                            ),
+
+                            // ── AI Magic Studio ─────────────────────
+                            IconButton(
+                              icon: const Icon(
+                                Icons.auto_fix_high_rounded,
+                                color: Colors.white,
+                              ),
+                              tooltip: 'AI Magic Studio',
+                              onPressed: _openMagicStudio,
+                            ),
+
+                            // ── Forward ────────────────────────────
+                            IconButton(
+                              icon: const Icon(
+                                Icons.forward_rounded,
+                                color: Colors.white,
+                              ),
+                              tooltip: 'Forward photo',
+                              onPressed: () {
+                                ForwardMessageSheet.show(
+                                  context,
+                                  ForwardMessagePayload(
+                                    text: img.caption ?? '',
+                                    messageType: 'image',
+                                    fileMessageData: img.imageUrl,
+                                    caption: img.caption,
+                                    isFromGallery: true,
+                                    sourceGroupId: widget.groupId,
+                                    sourceGroupName: widget.groupName,
+                                  ),
+                                );
+                              },
                             ),
 
                             // ── Slideshow ──────────────────────────
@@ -910,17 +960,73 @@ class _GalleryGrid extends StatelessWidget {
               ),
             ),
           ),
-          onLongPress: () => Navigator.push(
-            context,
-            MaterialPageRoute(
-              builder: (_) => SlideshowScreen(
-                images: images,
-                initialIndex: index,
-                accentColor: accentColor,
-                groupName: groupName,
+          onLongPress: () {
+            showModalBottomSheet(
+              context: context,
+              backgroundColor: const Color(0xFF1B1728),
+              shape: const RoundedRectangleBorder(
+                borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
               ),
-            ),
-          ),
+              builder: (ctx) => SafeArea(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Container(
+                      margin: const EdgeInsets.only(top: 8, bottom: 4),
+                      width: 36,
+                      height: 4,
+                      decoration: BoxDecoration(
+                        color: Colors.white24,
+                        borderRadius: BorderRadius.circular(2),
+                      ),
+                    ),
+                    ListTile(
+                      leading: const Icon(Icons.forward_rounded, color: tabColor),
+                      title: const Text('Forward Photo',
+                          style: TextStyle(color: Colors.white)),
+                      subtitle: const Text(
+                          'Send to chat or another gallery',
+                          style: TextStyle(color: Colors.white54, fontSize: 12)),
+                      onTap: () {
+                        Navigator.pop(ctx);
+                        ForwardMessageSheet.show(
+                          context,
+                          ForwardMessagePayload(
+                            text: img.caption ?? '',
+                            messageType: 'image',
+                            fileMessageData: img.imageUrl,
+                            caption: img.caption,
+                            isFromGallery: true,
+                            sourceGroupId: groupId,
+                            sourceGroupName: groupName,
+                          ),
+                        );
+                      },
+                    ),
+                    ListTile(
+                      leading: Icon(Icons.slideshow_rounded, color: accentColor),
+                      title: const Text('Start Slideshow',
+                          style: TextStyle(color: Colors.white)),
+                      onTap: () {
+                        Navigator.pop(ctx);
+                        Navigator.push(
+                          context,
+                          MaterialPageRoute(
+                            builder: (_) => SlideshowScreen(
+                              images: images,
+                              initialIndex: index,
+                              accentColor: accentColor,
+                              groupName: groupName,
+                            ),
+                          ),
+                        );
+                      },
+                    ),
+                  ],
+                ),
+              ),
+            );
+          },
           child: Hero(
             tag: 'gallery_${img.imageId}',
             child: CachedNetworkImage(

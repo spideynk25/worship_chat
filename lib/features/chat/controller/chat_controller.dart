@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:hive_flutter/hive_flutter.dart';
 import 'package:worship_chat/common/providers/message_reply_provider.dart';
+import 'package:worship_chat/common/utils/utils.dart';
 import 'package:worship_chat/features/auth/controller/auth_controller.dart';
 import 'package:worship_chat/features/chat/repositories/chat_repository.dart';
 import 'package:worship_chat/models/chat_contact.dart';
@@ -66,10 +67,15 @@ class ChatController {
     String fcmToken,
     bool? unseenCount,
     String? chatBackgroundUrl,
-    String type,
-  ) async {
+    String type, {
+    String? groupId,
+    MessageReply? messageReplyOverride,
+    bool clearReply = false,
+  }) async {
     try {
-      final messageReply = ref.read(messageReplyProvider);
+      final messageReply = clearReply
+          ? null
+          : (messageReplyOverride ?? ref.read(messageReplyProvider));
       log("controller sendTextMessage: $fcmToken");
 
       UserModel? senderUser = await ref.read(userDataAuthProvider.future);
@@ -105,22 +111,19 @@ class ChatController {
           unseenCount: unseenCount,
           chatBackgroundUrl: chatBackgroundUrl,
           type: type,
+          groupId: groupId,
         );
         ref.read(messageReplyProvider.notifier).state = null;
       } else {
         log("User data is null");
         if (context.mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('Unable to send message')),
-          );
+          AppSnackBar.error(context, 'Unable to send message');
         }
       }
     } catch (e) {
       log("error in send text message chat_controller: $e");
       if (context.mounted) {
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(const SnackBar(content: Text('Failed to send message')));
+        AppSnackBar.error(context, 'Failed to send message');
       }
     }
   }
@@ -172,5 +175,17 @@ class ChatController {
       log('error on getSharedLinks: $e');
       return [];
     }
+  }
+
+  void toggleReaction({
+    required String messageId,
+    required String receiverUserId,
+    required String emoji,
+  }) {
+    chatRepository.toggleReaction(
+      messageId: messageId,
+      receiverUserId: receiverUserId,
+      emoji: emoji,
+    );
   }
 }

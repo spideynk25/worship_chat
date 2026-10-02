@@ -1,7 +1,9 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:swipe_to/swipe_to.dart';
+import 'package:worship_chat/common/utils/utils.dart';
 import 'display_messages.dart';
+import 'message_reaction_dialog.dart';
 
 class SenderMessageCard extends StatelessWidget {
   final String message;
@@ -12,6 +14,13 @@ class SenderMessageCard extends StatelessWidget {
   final String repliedText;
   final String username;
   final String repliedMessageType;
+  final String? messageId;
+  final String? currentUserId;
+  final String? receiverId;
+  final String? senderProfilePic;
+  final Map<String, String> reactions;
+  final void Function(String emoji)? onReactionSelected;
+  final VoidCallback? onForward;
 
   const SenderMessageCard({
     super.key,
@@ -23,20 +32,20 @@ class SenderMessageCard extends StatelessWidget {
     required this.repliedText,
     required this.username,
     required this.repliedMessageType,
+    this.messageId,
+    this.currentUserId,
+    this.receiverId,
+    this.senderProfilePic,
+    this.reactions = const {},
+    this.onReactionSelected,
+    this.onForward,
   });
 
   void _copyMessage(BuildContext context) {
     final textToCopy = messageType == 'text' ? message : fileMessageData ?? '';
     if (textToCopy.isNotEmpty) {
       Clipboard.setData(ClipboardData(text: textToCopy));
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Message copied'),
-          duration: Duration(seconds: 2),
-          behavior: SnackBarBehavior.floating,
-          margin: EdgeInsets.only(bottom: 80, left: 16, right: 16),
-        ),
-      );
+      AppSnackBar.success(context, 'Message copied');
     }
   }
 
@@ -53,6 +62,7 @@ class SenderMessageCard extends StatelessWidget {
         message.isNotEmpty &&
         message != fileMessageData;
     final isPureMedia = isMedia && !hasCaption;
+    final isPureGif = messageType == 'gif' && !hasCaption && !isReplying;
 
     // Compact single-line detection for short messages (like "hi", "ok", "yes")
     final isShortSingleLine = messageType == 'text' &&
@@ -78,49 +88,108 @@ class SenderMessageCard extends StatelessWidget {
         alignment: Alignment.bottomLeft,
         child: ConstrainedBox(
           constraints: BoxConstraints(maxWidth: screenWidth * 0.75),
-          child: GestureDetector(
-            onLongPress: () => _copyMessage(context),
-            child: Container(
-              margin: EdgeInsets.symmetric(
-                horizontal: isSmallScreen ? 3 : 6,
-                vertical: 2,
-              ),
-              decoration: BoxDecoration(
-                borderRadius: bubbleRadius,
-                gradient: const LinearGradient(
-                  begin: Alignment.topLeft,
-                  end: Alignment.bottomRight,
-                  colors: [
-                    Color(0xFF262137), // Rich obsidian violet
-                    Color(0xFF1B1728), // Deep slate dusk
-                  ],
-                ),
-                border: Border.all(
-                  color: Colors.white.withValues(alpha: 0.08),
-                  width: 0.8,
-                ),
-                boxShadow: [
-                  BoxShadow(
-                    color: Colors.black.withValues(alpha: 0.25),
-                    blurRadius: 8,
-                    offset: const Offset(0, 3),
-                  ),
-                ],
-              ),
-              child: ClipRRect(
-                borderRadius: bubbleRadius,
-                child: isPureMedia
-                    ? _buildPureMedia(context, isReplying)
-                    : isShortSingleLine
-                        ? _buildShortSingleLine(context, isSmallScreen)
-                        : _buildDynamicContent(
-                            context,
-                            isReplying,
-                            isMedia,
-                            isSmallScreen,
+          child: Stack(
+            clipBehavior: Clip.none,
+            children: [
+              Builder(
+                builder: (bubbleContext) => GestureDetector(
+                  onLongPress: () {
+                    final renderBox =
+                        bubbleContext.findRenderObject() as RenderBox?;
+                    if (renderBox == null) return;
+                    final offset = renderBox.localToGlobal(Offset.zero);
+                    final size = renderBox.size;
+                    final rect = Rect.fromLTWH(
+                      offset.dx,
+                      offset.dy,
+                      size.width,
+                      size.height,
+                    );
+
+                    MessageReactionDialog.show(
+                      context: context,
+                      targetRect: rect,
+                      currentUserId: currentUserId,
+                      reactions: reactions,
+                      onReactionSelected: (emoji) {
+                        onReactionSelected?.call(emoji);
+                      },
+                      onReply: onRightSwipe,
+                      onCopy: () => _copyMessage(context),
+                      onForward: onForward,
+                      isMyMessage: false,
+                    );
+                  },
+                  child: Container(
+                    margin: EdgeInsets.only(
+                      left: isSmallScreen ? 3 : 6,
+                      right: isSmallScreen ? 3 : 6,
+                      top: 2,
+                      bottom: reactions.isNotEmpty ? 13 : 2,
+                    ),
+                    decoration: isPureGif
+                        ? null
+                        : BoxDecoration(
+                            borderRadius: bubbleRadius,
+                            gradient: const LinearGradient(
+                              begin: Alignment.topLeft,
+                              end: Alignment.bottomRight,
+                              colors: [
+                                Color(0xFF262137), // Rich obsidian violet
+                                Color(0xFF1B1728), // Deep slate dusk
+                              ],
+                            ),
+                            border: Border.all(
+                              color: Colors.white.withValues(alpha: 0.08),
+                              width: 0.8,
+                            ),
+                            boxShadow: [
+                              BoxShadow(
+                                color: Colors.black.withValues(alpha: 0.25),
+                                blurRadius: 8,
+                                offset: const Offset(0, 3),
+                              ),
+                            ],
                           ),
+                    child: ClipRRect(
+                      borderRadius: isPureGif
+                          ? BorderRadius.circular(16)
+                          : bubbleRadius,
+                      child: isPureMedia
+                          ? _buildPureMedia(context, isReplying)
+                          : isShortSingleLine
+                              ? _buildShortSingleLine(context, isSmallScreen)
+                              : _buildDynamicContent(
+                                  context,
+                                  isReplying,
+                                  isMedia,
+                                  isSmallScreen,
+                                ),
+                    ),
+                  ),
+                ),
               ),
-            ),
+
+              // ── Floating Reaction Badge Capsule ───────────────────────────
+              if (reactions.isNotEmpty)
+                Positioned(
+                  bottom: 0,
+                  right: 10,
+                  child: MessageReactionsBadge(
+                    reactions: reactions,
+                    currentUserId: currentUserId,
+                    isMe: false,
+                    onTap: () {
+                      showReactionDetailsSheet(
+                        context: context,
+                        reactions: reactions,
+                        currentUserId: currentUserId,
+                        onRemoveReaction: onReactionSelected,
+                      );
+                    },
+                  ),
+                ),
+            ],
           ),
         ),
       ),
@@ -172,11 +241,18 @@ class SenderMessageCard extends StatelessWidget {
         Stack(
           children: [
             DisplayMessages(
+              key: ValueKey('dm_${messageId}_$messageType'),
               message: message,
               messageType: messageType,
               fileMessageData: fileMessageData,
               isPreviewable: true,
               useCachedMedia: true,
+              isMe: false,
+              messageId: messageId,
+              currentUserId: currentUserId,
+              receiverId: receiverId,
+              senderName: username,
+              senderProfilePic: senderProfilePic,
             ),
             // Floating frosted pill for timestamp
             Positioned(
@@ -218,62 +294,65 @@ class SenderMessageCard extends StatelessWidget {
     bool isMedia,
     bool isSmallScreen,
   ) {
+    final isCustomBubble = messageType == 'document' ||
+        messageType == 'location' ||
+        messageType == 'live_location';
+
     return Padding(
-      padding: isMedia
+      padding: (isMedia || isCustomBubble)
           ? EdgeInsets.zero
           : const EdgeInsets.fromLTRB(12, 8, 12, 6),
-      child: IntrinsicWidth(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            if (isReplying)
-              Padding(
-                padding: isMedia
-                    ? const EdgeInsets.fromLTRB(8, 8, 8, 4)
-                    : const EdgeInsets.only(bottom: 6),
-                child: _buildReplyHeader(context),
-              ),
-            if (isMedia)
-              DisplayMessages(
-                message: message,
-                messageType: messageType,
-                fileMessageData: fileMessageData,
-                isPreviewable: true,
-                useCachedMedia: true,
-              )
-            else
-              DisplayMessages(
-                message: message,
-                messageType: messageType,
-                fileMessageData: fileMessageData,
-                isPreviewable: true,
-                useCachedMedia: true,
-              ),
-            // Dynamic bottom row without Spacer to hug message bounds
+      // NOTE: IntrinsicWidth was removed here — it's incompatible with
+      // LayoutBuilder widgets (e.g. AnyLinkPreview) and caused a render crash.
+      // The parent ConstrainedBox(maxWidth: 0.75) already limits bubble width.
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          if (isReplying)
             Padding(
-              padding: isMedia
-                  ? const EdgeInsets.fromLTRB(10, 4, 10, 6)
-                  : const EdgeInsets.only(top: 3),
-              child: Row(
-                mainAxisSize: MainAxisSize.min,
-                mainAxisAlignment: MainAxisAlignment.end,
-                crossAxisAlignment: CrossAxisAlignment.center,
-                children: [
-                  const SizedBox(width: 14), // Minimum separation
-                  Text(
-                    date,
-                    style: TextStyle(
-                      fontSize: isSmallScreen ? 11 : 12,
-                      fontWeight: FontWeight.w400,
-                      color: Colors.white.withValues(alpha: 0.6),
-                    ),
-                  ),
-                ],
-              ),
+              padding: (isMedia || isCustomBubble)
+                  ? const EdgeInsets.fromLTRB(8, 8, 8, 4)
+                  : const EdgeInsets.only(bottom: 6),
+              child: _buildReplyHeader(context),
             ),
-          ],
-        ),
+          DisplayMessages(
+            key: ValueKey('dm_${messageId}_$messageType'),
+            message: message,
+            messageType: messageType,
+            fileMessageData: fileMessageData,
+            isPreviewable: true,
+            useCachedMedia: true,
+            isMe: false,
+            messageId: messageId,
+            currentUserId: currentUserId,
+            receiverId: receiverId,
+            senderName: username,
+            senderProfilePic: senderProfilePic,
+          ),
+          // Dynamic bottom row without Spacer to hug message bounds
+          Padding(
+            padding: (isMedia || isCustomBubble)
+                ? const EdgeInsets.fromLTRB(10, 4, 10, 6)
+                : const EdgeInsets.only(top: 3),
+            child: Row(
+              mainAxisSize: MainAxisSize.max,
+              mainAxisAlignment: MainAxisAlignment.end,
+              crossAxisAlignment: CrossAxisAlignment.center,
+              children: [
+                const SizedBox(width: 14), // Minimum separation
+                Text(
+                  date,
+                  style: TextStyle(
+                    fontSize: isSmallScreen ? 11 : 12,
+                    fontWeight: FontWeight.w400,
+                    color: Colors.white.withValues(alpha: 0.6),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
       ),
     );
   }

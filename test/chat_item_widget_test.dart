@@ -1,6 +1,14 @@
+import 'dart:convert';
+import 'dart:io';
+import 'package:flutter/foundation.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+import 'package:worship_chat/common/utils/media_cache_service.dart';
 import 'package:worship_chat/common/enums/message_status_enum.dart';
+import 'package:worship_chat/common/utils/utils.dart';
 import 'package:worship_chat/features/chat/widgets/my_message_card.dart';
 import 'package:worship_chat/features/chat/widgets/sender_message_card.dart';
 import 'package:worship_chat/models/one_to_one_message_model.dart';
@@ -10,6 +18,8 @@ import 'package:worship_chat/common/widgets/skeleton_loader.dart';
 import 'package:worship_chat/common/widgets/user_avatar.dart';
 import 'package:worship_chat/models/chat_contact.dart';
 import 'package:worship_chat/models/user_model.dart';
+import 'package:worship_chat/features/chat/widgets/document_message_widget.dart';
+import 'package:worship_chat/features/chat/widgets/location_message_widget.dart';
 
 void main() {
   group('MessageDeliveryStatus tests', () {
@@ -308,5 +318,380 @@ void main() {
       );
     });
   });
+
+  group('Keyboard inserted GIF & media tests', () {
+    test('getFileFromKeyboardInsertedContent writes bytes to local temp gif file', () async {
+      final sampleBytes = Uint8List.fromList([0x47, 0x49, 0x46, 0x38, 0x39, 0x61]); // 'GIF89a' header
+      final content = KeyboardInsertedContent(
+        mimeType: 'image/gif',
+        uri: 'content://com.google.android.inputmethod.latin.provider/input/gif.gif',
+        data: sampleBytes,
+      );
+
+      final file = await getFileFromKeyboardInsertedContent(content, Directory.systemTemp);
+      expect(file, isNotNull);
+      expect(await file!.exists(), isTrue);
+      expect(file.path.endsWith('.gif'), isTrue);
+      final readBytes = await file.readAsBytes();
+      expect(readBytes, equals(sampleBytes));
+
+      if (await file.exists()) {
+        await file.delete();
+      }
+    });
+  });
+
+  group('MediaCacheService tests', () {
+    test('registerLocalMapping and getCachedSync work synchronously', () {
+      final cacheService = MediaCacheService();
+      const testUrl = 'https://res.cloudinary.com/demo/image/upload/v12345/test_sample';
+      const fakeLocalPath = '/fake/local/path/test.jpg';
+
+      cacheService.registerLocalMapping(testUrl, fakeLocalPath);
+      expect(cacheService.getCachedSync(testUrl), equals(fakeLocalPath));
+    });
+
+    test('getCachedSync returns null for empty or uncached URLs', () {
+      final cacheService = MediaCacheService();
+      expect(cacheService.getCachedSync(''), isNull);
+      expect(cacheService.getCachedSync('https://not-cached.com/image.jpg'), isNull);
+    });
+  });
+
+  group('Notification action payload & response tests', () {
+    test('NotificationResponse correctly parses action_mark_read payload', () {
+      final payloadData = {
+        'type': 'chat',
+        'senderUid': 'user_123',
+        'name': 'Pooja',
+        'chatId': 'user_123',
+      };
+      final response = NotificationResponse(
+        notificationResponseType:
+            NotificationResponseType.selectedNotificationAction,
+        actionId: 'action_mark_read',
+        payload: jsonEncode(payloadData),
+      );
+
+      expect(response.actionId, 'action_mark_read');
+      final decoded = jsonDecode(response.payload!) as Map<String, dynamic>;
+      expect(decoded['type'], 'chat');
+      expect(decoded['senderUid'], 'user_123');
+      expect(decoded['name'], 'Pooja');
+    });
+
+    test('NotificationResponse correctly parses action_reply with text input', () {
+      final payloadData = {
+        'type': 'group',
+        'groupId': 'group_456',
+        'groupName': 'Queen Pooja queendom',
+        'chatId': 'group_456',
+      };
+      final response = NotificationResponse(
+        notificationResponseType:
+            NotificationResponseType.selectedNotificationAction,
+        actionId: 'action_reply',
+        input: 'Hello from notification!',
+        payload: jsonEncode(payloadData),
+      );
+
+      expect(response.actionId, 'action_reply');
+      expect(response.input, 'Hello from notification!');
+      final decoded = jsonDecode(response.payload!) as Map<String, dynamic>;
+      expect(decoded['type'], 'group');
+      expect(decoded['groupId'], 'group_456');
+    });
+
+    test('Persistent notification lines accumulate per chat and clear on demand', () async {
+      SharedPreferences.setMockInitialValues({});
+      final prefs = await SharedPreferences.getInstance();
+
+      // Chat 1: Pooja
+      final chat1Key = 'notif_lines_user_pooja';
+      List<String> chat1Lines = prefs.getStringList(chat1Key) ?? [];
+      chat1Lines.add('Hi there');
+      await prefs.setStringList(chat1Key, chat1Lines);
+
+      chat1Lines = prefs.getStringList(chat1Key) ?? [];
+      chat1Lines.add('How are you?');
+      await prefs.setStringList(chat1Key, chat1Lines);
+
+      // Chat 2: Rashmika (different tile)
+      final chat2Key = 'notif_lines_user_rashmika';
+      List<String> chat2Lines = prefs.getStringList(chat2Key) ?? [];
+      chat2Lines.add('Good morning!');
+      await prefs.setStringList(chat2Key, chat2Lines);
+
+      // Verify Chat 1 accumulated 2 lines in same tile
+      expect(prefs.getStringList(chat1Key), ['Hi there', 'How are you?']);
+      // Verify Chat 2 has its own separate line
+      expect(prefs.getStringList(chat2Key), ['Good morning!']);
+
+      // Entering Chat 1 clears Chat 1's lines, Chat 2 remains intact
+      await prefs.remove(chat1Key);
+      expect(prefs.getStringList(chat1Key), isNull);
+      expect(prefs.getStringList(chat2Key), ['Good morning!']);
+    });
+  });
+
+  group('Document and Location Widget Tests', () {
+    testWidgets('DocumentMessageWidget displays file name and extension badge', (tester) async {
+      await tester.pumpWidget(
+        const MaterialApp(
+          home: Scaffold(
+            body: DocumentMessageWidget(
+              fileName: 'sample_archive.zip',
+              fileUrl: 'https://example.com/sample_archive.zip',
+              isMe: true,
+            ),
+          ),
+        ),
+      );
+
+      expect(find.text('sample_archive.zip'), findsOneWidget);
+      expect(find.text('ZIP'), findsWidgets);
+    });
+
+    testWidgets('LocationMessageWidget renders static location correctly', (tester) async {
+      final locData = jsonEncode({
+        'latitude': 12.9716,
+        'longitude': 77.5946,
+        'isLive': false,
+        'accuracy': 10.0,
+      });
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: LocationMessageWidget(
+              messageType: 'location',
+              locationData: locData,
+              isMe: true,
+            ),
+          ),
+        ),
+      );
+
+      expect(find.text('Current Location'), findsOneWidget);
+      expect(find.text('CURRENT'), findsOneWidget);
+      expect(find.text('12.9716, 77.5946'), findsOneWidget);
+    });
+
+    testWidgets('LocationMessageWidget renders active live location correctly', (tester) async {
+      final futureTime = DateTime.now().add(const Duration(hours: 1)).millisecondsSinceEpoch;
+      final liveData = jsonEncode({
+        'latitude': 12.9716,
+        'longitude': 77.5946,
+        'isLive': true,
+        'liveUntil': futureTime,
+        'updatedAt': DateTime.now().millisecondsSinceEpoch,
+        'sharerId': 'user_1',
+      });
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: LocationMessageWidget(
+              messageType: 'live_location',
+              locationData: liveData,
+              isMe: true,
+              messageId: 'msg_1',
+              currentUserId: 'user_1',
+              receiverId: 'user_2',
+            ),
+          ),
+        ),
+      );
+
+      expect(find.text('Live Location'), findsOneWidget);
+      expect(find.text('LIVE'), findsOneWidget);
+      expect(find.text('Stop Sharing'), findsOneWidget);
+    });
+
+    testWidgets('MyMessageCard renders document and location messages without error', (tester) async {
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: MyMessageCard(
+              message: 'report.pdf',
+              date: '10:00 AM',
+              messageType: 'document',
+              fileMessageData: 'https://example.com/report.pdf',
+              onLeftSwipe: () {},
+              repliedText: '',
+              username: 'User',
+              repliedMessageType: 'text',
+              isSeen: false,
+            ),
+          ),
+        ),
+      );
+
+      expect(find.text('report.pdf'), findsOneWidget);
+      expect(find.text('PDF'), findsWidgets);
+    });
+
+    testWidgets('MyMessageCard and SenderMessageCard render reaction badges correctly',
+        (tester) async {
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: Column(
+              children: [
+                MyMessageCard(
+                  message: 'Hello with reaction',
+                  date: '10:00 AM',
+                  messageType: 'text',
+                  onLeftSwipe: () {},
+                  repliedText: '',
+                  username: 'Me',
+                  repliedMessageType: 'text',
+                  isSeen: true,
+                  currentUserId: 'user1',
+                  reactions: const {'user1': '❤️', 'user2': '👍'},
+                ),
+                SenderMessageCard(
+                  message: 'Sender message with reaction',
+                  date: '10:01 AM',
+                  messageType: 'text',
+                  onRightSwipe: () {},
+                  repliedText: '',
+                  username: 'Sender',
+                  repliedMessageType: 'text',
+                  currentUserId: 'user1',
+                  reactions: const {'user1': '🔥'},
+                ),
+              ],
+            ),
+          ),
+        ),
+      );
+
+      // Verify emojis appear in the widget tree
+      expect(find.textContaining('❤️'), findsOneWidget);
+      expect(find.textContaining('🔥'), findsOneWidget);
+      expect(find.text('2'), findsOneWidget); // 2 reactions on the first card
+    });
+
+    test('Reaction equality check accurately detects emoji replacements', () {
+      final reactions1 = <String, String>{'user1': '👍'};
+      final reactions2 = <String, String>{'user1': '❤️'};
+      final reactions3 = <String, String>{'user1': '👍'};
+
+      expect(mapEquals(reactions1, reactions2), isFalse);
+      expect(mapEquals(reactions1, reactions3), isTrue);
+
+      final key1 = reactions1.entries.map((e) => '${e.key}:${e.value}').join('_');
+      final key2 = reactions2.entries.map((e) => '${e.key}:${e.value}').join('_');
+
+      expect(key1, isNot(equals(key2)));
+      expect(key1, equals('user1:👍'));
+      expect(key2, equals('user1:❤️'));
+    });
+
+    test('Safe casting decodes both Model and Map items without TypeError', () {
+      final model = OneToOneMessageModel(
+        senderId: 's1',
+        receiverId: 'r1',
+        text: 'Hello from model',
+        messageType: 'text',
+        timeSent: DateTime.now(),
+        messageId: 'm1',
+        isSeen: true,
+        repliedMessage: '',
+        repliedTo: '',
+        repliedMessageType: 'text',
+      );
+
+      final map = {
+        'senderId': 's2',
+        'receiverId': 'r2',
+        'text': 'Hello from map',
+        'messageType': 'text',
+        'timeSent': DateTime.now().millisecondsSinceEpoch,
+        'messageId': 'm2',
+        'isSeen': false,
+        'repliedMessage': '',
+        'repliedTo': '',
+        'repliedMessageType': 'text',
+      };
+
+      final mixedList = <dynamic>[model, map, 'corrupt_string_ignored'];
+
+      final List<OneToOneMessageModel> parsed = [];
+      for (final item in mixedList) {
+        if (item is OneToOneMessageModel) {
+          parsed.add(item);
+        } else if (item is Map) {
+          try {
+            parsed.add(OneToOneMessageModel.fromMap(Map<String, dynamic>.from(item)));
+          } catch (_) {}
+        }
+      }
+
+      expect(parsed.length, equals(2));
+      expect(parsed[0].messageId, equals('m1'));
+      expect(parsed[1].messageId, equals('m2'));
+    });
+
+    test('1-to-1 reaction change on any message is correctly detected as different', () {
+      final msg1 = OneToOneMessageModel(
+        senderId: 'userA',
+        receiverId: 'userB',
+        text: 'Hello',
+        messageType: 'text',
+        timeSent: DateTime.now(),
+        messageId: 'm1',
+        isSeen: true,
+        repliedMessage: '',
+        repliedTo: '',
+        repliedMessageType: 'text',
+        reactions: {'userB': '❤️'},
+      );
+      final msg2 = OneToOneMessageModel(
+        senderId: 'userA',
+        receiverId: 'userB',
+        text: 'World',
+        messageType: 'text',
+        timeSent: DateTime.now(),
+        messageId: 'm2',
+        isSeen: false,
+        repliedMessage: '',
+        repliedTo: '',
+        repliedMessageType: 'text',
+        reactions: {},
+      );
+
+      final List<OneToOneMessageModel> listBefore = [msg1, msg2];
+
+      // Reaction added to earlier message (not the last message!)
+      final updatedMsg1 = msg1.copyWith(reactions: {'userB': '❤️', 'userA': '👍'});
+      final List<OneToOneMessageModel> listAfter = [updatedMsg1, msg2];
+
+      bool areListsEqual(List<OneToOneMessageModel> a, List<OneToOneMessageModel> b) {
+        if (identical(a, b)) return true;
+        if (a.length != b.length) return false;
+        for (int i = 0; i < a.length; i++) {
+          if (a[i].messageId != b[i].messageId ||
+              a[i].isSeen != b[i].isSeen ||
+              a[i].isDelivered != b[i].isDelivered ||
+              a[i].isSending != b[i].isSending ||
+              a[i].text != b[i].text ||
+              a[i].fileMessageData != b[i].fileMessageData ||
+              !mapEquals(a[i].reactions, b[i].reactions)) {
+            return false;
+          }
+        }
+        return true;
+      }
+
+      // Must detect that list has changed so real-time stream emits!
+      expect(areListsEqual(listBefore, listAfter), isFalse);
+
+      // Identity comparison returns true
+      expect(areListsEqual(listBefore, listBefore), isTrue);
+    });
+  });
 }
+
 

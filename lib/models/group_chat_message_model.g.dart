@@ -30,13 +30,20 @@ class GroupChatMessageModelAdapter extends TypeAdapter<GroupChatMessageModel> {
       repliedMessageType: fields[11] as String? ?? 'text',
       groupId: fields[2] as String? ?? '',
       isDelivered: fields[12] as bool? ?? false,
+      reactions: (fields[13] is Map)
+          ? Map<String, String>.from(
+              (fields[13] as Map).map(
+                (k, v) => MapEntry(k.toString(), v.toString()),
+              ),
+            )
+          : const {},
     );
   }
 
   @override
   void write(BinaryWriter writer, GroupChatMessageModel obj) {
     writer
-      ..writeByte(13)
+      ..writeByte(14)
       ..writeByte(0)
       ..write(obj.senderId)
       ..writeByte(1)
@@ -62,7 +69,9 @@ class GroupChatMessageModelAdapter extends TypeAdapter<GroupChatMessageModel> {
       ..writeByte(11)
       ..write(obj.repliedMessageType)
       ..writeByte(12)
-      ..write(obj.isDelivered);
+      ..write(obj.isDelivered)
+      ..writeByte(13)
+      ..write(obj.reactions);
   }
 
   @override

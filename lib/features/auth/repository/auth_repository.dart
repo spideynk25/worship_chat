@@ -61,11 +61,9 @@ class AuthRepository {
           .get();
 
       if (usernameQuery.docs.isNotEmpty) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('Username is already taken. Please choose another.'),
-            backgroundColor: Colors.red,
-          ),
+        AppSnackBar.error(
+          context,
+          'Username is already taken. Please choose another.',
         );
         return;
       }
@@ -117,11 +115,9 @@ class AuthRepository {
       await _saveUserToHive(newUser);
       log('✅ New user saved to Hive: ${newUser.name}');
 
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Registration successful! Please verify your email.'),
-          backgroundColor: Colors.green,
-        ),
+      AppSnackBar.success(
+        context,
+        'Registration successful! Please verify your email.',
       );
 
       log("Registration successful for user: ${user.uid}");
@@ -144,16 +140,9 @@ class AuthRepository {
           errorMessage = 'Registration failed: ${e.message}';
       }
 
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(errorMessage), backgroundColor: Colors.red),
-      );
+      AppSnackBar.error(context, errorMessage);
     } catch (e) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('Unexpected error: ${e.toString()}'),
-          backgroundColor: Colors.red,
-        ),
-      );
+      AppSnackBar.error(context, 'Unexpected error: ${e.toString()}');
     }
   }
 
@@ -175,12 +164,7 @@ class AuthRepository {
       await Future.delayed(const Duration(milliseconds: 400));
 
       if (!credential.user!.emailVerified) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('Please verify your email'),
-            backgroundColor: Colors.red,
-          ),
-        );
+        AppSnackBar.warning(context, 'Please verify your email');
         return;
       }
 
@@ -202,12 +186,27 @@ class AuthRepository {
         (_) => false,
       );
     } on FirebaseAuthException catch (e) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(e.message ?? 'Login failed'),
-          backgroundColor: Colors.red,
-        ),
-      );
+      String errorMessage;
+      switch (e.code) {
+        case 'invalid-credential':
+        case 'wrong-password':
+        case 'user-not-found':
+          errorMessage = 'Incorrect email or password. Please check your credentials or reset your password.';
+          break;
+        case 'user-disabled':
+          errorMessage = 'This user account has been disabled.';
+          break;
+        case 'too-many-requests':
+          errorMessage =
+              'Too many failed attempts. Please reset your password or try again later.';
+          break;
+        case 'network-request-failed':
+          errorMessage = 'Network error. Please check your internet connection.';
+          break;
+        default:
+          errorMessage = e.message ?? 'Login failed. Please try again.';
+      }
+      AppSnackBar.error(context, errorMessage);
     }
   }
 
@@ -215,8 +214,7 @@ class AuthRepository {
     try {
       log(email);
       await auth.sendPasswordResetEmail(email: email);
-      // log("login response $response");
-      SnackBar(content: Text('Check your inbox}'), backgroundColor: Colors.red);
+      AppSnackBar.info(context, 'Check your inbox for password reset link');
     } catch (e) {
       showSnackBar(context: context, content: e.toString());
     }
@@ -248,13 +246,9 @@ class AuthRepository {
             .get();
         if (usernameQuery.docs.isNotEmpty &&
             usernameQuery.docs.first.id != currentUserData.uid) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(
-              content: Text(
-                'Username is already taken. Please choose another.',
-              ),
-              backgroundColor: Colors.red,
-            ),
+          AppSnackBar.error(
+            context,
+            'Username is already taken. Please choose another.',
           );
           return;
         }

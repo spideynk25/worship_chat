@@ -103,12 +103,7 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
 
   Future<void> _updateProfile() async {
     if (_userNameController.text.isEmpty || _nameController.text.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Username and Name cannot be empty.'),
-          backgroundColor: Colors.red,
-        ),
-      );
+      AppSnackBar.warning(context, 'Username and Name cannot be empty.');
       return;
     }
 
@@ -120,12 +115,7 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
     final user = userBox.get('currentUser');
 
     if (user == null) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('User data not found.'),
-          backgroundColor: Colors.red,
-        ),
-      );
+      AppSnackBar.error(context, 'User data not found.');
       setState(() {
         _isLoading = false;
       });
@@ -142,19 +132,9 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
             userName: _userNameController.text.trim(),
           );
 
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Profile updated successfully!'),
-          backgroundColor: Colors.green,
-        ),
-      );
+      AppSnackBar.success(context, 'Profile updated successfully!');
     } catch (e) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('Error updating profile: $e'),
-          backgroundColor: Colors.red,
-        ),
-      );
+      AppSnackBar.error(context, 'Error updating profile: $e');
     }
 
     setState(() {
@@ -358,12 +338,10 @@ class _CropImageScreenState extends State<CropImageScreen> {
   void initState() {
     super.initState();
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Tap and drag inside the crop box to move it'),
-          duration: Duration(seconds: 4),
-          backgroundColor: Colors.black54,
-        ),
+      AppSnackBar.info(
+        context,
+        'Tap and drag inside the crop box to move it',
+        duration: const Duration(seconds: 4),
       );
     });
   }

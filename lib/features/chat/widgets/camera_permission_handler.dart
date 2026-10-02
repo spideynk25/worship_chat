@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:permission_handler/permission_handler.dart';
+import 'package:worship_chat/common/utils/utils.dart';
 
 class CameraPermissionHandler {
   static Future<bool> requestCameraPermission(BuildContext context) async {
@@ -66,11 +67,9 @@ class CameraPermissionHandler {
   }
 
   static void _showPermissionRequiredSnackbar(BuildContext context) {
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(
-        content: Text('Camera and microphone permissions are required'),
-        duration: Duration(seconds: 3),
-      ),
+    AppSnackBar.warning(
+      context,
+      'Camera and microphone permissions are required',
     );
   }
 }

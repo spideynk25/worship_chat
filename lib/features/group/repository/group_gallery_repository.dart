@@ -5,7 +5,6 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:uuid/uuid.dart';
 import 'package:worship_chat/common/utils/file_messages.dart';
-import 'package:worship_chat/common/utils/utils.dart';
 import 'package:worship_chat/models/group_gallery_image.dart';
 
 final groupGalleryRepositoryProvider = Provider(
@@ -103,6 +102,58 @@ class GroupGalleryRepository {
     }
 
     return successCount;
+  }
+
+  // ── Add single image from existing URL (Forwarding) ──────────────────────
+  Future<bool> addGalleryImageFromUrl({
+    required String groupId,
+    required String imageUrl,
+    required String uploaderName,
+    String? caption,
+  }) async {
+    if (imageUrl.trim().isEmpty) {
+      log('❌ addGalleryImageFromUrl: empty imageUrl');
+      return false;
+    }
+
+    final currentUserId = auth.currentUser?.uid;
+    if (currentUserId == null) {
+      log('❌ addGalleryImageFromUrl: no authenticated user');
+      return false;
+    }
+
+    try {
+      final imageId = const Uuid().v1();
+      final galleryImage = GroupGalleryImage(
+        imageId: imageId,
+        groupId: groupId,
+        imageUrl: imageUrl.trim(),
+        uploadedBy: currentUserId,
+        uploadedByName: uploaderName,
+        uploadedAt: DateTime.now(),
+        caption: (caption != null && caption.trim().isNotEmpty)
+            ? caption.trim()
+            : null,
+      );
+
+      await firestore
+          .collection('groups')
+          .doc(groupId)
+          .collection('gallery')
+          .doc(imageId)
+          .set(galleryImage.toMap());
+
+      await firestore.collection('groups').doc(groupId).set({
+        'galleryCount': FieldValue.increment(1),
+        'lastGalleryUpdate': DateTime.now().millisecondsSinceEpoch,
+      }, SetOptions(merge: true));
+
+      log('✅ Forwarded image to gallery: $imageId in group $groupId');
+      return true;
+    } catch (e) {
+      log('❌ Error adding gallery image from url: $e');
+      return false;
+    }
   }
 
   // ── Delete an image ───────────────────────────────────────────────────────

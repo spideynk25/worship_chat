@@ -1,7 +1,5 @@
-import 'dart:developer';
 import 'dart:io';
 import 'dart:math' as math;
-import 'dart:ui';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
@@ -20,6 +18,7 @@ import 'package:hive_flutter/hive_flutter.dart';
 import 'package:worship_chat/models/chat_contact.dart';
 import 'package:worship_chat/models/user_model.dart';
 import 'package:worship_chat/common/widgets/user_avatar.dart';
+import 'package:worship_chat/features/dashboard/widgets/group_shortcuts_grid.dart';
 
 class CombinedContactsScreen extends ConsumerWidget {
   final bool isAllChats;
@@ -321,6 +320,12 @@ class CombinedContactsScreen extends ConsumerWidget {
                   },
                 );
               },
+            ),
+
+            // ── Group Shortcuts (Down the one to one chats) ───────────────────
+            Padding(
+              padding: const EdgeInsets.only(top: 14, bottom: 32),
+              child: GroupShortcutsGrid(currentUserId: currentUserUid),
             ),
           ],
         ),

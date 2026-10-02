@@ -6,6 +6,7 @@ import 'package:flutter/material.dart';
 import 'package:gallery_saver_plus/gallery_saver.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:photo_view/photo_view.dart';
+import 'package:worship_chat/common/utils/utils.dart';
 import 'package:worship_chat/models/group_gallery_image.dart';
 
 class SlideshowScreen extends StatefulWidget {
@@ -148,15 +149,8 @@ class _SlideshowScreenState extends State<SlideshowScreen>
     }
   }
 
-  void _snack(String msg, Color color) {
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text(msg),
-        backgroundColor: color,
-        behavior: SnackBarBehavior.floating,
-        duration: const Duration(seconds: 2),
-      ),
-    );
+  void _snack(String msg, [Color? color]) {
+    AppSnackBar.show(context, message: msg);
   }
 
   // ── Overlay ───────────────────────────────────────────────────────────────

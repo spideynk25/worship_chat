@@ -2,6 +2,7 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:worship_chat/colors.dart';
+import 'package:worship_chat/common/utils/utils.dart';
 import 'package:worship_chat/common/utils/share_intent_service.dart';
 import 'package:worship_chat/common/widgets/skeleton_loader.dart';
 import 'package:worship_chat/features/auth/controller/auth_controller.dart';
@@ -226,13 +227,11 @@ class _ShareUploadScreenState extends ConsumerState<ShareUploadScreen>
 
   void _snack(String msg, bool success) {
     if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text(msg),
-        backgroundColor: success ? Colors.green[700] : Colors.redAccent,
-        behavior: SnackBarBehavior.floating,
-      ),
-    );
+    if (success) {
+      AppSnackBar.success(context, msg);
+    } else {
+      AppSnackBar.error(context, msg);
+    }
   }
 
   // ── Derived helpers ───────────────────────────────────────────────────────

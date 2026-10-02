@@ -69,7 +69,12 @@ Future<void> main() async {
 /// ------------------------------
 @pragma('vm:entry-point')
 Future<void> _firebaseMessagingBackgroundHandler(RemoteMessage message) async {
-  await Firebase.initializeApp();
+  WidgetsFlutterBinding.ensureInitialized();
+  try {
+    await Firebase.initializeApp();
+  } catch (_) {}
+  await FirebaseNotificationService.ensureStaticInitialized();
+  await FirebaseNotificationService.showNotificationFromRemoteMessage(message);
 }
 
 /// ------------------------------
@@ -166,7 +171,9 @@ class _MyAppState extends ConsumerState<MyApp> with WidgetsBindingObserver {
           textStyle: TextStyle(color: textColor),
         ),
         snackBarTheme: const SnackBarThemeData(
-          backgroundColor: Color(0xFF1C1C28),
+          backgroundColor: Colors.transparent,
+          elevation: 0,
+          behavior: SnackBarBehavior.floating,
           contentTextStyle: TextStyle(color: textColor),
         ),
       ),
@@ -234,8 +241,8 @@ class _RootGateState extends State<RootGate> {
           if (notifData != null) {
             directChatScreen =
                 await FirebaseNotificationService.buildChatScreenFromNotificationData(
-              notifData,
-            );
+                  notifData,
+                );
           }
 
           destination = const HomeScreen();

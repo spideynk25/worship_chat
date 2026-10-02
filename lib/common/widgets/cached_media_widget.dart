@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:video_player/video_player.dart';
 import 'dart:developer';
 
+import 'package:cached_network_image/cached_network_image.dart';
 import 'package:worship_chat/common/utils/media_cache_service.dart';
 
 class CachedImageWidget extends StatefulWidget {
@@ -35,17 +36,25 @@ class _CachedImageWidgetState extends State<CachedImageWidget> {
   @override
   void initState() {
     super.initState();
-    _loadMedia();
+    final fastSync = MediaCacheService().getCachedSync(widget.imageUrl);
+    if (fastSync != null && File(fastSync).existsSync() && File(fastSync).lengthSync() > 0) {
+      _localPath = fastSync;
+      _isLoading = false;
+      _hasError = false;
+    } else {
+      _loadMedia();
+    }
   }
 
   Future<void> _loadMedia() async {
     try {
       final path = await MediaCacheService().getMediaPath(widget.imageUrl);
       if (mounted) {
+        final isValid = path != null && File(path).existsSync() && File(path).lengthSync() > 0;
         setState(() {
-          _localPath = path;
+          _localPath = isValid ? path : null;
           _isLoading = false;
-          _hasError = path == null;
+          _hasError = !isValid;
         });
       }
     } catch (e) {
@@ -59,6 +68,52 @@ class _CachedImageWidgetState extends State<CachedImageWidget> {
     }
   }
 
+  Widget _buildNetworkFallback() {
+    if (widget.imageUrl.startsWith('http://') ||
+        widget.imageUrl.startsWith('https://')) {
+      return CachedNetworkImage(
+        imageUrl: widget.imageUrl,
+        width: widget.width,
+        height: widget.height,
+        fit: widget.fit,
+        placeholder: (context, url) =>
+            widget.placeholder ??
+            Container(
+              width: widget.width,
+              height: widget.height,
+              color: Colors.grey[900],
+              child: const Center(
+                child: SizedBox(
+                  width: 24,
+                  height: 24,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                ),
+              ),
+            ),
+        errorWidget: (context, url, error) =>
+            widget.errorWidget ??
+            Container(
+              width: widget.width,
+              height: widget.height,
+              color: Colors.grey[900],
+              child: const Center(
+                child: Icon(Icons.broken_image_outlined, color: Colors.grey, size: 24),
+              ),
+            ),
+      );
+    }
+
+    return widget.errorWidget ??
+        Container(
+          width: widget.width,
+          height: widget.height,
+          color: Colors.grey[900],
+          child: const Center(
+            child: Icon(Icons.broken_image_outlined, color: Colors.grey, size: 24),
+          ),
+        );
+  }
+
   @override
   Widget build(BuildContext context) {
     if (_isLoading) {
@@ -66,37 +121,32 @@ class _CachedImageWidgetState extends State<CachedImageWidget> {
           Container(
             width: widget.width,
             height: widget.height,
-            color: Colors.grey[300],
+            color: Colors.grey[900],
             child: const Center(
-              child: CircularProgressIndicator(),
+              child: SizedBox(
+                width: 24,
+                height: 24,
+                child: CircularProgressIndicator(strokeWidth: 2),
+              ),
             ),
           );
     }
 
     if (_hasError || _localPath == null) {
-      return widget.errorWidget ??
-          Container(
-            width: widget.width,
-            height: widget.height,
-            color: Colors.grey[300],
-            child: const Icon(Icons.error),
-          );
+      return _buildNetworkFallback();
+    }
+
+    final file = File(_localPath!);
+    if (!file.existsSync() || file.lengthSync() == 0) {
+      return _buildNetworkFallback();
     }
 
     return Image.file(
-      File(_localPath!),
+      file,
       width: widget.width,
       height: widget.height,
       fit: widget.fit,
-      errorBuilder: (context, error, stackTrace) {
-        return widget.errorWidget ??
-            Container(
-              width: widget.width,
-              height: widget.height,
-              color: Colors.grey[300],
-              child: const Icon(Icons.error),
-            );
-      },
+      errorBuilder: (context, error, stackTrace) => _buildNetworkFallback(),
     );
   }
 }

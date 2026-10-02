@@ -46,7 +46,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
   StreamSubscription<DocumentSnapshot>? _userSubscription;
   bool _initialShareProcessed = false;
 
-  final List<Widget> _screens = const [
+  static const List<Widget> _screens = [
     DashboardPage(),
     CombinedContactsScreen(isAllChats: false),
     QueenPoojaQueenScreen(),
@@ -106,7 +106,6 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
     }
 
     // ── Handle share while app is already open ────────────────────────
-    // Cancel existing subscription before creating new one
     await _shareSubscription?.cancel();
     _shareSubscription = handler.sharedMediaStream.listen((SharedMedia media) {
       final files = extractImageFiles(media);
@@ -125,9 +124,9 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
 
   @override
   void dispose() {
+    _pageController.dispose();
     _shareSubscription?.cancel();
     _userSubscription?.cancel();
-    _pageController.dispose();
     WidgetsBinding.instance.removeObserver(this);
     super.dispose();
   }
@@ -149,19 +148,256 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
   }
 
   void _onItemTapped(int index) {
-    setState(() => _selectedIndex = index);
-    _pageController.animateToPage(
-      index,
-      duration: const Duration(milliseconds: 300),
-      curve: Curves.easeInOut,
-    );
+    if (_selectedIndex == index) return;
+    HapticFeedback.selectionClick();
+    final prevIndex = _selectedIndex;
+    setState(() {
+      _selectedIndex = index;
+    });
+    if (_pageController.hasClients) {
+      final diff = (prevIndex - index).abs();
+      if (diff <= 1) {
+        _pageController.animateToPage(
+          index,
+          duration: const Duration(milliseconds: 260),
+          curve: Curves.easeOutCubic,
+        );
+      } else {
+        _pageController.jumpToPage(index);
+      }
+    }
   }
 
   void _onPageChanged(int index) {
-    setState(() => _selectedIndex = index);
+    if (_selectedIndex != index) {
+      HapticFeedback.selectionClick();
+      setState(() {
+        _selectedIndex = index;
+      });
+    }
   }
 
-  // ── Badge count helpers ────────────────────────────────────────────────────
+  @override
+  Widget build(BuildContext context) {
+    final currentUserUid = FirebaseAuth.instance.currentUser?.uid ?? '';
+
+    return Scaffold(
+      appBar: PreferredSize(
+        preferredSize: const Size.fromHeight(90),
+        child: ValueListenableBuilder<Box<UserModel>>(
+          valueListenable: Hive.box<UserModel>('userBox').listenable(),
+          builder: (context, Box<UserModel> userBox, _) {
+            final user = userBox.get('currentUser');
+            final authUser = FirebaseAuth.instance.currentUser;
+
+            final displayName = (user?.name != null && user!.name!.trim().isNotEmpty)
+                ? user.name!.trim()
+                : (authUser?.displayName != null && authUser!.displayName!.trim().isNotEmpty)
+                    ? authUser.displayName!.trim()
+                    : 'User';
+
+            final displayUserName = (user?.userName != null && user!.userName!.trim().isNotEmpty)
+                ? user.userName!.trim()
+                : (authUser?.displayName != null && authUser!.displayName!.trim().isNotEmpty)
+                    ? authUser.displayName!.trim()
+                    : 'User';
+
+            final rawPic = (user?.profilePic != null && user!.profilePic!.trim().isNotEmpty)
+                ? user.profilePic!.trim()
+                : (authUser?.photoURL != null && authUser!.photoURL!.trim().isNotEmpty)
+                    ? authUser.photoURL!.trim()
+                    : null;
+
+            final displayPic = UserAvatar.sanitizeUrl(rawPic);
+
+            return AppBar(
+              toolbarHeight: 90,
+              backgroundColor: appBarColor,
+              elevation: 0,
+              title: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: const [
+                  Text(
+                    'Worship Chat',
+                    style: TextStyle(
+                      color: Colors.white,
+                      fontSize: 20,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                  DynamicTextWidget(),
+                ],
+              ),
+              actions: [
+                Padding(
+                  padding: const EdgeInsets.only(right: 2),
+                  child: Column(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    crossAxisAlignment: CrossAxisAlignment.end,
+                    children: [
+                      Text(
+                        displayName,
+                        style: const TextStyle(
+                          fontWeight: FontWeight.w700,
+                          fontSize: 12,
+                          color: tabColor,
+                        ),
+                      ),
+                      Text(
+                        displayUserName,
+                        style: const TextStyle(
+                          fontWeight: FontWeight.w400,
+                          fontSize: 12,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                PopupMenuButton(
+                  position: PopupMenuPosition.under,
+                  padding: EdgeInsets.zero,
+                  iconSize: 50,
+                  icon: Hero(
+                    tag: user?.uid ?? (currentUserUid.isNotEmpty ? currentUserUid : "profile_icon"),
+                    child: UserAvatar(url: displayPic, radius: 24),
+                  ),
+                  itemBuilder: (context) => [
+                    PopupMenuItem(
+                      child: const Text('Profile'),
+                      onTap: () => Navigator.push(
+                        context,
+                        PageRouteBuilder(
+                          pageBuilder: (context, animation, secondaryAnimation) =>
+                              const ProfileScreen(),
+                          transitionsBuilder:
+                              (context, animation, secondaryAnimation, child) {
+                                return FadeTransition(
+                                  opacity: animation,
+                                  child: child,
+                                );
+                              },
+                        ),
+                      ),
+                    ),
+                    PopupMenuItem(
+                      child: const Text('Create Group'),
+                      onTap: () => Future.microtask(() {
+                        if (mounted) {
+                          Navigator.pushNamed(
+                            this.context,
+                            CreateGroupScreen.routeName,
+                          );
+                        }
+                      }),
+                    ),
+                    PopupMenuItem(
+                      child: const Text('Logout'),
+                      onTap: () => Future.microtask(() async {
+                        await FirebaseMessaging.instance.deleteToken();
+                        Hive.box<UserModel>('userBox').delete('currentUser');
+                        if (mounted) {
+                          ref.read(authControllerProvider).logout(this.context);
+                        }
+                      }),
+                    ),
+                  ],
+                ),
+              ],
+            );
+          },
+        ),
+      ),
+
+      // ── Swipeable PageView with KeepAlive for smooth swiping & state persistence ──
+      body: PageView.builder(
+        controller: _pageController,
+        onPageChanged: _onPageChanged,
+        physics: const BouncingScrollPhysics(),
+        itemCount: _screens.length,
+        itemBuilder: (context, index) {
+          return _KeepAlivePage(child: _screens[index]);
+        },
+      ),
+
+      // ── Dedicated, isolated bottom nav with badges ───────────────────────
+      bottomNavigationBar: _HomeScreenBottomNavBar(
+        selectedIndex: _selectedIndex,
+        onItemTapped: _onItemTapped,
+      ),
+
+      floatingActionButton: _selectedIndex == 1
+          ? FloatingActionButton(
+              onPressed: () {
+                Navigator.pushNamed(context, AllUserScreen.routeName);
+              },
+              backgroundColor: tabColor,
+              child: const Icon(Icons.comment, color: Colors.white),
+            )
+          : null,
+    );
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Keep-Alive Wrapper to preserve state & prevent rebuilds during swiping
+// ─────────────────────────────────────────────────────────────────────────────
+
+class _KeepAlivePage extends StatefulWidget {
+  final Widget child;
+  const _KeepAlivePage({required this.child});
+
+  @override
+  State<_KeepAlivePage> createState() => _KeepAlivePageState();
+}
+
+class _KeepAlivePageState extends State<_KeepAlivePage>
+    with AutomaticKeepAliveClientMixin {
+  @override
+  bool get wantKeepAlive => true;
+
+  @override
+  Widget build(BuildContext context) {
+    super.build(context);
+    return widget.child;
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Dedicated Bottom Navigation Bar Widget
+// Maintains its own cached stream subscriptions so tab switching is instantaneous
+// ─────────────────────────────────────────────────────────────────────────────
+
+class _HomeScreenBottomNavBar extends ConsumerStatefulWidget {
+  final int selectedIndex;
+  final ValueChanged<int> onItemTapped;
+
+  const _HomeScreenBottomNavBar({
+    required this.selectedIndex,
+    required this.onItemTapped,
+  });
+
+  @override
+  ConsumerState<_HomeScreenBottomNavBar> createState() =>
+      _HomeScreenBottomNavBarState();
+}
+
+class _HomeScreenBottomNavBarState
+    extends ConsumerState<_HomeScreenBottomNavBar> {
+  late final Stream<List<ChatContact>> _chatContactsStream;
+  late final Stream<List<GroupModel>> _generalGroupsStream;
+  late final Stream<List<GroupModel>> _poojaGroupsStream;
+  late final Stream<List<GroupModel>> _rashmikaGroupsStream;
+
+  @override
+  void initState() {
+    super.initState();
+    _chatContactsStream = ref.read(chatControllerProvider).chatContacts();
+    _generalGroupsStream = ref.read(groupControllerProvider).chatGroups();
+    _poojaGroupsStream = ref.read(groupControllerProvider).getQueenPoojaStream();
+    _rashmikaGroupsStream =
+        ref.read(groupControllerProvider).getQueenRashmikaStream();
+  }
 
   int _getUnreadChatsCount(List<ChatContact> contacts) {
     return contacts
@@ -212,223 +448,52 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
   @override
   Widget build(BuildContext context) {
     final currentUserUid = FirebaseAuth.instance.currentUser?.uid ?? '';
+    final statuses = ref.watch(statusStreamProvider).valueOrNull ?? const [];
 
-    return ValueListenableBuilder<Box<UserModel>>(
-      valueListenable: Hive.box<UserModel>('userBox').listenable(),
-      builder: (context, Box<UserModel> userBox, _) {
-        final user = userBox.get('currentUser');
-        final authUser = FirebaseAuth.instance.currentUser;
+    return StreamBuilder<List<ChatContact>>(
+      stream: _chatContactsStream,
+      builder: (context, chatSnapshot) {
+        return StreamBuilder<List<GroupModel>>(
+          stream: _generalGroupsStream,
+          builder: (context, generalSnapshot) {
+            return StreamBuilder<List<GroupModel>>(
+              stream: _poojaGroupsStream,
+              builder: (context, poojaSnapshot) {
+                return StreamBuilder<List<GroupModel>>(
+                  stream: _rashmikaGroupsStream,
+                  builder: (context, rashmikaSnapshot) {
+                    final contacts = chatSnapshot.data ?? const [];
+                    final generalGroups = generalSnapshot.data ?? const [];
+                    final poojaGroups = poojaSnapshot.data ?? const [];
+                    final rashmikaGroups = rashmikaSnapshot.data ?? const [];
 
-        final displayName = (user?.name != null && user!.name!.trim().isNotEmpty)
-            ? user.name!.trim()
-            : (authUser?.displayName != null && authUser!.displayName!.trim().isNotEmpty)
-                ? authUser.displayName!.trim()
-                : 'User';
+                    final unreadChatsCount = _getUnreadChatsCount(contacts);
+                    final unseenStatusCount =
+                        _getUnseenStatusCount(statuses, currentUserUid);
+                    final generalUnseenCount =
+                        _getUnseenCountForGeneralGroups(generalGroups);
+                    final poojaUnseenCount =
+                        _getUnseenCountForQueendom(poojaGroups, 'Queen Pooja');
+                    final rashmikaUnseenCount =
+                        _getUnseenCountForQueendom(rashmikaGroups, 'Queen Rashmika');
 
-        final displayUserName = (user?.userName != null && user!.userName!.trim().isNotEmpty)
-            ? user.userName!.trim()
-            : (authUser?.displayName != null && authUser!.displayName!.trim().isNotEmpty)
-                ? authUser.displayName!.trim()
-                : 'User';
+                    final chatTabBadge = unreadChatsCount + unseenStatusCount;
 
-        final rawPic = (user?.profilePic != null && user!.profilePic!.trim().isNotEmpty)
-            ? user.profilePic!.trim()
-            : (authUser?.photoURL != null && authUser!.photoURL!.trim().isNotEmpty)
-                ? authUser.photoURL!.trim()
-                : null;
-
-        final displayPic = UserAvatar.sanitizeUrl(rawPic);
-
-        return Scaffold(
-          appBar: AppBar(
-            toolbarHeight: 90,
-            backgroundColor: appBarColor,
-            elevation: 0,
-            title: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: const [
-                Text(
-                  'Worship Chat',
-                  style: TextStyle(
-                    color: Colors.white,
-                    fontSize: 20,
-                    fontWeight: FontWeight.bold,
-                  ),
-                ),
-                DynamicTextWidget(),
-              ],
-            ),
-            actions: [
-              Padding(
-                padding: const EdgeInsets.only(right: 2),
-                child: Column(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  crossAxisAlignment: CrossAxisAlignment.end,
-                  children: [
-                    Text(
-                      displayName,
-                      style: const TextStyle(
-                        fontWeight: FontWeight.w700,
-                        fontSize: 12,
-                        color: tabColor,
-                      ),
-                    ),
-                    Text(
-                      displayUserName,
-                      style: const TextStyle(
-                        fontWeight: FontWeight.w400,
-                        fontSize: 12,
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-              PopupMenuButton(
-                position: PopupMenuPosition.under,
-                padding: EdgeInsets.zero,
-                iconSize: 50,
-                icon: Hero(
-                  tag: user?.uid ?? (currentUserUid.isNotEmpty ? currentUserUid : "profile_icon"),
-                  child: UserAvatar(url: displayPic, radius: 24),
-                ),
-                itemBuilder: (context) => [
-                  PopupMenuItem(
-                    child: const Text('Profile'),
-                    onTap: () => Navigator.push(
-                      context,
-                      PageRouteBuilder(
-                        pageBuilder: (context, animation, secondaryAnimation) =>
-                            const ProfileScreen(),
-                        transitionsBuilder:
-                            (context, animation, secondaryAnimation, child) {
-                              return FadeTransition(
-                                opacity: animation,
-                                child: child,
-                              );
-                            },
-                      ),
-                    ),
-                  ),
-                  PopupMenuItem(
-                    child: const Text('Create Group'),
-                    onTap: () => Future(
-                      () => Navigator.pushNamed(
-                        context,
-                        CreateGroupScreen.routeName,
-                      ),
-                    ),
-                  ),
-                  PopupMenuItem(
-                    child: const Text('Logout'),
-                    onTap: () => Future(() async {
-                      await FirebaseMessaging.instance.deleteToken();
-                      Hive.box<UserModel>('userBox').delete('currentUser');
-                      ref.read(authControllerProvider).logout(context);
-                    }),
-                  ),
-                ],
-              ),
-            ],
-          ),
-
-          // ── PageView body ──────────────────────────────────────────────
-          body: PageView(
-            controller: _pageController,
-            onPageChanged: _onPageChanged,
-            children: _screens,
-          ),
-
-          // ── Bottom nav with badges ─────────────────────────────────────
-          bottomNavigationBar: StreamBuilder<List<ChatContact>>(
-            stream: ref.watch(chatControllerProvider).chatContacts(),
-            builder: (context, chatSnapshot) {
-              return StreamBuilder<List<Map<String, dynamic>>>(
-                stream: ref
-                    .watch(statusStreamProvider)
-                    .when(
-                      data: (data) => Stream.value(data),
-                      loading: () => Stream.value(<Map<String, dynamic>>[]),
-                      error: (_, __) => Stream.value(<Map<String, dynamic>>[]),
-                    ),
-                builder: (context, statusSnapshot) {
-                  return StreamBuilder<List<GroupModel>>(
-                    stream: ref.watch(groupControllerProvider).chatGroups(),
-                    builder: (context, generalSnapshot) {
-                      return StreamBuilder<List<GroupModel>>(
-                        stream: ref
-                            .watch(groupControllerProvider)
-                            .getQueenPoojaStream(),
-                        builder: (context, poojaSnapshot) {
-                          return StreamBuilder<List<GroupModel>>(
-                            stream: ref
-                                .watch(groupControllerProvider)
-                                .getQueenRashmikaStream(),
-                            builder: (context, rashmikaSnapshot) {
-                              final contacts = chatSnapshot.data ?? [];
-                              final statuses = statusSnapshot.data ?? [];
-                              final generalGroups = generalSnapshot.data ?? [];
-                              final poojaGroups = poojaSnapshot.data ?? [];
-                              final rashmikaGroups =
-                                  rashmikaSnapshot.data ?? [];
-
-                              final unreadChatsCount = _getUnreadChatsCount(
-                                contacts,
-                              );
-                              final unseenStatusCount = _getUnseenStatusCount(
-                                statuses,
-                                currentUserUid,
-                              );
-                              final generalUnseenCount =
-                                  _getUnseenCountForGeneralGroups(
-                                    generalGroups,
-                                  );
-                              final poojaUnseenCount =
-                                  _getUnseenCountForQueendom(
-                                    poojaGroups,
-                                    'Queen Pooja',
-                                  );
-                              final rashmikaUnseenCount =
-                                  _getUnseenCountForQueendom(
-                                    rashmikaGroups,
-                                    'Queen Rashmika',
-                                  );
-
-                              final chatTabBadge =
-                                  unreadChatsCount + unseenStatusCount;
-
-                              return _buildModernBottomNavBar(
-                                chatTabBadge: chatTabBadge,
-                                poojaUnseenCount: poojaUnseenCount,
-                                rashmikaUnseenCount: rashmikaUnseenCount,
-                                generalUnseenCount: generalUnseenCount,
-                              );
-                            },
-                          );
-                        },
-                      );
-                    },
-                  );
-                },
-              );
-            },
-          ),
-
-          floatingActionButton: _selectedIndex == 1
-              ? FloatingActionButton(
-                  onPressed: () {
-                    Navigator.pushNamed(context, AllUserScreen.routeName);
+                    return _buildModernBottomNavBar(
+                      chatTabBadge: chatTabBadge,
+                      poojaUnseenCount: poojaUnseenCount,
+                      rashmikaUnseenCount: rashmikaUnseenCount,
+                      generalUnseenCount: generalUnseenCount,
+                    );
                   },
-                  backgroundColor: tabColor,
-                  child: const Icon(Icons.comment, color: Colors.white),
-                )
-              : null,
+                );
+              },
+            );
+          },
         );
       },
     );
   }
-
-  // ── Modern Bottom Navigation Bar ──────────────────────────────────────────
 
   Widget _buildModernBottomNavBar({
     required int chatTabBadge,
@@ -512,16 +577,16 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
             mainAxisAlignment: MainAxisAlignment.spaceAround,
             children: List.generate(navItems.length, (index) {
               final item = navItems[index];
-              final isSelected = _selectedIndex == index;
+              final isSelected = widget.selectedIndex == index;
 
               return GestureDetector(
                 behavior: HitTestBehavior.opaque,
                 onTap: () {
                   HapticFeedback.lightImpact();
-                  _onItemTapped(index);
+                  widget.onItemTapped(index);
                 },
                 child: AnimatedContainer(
-                  duration: const Duration(milliseconds: 240),
+                  duration: const Duration(milliseconds: 180),
                   curve: Curves.easeInOutCubic,
                   padding: isSelected
                       ? const EdgeInsets.symmetric(horizontal: 14, vertical: 8)
@@ -558,7 +623,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
                       _buildNavIcon(item: item, isSelected: isSelected),
                       ClipRect(
                         child: AnimatedSize(
-                          duration: const Duration(milliseconds: 220),
+                          duration: const Duration(milliseconds: 180),
                           curve: Curves.easeOutCubic,
                           child: isSelected
                               ? Row(
@@ -590,8 +655,6 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
       ),
     );
   }
-
-  // ── Modern badged nav icon ────────────────────────────────────────────────
 
   Widget _buildNavIcon({
     required _NavBarItemConfig item,

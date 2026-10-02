@@ -1,13 +1,17 @@
 import 'dart:developer';
 import 'dart:io';
+import 'package:firebase_auth/firebase_auth.dart';
+import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter/widgets.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:hive_flutter/hive_flutter.dart';
 import 'package:worship_chat/common/providers/message_reply_provider.dart';
 import 'package:worship_chat/features/auth/controller/auth_controller.dart';
 import 'package:worship_chat/features/group/repository/group_repository.dart';
 import 'package:worship_chat/models/chat_contact.dart';
 import 'package:worship_chat/models/group.dart';
 import 'package:worship_chat/models/group_chat_message_model.dart';
+import 'package:worship_chat/models/user_model.dart';
 
 final groupControllerProvider = Provider((ref) {
   final groupRepository = ref.read(groupRepositoryProvider);
@@ -84,6 +88,10 @@ class GroupController {
     return groupRepository.getQueenRashmikaStream();
   }
 
+  Stream<List<GroupModel>> getAllUserGroups() {
+    return groupRepository.getAllUserGroups();
+  }
+
   Stream<List<GroupChatMessageModel>> getGroupChat(String groupId) {
     return groupRepository.getGroupChatStream(groupId);
   }
@@ -116,18 +124,41 @@ class GroupController {
     List<String> fcmToken,
     List<String> receiverIds,
     String groupName,
-    String type
-  ) async {
+    String type, {
+    MessageReply? messageReplyOverride,
+    bool clearReply = false,
+  }) async {
     try {
-      final messageReply = ref.read(messageReplyProvider);
-      final userDataAsync = await ref.read(userDataAuthProvider.future);
+      final messageReply = clearReply
+          ? null
+          : (messageReplyOverride ?? ref.read(messageReplyProvider));
+
+      UserModel? userDataAsync = await ref.read(userDataAuthProvider.future);
+      if (userDataAsync == null && Hive.isBoxOpen('userBox')) {
+        userDataAsync = Hive.box<UserModel>('userBox').get('currentUser');
+      }
+      if (userDataAsync == null) {
+        final authUser = FirebaseAuth.instance.currentUser;
+        if (authUser != null) {
+          userDataAsync = UserModel(
+            name: authUser.displayName ?? 'User',
+            userName: authUser.displayName ?? 'User',
+            uid: authUser.uid,
+            profilePic: authUser.photoURL ?? '',
+            isOnline: true,
+            email: authUser.email ?? '',
+            groupId: [],
+            fcmToken: await FirebaseMessaging.instance.getToken(),
+          );
+        }
+      }
 
       if (userDataAsync == null) {
-        log("User data is null");
+        log("User data is null in group_controller");
         return;
       }
 
-      groupRepository.sendTextMessage(
+      await groupRepository.sendTextMessage(
         messageReply: messageReply,
         messageType: messageType,
         file: file,
@@ -138,7 +169,7 @@ class GroupController {
         fcmToken: fcmToken,
         receiverIds: receiverIds,
         groupName: groupName,
-        type: type
+        type: type,
       );
 
       // ✅ Use .notifier.state instead of deprecated .state provider
@@ -189,5 +220,17 @@ class GroupController {
       log('error on getSharedGroupLinks: $e');
       return [];
     }
+  }
+
+  void toggleGroupReaction({
+    required String groupId,
+    required String messageId,
+    required String emoji,
+  }) {
+    groupRepository.toggleGroupReaction(
+      groupId: groupId,
+      messageId: messageId,
+      emoji: emoji,
+    );
   }
 }

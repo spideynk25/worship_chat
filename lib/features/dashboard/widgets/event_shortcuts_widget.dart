@@ -1,10 +1,14 @@
+import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:intl/intl.dart';
 import 'package:worship_chat/colors.dart';
+import 'package:worship_chat/common/utils/utils.dart';
 import 'package:worship_chat/features/dashboard/controller/event_controller.dart';
 import 'package:worship_chat/features/dashboard/screens/event_calender_page.dart';
+import 'package:worship_chat/features/group/utils/queendom_group_helper.dart';
 import 'package:worship_chat/models/event.dart';
+import 'package:worship_chat/models/group.dart';
 
 enum _BirthdayFilter { today, weekly, monthly }
 
@@ -104,6 +108,7 @@ class _EventShortcutsWidgetState extends ConsumerState<EventShortcutsWidget> {
     DateTime selectedDate = DateTime.now();
     TimeOfDay selectedTime = TimeOfDay.now();
     bool isRecurring = true;
+    GroupModel? selectedQueendomGroup;
 
     showDialog(
       context: context,
@@ -250,6 +255,173 @@ class _EventShortcutsWidgetState extends ConsumerState<EventShortcutsWidget> {
                     setDialogState(() => isRecurring = val ?? true);
                   },
                 ),
+                const SizedBox(height: 10),
+                // Queendom Group Connector Card
+                Container(
+                  padding: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFF141220),
+                    borderRadius: BorderRadius.circular(12),
+                    border: Border.all(
+                      color: selectedQueendomGroup != null
+                          ? (selectedQueendomGroup!.queendom == 'Queen Pooja'
+                              ? const Color(0xFFFFD700)
+                              : const Color(0xFFFF4081))
+                          : Colors.white.withValues(alpha: 0.1),
+                      width: selectedQueendomGroup != null ? 1.2 : 1.0,
+                    ),
+                  ),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(
+                        children: [
+                          const Text('👑', style: TextStyle(fontSize: 14)),
+                          const SizedBox(width: 6),
+                          const Text(
+                            'Connect to Queendom Group',
+                            style: TextStyle(
+                              color: Colors.white,
+                              fontSize: 12.5,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                          const Spacer(),
+                          if (selectedQueendomGroup != null)
+                            GestureDetector(
+                              onTap: () {
+                                setDialogState(() {
+                                  selectedQueendomGroup = null;
+                                });
+                              },
+                              child: const Icon(
+                                Icons.close_rounded,
+                                size: 16,
+                                color: Colors.redAccent,
+                              ),
+                            ),
+                        ],
+                      ),
+                      const SizedBox(height: 3),
+                      Text(
+                        'Wish directly in Queen Pooja or Rashmika groups',
+                        style: TextStyle(color: Colors.grey[500], fontSize: 10.5),
+                      ),
+                      const SizedBox(height: 10),
+                      InkWell(
+                        borderRadius: BorderRadius.circular(10),
+                        onTap: () async {
+                          final group = await showQueendomGroupPicker(
+                            context,
+                            ref: ref,
+                            currentSelectedGroupId:
+                                selectedQueendomGroup?.groupId,
+                          );
+                          setDialogState(() {
+                            selectedQueendomGroup = group;
+                          });
+                        },
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 10, vertical: 8),
+                          decoration: BoxDecoration(
+                            color: Colors.white.withValues(alpha: 0.05),
+                            borderRadius: BorderRadius.circular(10),
+                            border: Border.all(
+                              color: Colors.white.withValues(alpha: 0.08),
+                            ),
+                          ),
+                          child: selectedQueendomGroup == null
+                              ? Row(
+                                  mainAxisAlignment: MainAxisAlignment.center,
+                                  children: [
+                                    Icon(
+                                      Icons.group_add_outlined,
+                                      size: 16,
+                                      color: Colors.grey[400],
+                                    ),
+                                    const SizedBox(width: 8),
+                                    Text(
+                                      'Select Queendom Group',
+                                      style: TextStyle(
+                                        color: Colors.grey[300],
+                                        fontSize: 12,
+                                        fontWeight: FontWeight.w600,
+                                      ),
+                                    ),
+                                  ],
+                                )
+                              : Row(
+                                  children: [
+                                    CircleAvatar(
+                                      radius: 14,
+                                      backgroundColor: const Color(0xFF221E36),
+                                      backgroundImage: selectedQueendomGroup!
+                                              .groupPic.isNotEmpty
+                                          ? CachedNetworkImageProvider(
+                                              selectedQueendomGroup!.groupPic)
+                                          : null,
+                                      child: selectedQueendomGroup!
+                                              .groupPic.isEmpty
+                                          ? Text(
+                                              selectedQueendomGroup!
+                                                      .name.isNotEmpty
+                                                  ? selectedQueendomGroup!
+                                                      .name[0]
+                                                      .toUpperCase()
+                                                  : '?',
+                                              style: const TextStyle(
+                                                color: Colors.white,
+                                                fontSize: 11,
+                                                fontWeight: FontWeight.bold,
+                                              ),
+                                            )
+                                          : null,
+                                    ),
+                                    const SizedBox(width: 8),
+                                    Expanded(
+                                      child: Column(
+                                        crossAxisAlignment:
+                                            CrossAxisAlignment.start,
+                                        children: [
+                                          Text(
+                                            selectedQueendomGroup!.name,
+                                            style: const TextStyle(
+                                              color: Colors.white,
+                                              fontSize: 12.5,
+                                              fontWeight: FontWeight.w600,
+                                            ),
+                                            maxLines: 1,
+                                            overflow: TextOverflow.ellipsis,
+                                          ),
+                                          Text(
+                                            selectedQueendomGroup!.queendom ??
+                                                'Queendom Group',
+                                            style: TextStyle(
+                                              color: selectedQueendomGroup!
+                                                          .queendom ==
+                                                      'Queen Pooja'
+                                                  ? const Color(0xFFFFD700)
+                                                  : const Color(0xFFFF4081),
+                                              fontSize: 10,
+                                              fontWeight: FontWeight.bold,
+                                            ),
+                                          ),
+                                        ],
+                                      ),
+                                    ),
+                                    const Icon(
+                                      Icons.swap_horiz_rounded,
+                                      color: Colors.grey,
+                                      size: 16,
+                                    ),
+                                  ],
+                                ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
               ],
             ),
           ),
@@ -262,7 +434,6 @@ class _EventShortcutsWidgetState extends ConsumerState<EventShortcutsWidget> {
               onPressed: () async {
                 final title = titleController.text.trim();
                 if (title.isNotEmpty) {
-                  final messenger = ScaffoldMessenger.of(context);
                   Navigator.pop(context);
                   try {
                     await ref
@@ -273,23 +444,17 @@ class _EventShortcutsWidgetState extends ConsumerState<EventShortcutsWidget> {
                           date: selectedDate,
                           time: selectedTime,
                           isRecurring: isRecurring,
+                          connectedGroupId: selectedQueendomGroup?.groupId,
+                          connectedGroupName: selectedQueendomGroup?.name,
+                          connectedGroupPic: selectedQueendomGroup?.groupPic,
+                          connectedQueendom: selectedQueendomGroup?.queendom,
                         );
                     if (mounted) {
-                      messenger.showSnackBar(
-                        const SnackBar(
-                          content: Text('Event created successfully!'),
-                          backgroundColor: Colors.green,
-                        ),
-                      );
+                      AppSnackBar.success(this.context, 'Event created successfully!');
                     }
                   } catch (e) {
                     if (mounted) {
-                      messenger.showSnackBar(
-                        SnackBar(
-                          content: Text('Error: $e'),
-                          backgroundColor: Colors.red,
-                        ),
-                      );
+                      AppSnackBar.error(this.context, 'Error: $e');
                     }
                   }
                 }
@@ -838,7 +1003,7 @@ class _EventShortcutsWidgetState extends ConsumerState<EventShortcutsWidget> {
                                 fontWeight: FontWeight.bold,
                                 color: Colors.white,
                               ),
-                              maxLines: 1,
+                              maxLines: 2,
                               overflow: TextOverflow.ellipsis,
                             ),
                           ),
@@ -894,31 +1059,141 @@ class _EventShortcutsWidgetState extends ConsumerState<EventShortcutsWidget> {
                           ),
                         ],
                       ),
+                      if (event.connectedGroupName != null &&
+                          event.connectedGroupId != null) ...[
+                        const SizedBox(height: 5),
+                        Row(
+                          children: [
+                            Container(
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 7,
+                                vertical: 2.5,
+                              ),
+                              decoration: BoxDecoration(
+                                color: tabColor.withValues(alpha: 0.14),
+                                borderRadius: BorderRadius.circular(6),
+                                border: Border.all(
+                                  color: tabColor.withValues(alpha: 0.35),
+                                  width: 0.8,
+                                ),
+                              ),
+                              child: Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  const Icon(
+                                    Icons.group_rounded,
+                                    size: 11,
+                                    color: tabColor,
+                                  ),
+                                  const SizedBox(width: 4),
+                                  ConstrainedBox(
+                                    constraints:
+                                        const BoxConstraints(maxWidth: 130),
+                                    child: Text(
+                                      event.connectedGroupName!,
+                                      style: const TextStyle(
+                                        color: Colors.white,
+                                        fontSize: 9.5,
+                                        fontWeight: FontWeight.w600,
+                                      ),
+                                      overflow: TextOverflow.ellipsis,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ],
+                        ),
+                      ],
                     ],
                   ),
                 ),
 
                 const SizedBox(width: 8),
 
-                // Countdown badge
-                Container(
-                  padding:
-                      const EdgeInsets.symmetric(horizontal: 8, vertical: 3.5),
-                  decoration: BoxDecoration(
-                    color: badgeColor.withValues(alpha: 0.15),
-                    borderRadius: BorderRadius.circular(8),
-                    border: Border.all(
-                      color: badgeColor.withValues(alpha: 0.4),
+                Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.end,
+                  children: [
+                    // Countdown badge
+                    Container(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 8, vertical: 3.5),
+                      decoration: BoxDecoration(
+                        color: badgeColor.withValues(alpha: 0.15),
+                        borderRadius: BorderRadius.circular(8),
+                        border: Border.all(
+                          color: badgeColor.withValues(alpha: 0.4),
+                        ),
+                      ),
+                      child: Text(
+                        countdownText,
+                        style: TextStyle(
+                          color: badgeColor,
+                          fontSize: 10.5,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
                     ),
-                  ),
-                  child: Text(
-                    countdownText,
-                    style: TextStyle(
-                      color: badgeColor,
-                      fontSize: 10.5,
-                      fontWeight: FontWeight.bold,
-                    ),
-                  ),
+                    if (event.connectedGroupId != null) ...[
+                      const SizedBox(height: 5),
+                      InkWell(
+                        onTap: () {
+                          navigateToQueendomGroup(
+                            context,
+                            groupId: event.connectedGroupId!,
+                            name: event.connectedGroupName ?? 'Queendom Group',
+                            groupPic: event.connectedGroupPic,
+                            queendom: event.connectedQueendom,
+                          );
+                        },
+                        borderRadius: BorderRadius.circular(8),
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 7, vertical: 3.5),
+                          decoration: BoxDecoration(
+                            gradient: LinearGradient(
+                              colors: event.connectedQueendom == 'Queen Pooja'
+                                  ? const [
+                                      Color(0xFFFFD700),
+                                      Color(0xFFFF9E00)
+                                    ]
+                                  : const [
+                                      Color(0xFFFF4081),
+                                      Color(0xFFFF007A)
+                                    ],
+                            ),
+                            borderRadius: BorderRadius.circular(8),
+                            boxShadow: [
+                              BoxShadow(
+                                color: (event.connectedQueendom == 'Queen Pooja'
+                                        ? const Color(0xFFFFD700)
+                                        : const Color(0xFFFF4081))
+                                    .withValues(alpha: 0.3),
+                                blurRadius: 4,
+                                offset: const Offset(0, 1),
+                              ),
+                            ],
+                          ),
+                          child: const Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Text(
+                                'Wish',
+                                style: TextStyle(
+                                  color: Colors.black,
+                                  fontSize: 10,
+                                  fontWeight: FontWeight.w800,
+                                ),
+                              ),
+                              SizedBox(width: 2),
+                              Text('🙇🏻‍♂️', style: TextStyle(fontSize: 9.5)),
+                            ],
+                          ),
+                        ),
+                      ),
+                    ],
+                  ],
                 ),
               ],
             ),

@@ -1,11 +1,15 @@
+import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:table_calendar/table_calendar.dart';
 import 'package:intl/intl.dart';
 import 'package:worship_chat/colors.dart';
+import 'package:worship_chat/common/utils/utils.dart';
 import 'package:worship_chat/common/widgets/skeleton_loader.dart';
 import 'package:worship_chat/features/dashboard/controller/event_controller.dart';
+import 'package:worship_chat/features/group/utils/queendom_group_helper.dart';
 import 'package:worship_chat/models/event.dart';
+import 'package:worship_chat/models/group.dart';
 
 class EventsCalendarPage extends ConsumerStatefulWidget {
   static const String routeName = '/events-calendar-page';
@@ -51,6 +55,7 @@ class _EventsCalendarPageState extends ConsumerState<EventsCalendarPage> {
     DateTime selectedDate = _selectedDay ?? DateTime.now();
     TimeOfDay selectedTime = TimeOfDay.now();
     bool isRecurring = false;
+    GroupModel? selectedQueendomGroup;
 
     showDialog(
       context: context,
@@ -254,6 +259,173 @@ class _EventsCalendarPageState extends ConsumerState<EventsCalendarPage> {
                     setDialogState(() => isRecurring = val ?? false);
                   },
                 ),
+                const SizedBox(height: 10),
+                // Queendom Group Connector Card
+                Container(
+                  padding: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFF120E1C),
+                    borderRadius: BorderRadius.circular(12),
+                    border: Border.all(
+                      color: selectedQueendomGroup != null
+                          ? (selectedQueendomGroup!.queendom == 'Queen Pooja'
+                              ? const Color(0xFFFFD700)
+                              : const Color(0xFFFF4081))
+                          : Colors.white.withValues(alpha: 0.12),
+                      width: selectedQueendomGroup != null ? 1.2 : 1.0,
+                    ),
+                  ),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(
+                        children: [
+                          const Text('👑', style: TextStyle(fontSize: 14)),
+                          const SizedBox(width: 6),
+                          const Text(
+                            'Connect to Queendom Group',
+                            style: TextStyle(
+                              color: Colors.white,
+                              fontSize: 12.5,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                          const Spacer(),
+                          if (selectedQueendomGroup != null)
+                            GestureDetector(
+                              onTap: () {
+                                setDialogState(() {
+                                  selectedQueendomGroup = null;
+                                });
+                              },
+                              child: const Icon(
+                                Icons.close_rounded,
+                                size: 16,
+                                color: Colors.redAccent,
+                              ),
+                            ),
+                        ],
+                      ),
+                      const SizedBox(height: 3),
+                      Text(
+                        'Wish directly in Queen Pooja or Rashmika groups',
+                        style: TextStyle(color: Colors.grey[500], fontSize: 10.5),
+                      ),
+                      const SizedBox(height: 10),
+                      InkWell(
+                        borderRadius: BorderRadius.circular(10),
+                        onTap: () async {
+                          final group = await showQueendomGroupPicker(
+                            context,
+                            ref: ref,
+                            currentSelectedGroupId:
+                                selectedQueendomGroup?.groupId,
+                          );
+                          setDialogState(() {
+                            selectedQueendomGroup = group;
+                          });
+                        },
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 10, vertical: 8),
+                          decoration: BoxDecoration(
+                            color: Colors.white.withValues(alpha: 0.05),
+                            borderRadius: BorderRadius.circular(10),
+                            border: Border.all(
+                              color: Colors.white.withValues(alpha: 0.08),
+                            ),
+                          ),
+                          child: selectedQueendomGroup == null
+                              ? Row(
+                                  mainAxisAlignment: MainAxisAlignment.center,
+                                  children: [
+                                    Icon(
+                                      Icons.group_add_outlined,
+                                      size: 16,
+                                      color: Colors.grey[400],
+                                    ),
+                                    const SizedBox(width: 8),
+                                    Text(
+                                      'Select Queendom Group',
+                                      style: TextStyle(
+                                        color: Colors.grey[300],
+                                        fontSize: 12,
+                                        fontWeight: FontWeight.w600,
+                                      ),
+                                    ),
+                                  ],
+                                )
+                              : Row(
+                                  children: [
+                                    CircleAvatar(
+                                      radius: 14,
+                                      backgroundColor: const Color(0xFF221E36),
+                                      backgroundImage: selectedQueendomGroup!
+                                              .groupPic.isNotEmpty
+                                          ? CachedNetworkImageProvider(
+                                              selectedQueendomGroup!.groupPic)
+                                          : null,
+                                      child: selectedQueendomGroup!
+                                              .groupPic.isEmpty
+                                          ? Text(
+                                              selectedQueendomGroup!
+                                                      .name.isNotEmpty
+                                                  ? selectedQueendomGroup!
+                                                      .name[0]
+                                                      .toUpperCase()
+                                                  : '?',
+                                              style: const TextStyle(
+                                                color: Colors.white,
+                                                fontSize: 11,
+                                                fontWeight: FontWeight.bold,
+                                              ),
+                                            )
+                                          : null,
+                                    ),
+                                    const SizedBox(width: 8),
+                                    Expanded(
+                                      child: Column(
+                                        crossAxisAlignment:
+                                            CrossAxisAlignment.start,
+                                        children: [
+                                          Text(
+                                            selectedQueendomGroup!.name,
+                                            style: const TextStyle(
+                                              color: Colors.white,
+                                              fontSize: 12.5,
+                                              fontWeight: FontWeight.w600,
+                                            ),
+                                            maxLines: 1,
+                                            overflow: TextOverflow.ellipsis,
+                                          ),
+                                          Text(
+                                            selectedQueendomGroup!.queendom ??
+                                                'Queendom Group',
+                                            style: TextStyle(
+                                              color: selectedQueendomGroup!
+                                                          .queendom ==
+                                                      'Queen Pooja'
+                                                  ? const Color(0xFFFFD700)
+                                                  : const Color(0xFFFF4081),
+                                              fontSize: 10,
+                                              fontWeight: FontWeight.bold,
+                                            ),
+                                          ),
+                                        ],
+                                      ),
+                                    ),
+                                    const Icon(
+                                      Icons.swap_horiz_rounded,
+                                      color: Colors.grey,
+                                      size: 16,
+                                    ),
+                                  ],
+                                ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
               ],
             ),
           ),
@@ -272,6 +444,10 @@ class _EventsCalendarPageState extends ConsumerState<EventsCalendarPage> {
                     date: selectedDate,
                     time: selectedTime,
                     isRecurring: isRecurring,
+                    connectedGroupId: selectedQueendomGroup?.groupId,
+                    connectedGroupName: selectedQueendomGroup?.name,
+                    connectedGroupPic: selectedQueendomGroup?.groupPic,
+                    connectedQueendom: selectedQueendomGroup?.queendom,
                   );
                   Navigator.pop(context);
                 }
@@ -301,6 +477,11 @@ class _EventsCalendarPageState extends ConsumerState<EventsCalendarPage> {
     DateTime selectedDate = event.date;
     TimeOfDay selectedTime = event.time;
     bool isRecurring = event.isRecurring;
+    String? connectedGroupId = event.connectedGroupId;
+    String? connectedGroupName = event.connectedGroupName;
+    String? connectedGroupPic = event.connectedGroupPic;
+    String? connectedQueendom = event.connectedQueendom;
+    bool groupDisconnected = false;
 
     showDialog(
       context: context,
@@ -504,6 +685,180 @@ class _EventsCalendarPageState extends ConsumerState<EventsCalendarPage> {
                     setDialogState(() => isRecurring = val ?? false);
                   },
                 ),
+                const SizedBox(height: 10),
+                // Queendom Group Connector Card (Edit)
+                Container(
+                  padding: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFF120E1C),
+                    borderRadius: BorderRadius.circular(12),
+                    border: Border.all(
+                      color: (connectedGroupId != null && !groupDisconnected)
+                          ? (connectedQueendom == 'Queen Pooja'
+                              ? const Color(0xFFFFD700)
+                              : const Color(0xFFFF4081))
+                          : Colors.white.withValues(alpha: 0.12),
+                      width: (connectedGroupId != null && !groupDisconnected) ? 1.2 : 1.0,
+                    ),
+                  ),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(
+                        children: [
+                          const Text('👑', style: TextStyle(fontSize: 14)),
+                          const SizedBox(width: 6),
+                          const Text(
+                            'Connect to Queendom Group',
+                            style: TextStyle(
+                              color: Colors.white,
+                              fontSize: 12.5,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                          const Spacer(),
+                          if (connectedGroupId != null && !groupDisconnected)
+                            GestureDetector(
+                              onTap: () {
+                                setDialogState(() {
+                                  connectedGroupId = null;
+                                  connectedGroupName = null;
+                                  connectedGroupPic = null;
+                                  connectedQueendom = null;
+                                  groupDisconnected = true;
+                                });
+                              },
+                              child: const Icon(
+                                Icons.close_rounded,
+                                size: 16,
+                                color: Colors.redAccent,
+                              ),
+                            ),
+                        ],
+                      ),
+                      const SizedBox(height: 3),
+                      Text(
+                        'Wish directly in Queen Pooja or Rashmika groups',
+                        style: TextStyle(color: Colors.grey[500], fontSize: 10.5),
+                      ),
+                      const SizedBox(height: 10),
+                      InkWell(
+                        borderRadius: BorderRadius.circular(10),
+                        onTap: () async {
+                          final group = await showQueendomGroupPicker(
+                            context,
+                            ref: ref,
+                            currentSelectedGroupId:
+                                !groupDisconnected ? connectedGroupId : null,
+                          );
+                          if (group != null) {
+                            setDialogState(() {
+                              connectedGroupId = group.groupId;
+                              connectedGroupName = group.name;
+                              connectedGroupPic = group.groupPic;
+                              connectedQueendom = group.queendom;
+                              groupDisconnected = false;
+                            });
+                          }
+                        },
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 10, vertical: 8),
+                          decoration: BoxDecoration(
+                            color: Colors.white.withValues(alpha: 0.05),
+                            borderRadius: BorderRadius.circular(10),
+                            border: Border.all(
+                              color: Colors.white.withValues(alpha: 0.08),
+                            ),
+                          ),
+                          child: (connectedGroupId == null || groupDisconnected)
+                              ? Row(
+                                  mainAxisAlignment: MainAxisAlignment.center,
+                                  children: [
+                                    Icon(
+                                      Icons.group_add_outlined,
+                                      size: 16,
+                                      color: Colors.grey[400],
+                                    ),
+                                    const SizedBox(width: 8),
+                                    Text(
+                                      'Select Queendom Group',
+                                      style: TextStyle(
+                                        color: Colors.grey[300],
+                                        fontSize: 12,
+                                        fontWeight: FontWeight.w600,
+                                      ),
+                                    ),
+                                  ],
+                                )
+                              : Row(
+                                  children: [
+                                    CircleAvatar(
+                                      radius: 14,
+                                      backgroundColor: const Color(0xFF221E36),
+                                      backgroundImage: (connectedGroupPic != null &&
+                                              connectedGroupPic!.isNotEmpty)
+                                          ? CachedNetworkImageProvider(
+                                              connectedGroupPic!)
+                                          : null,
+                                      child: (connectedGroupPic == null ||
+                                              connectedGroupPic!.isEmpty)
+                                          ? Text(
+                                              (connectedGroupName != null &&
+                                                      connectedGroupName!.isNotEmpty)
+                                                  ? connectedGroupName![0]
+                                                      .toUpperCase()
+                                                  : '?',
+                                              style: const TextStyle(
+                                                color: Colors.white,
+                                                fontSize: 11,
+                                                fontWeight: FontWeight.bold,
+                                              ),
+                                            )
+                                          : null,
+                                    ),
+                                    const SizedBox(width: 8),
+                                    Expanded(
+                                      child: Column(
+                                        crossAxisAlignment:
+                                            CrossAxisAlignment.start,
+                                        children: [
+                                          Text(
+                                            connectedGroupName ?? 'Queendom Group',
+                                            style: const TextStyle(
+                                              color: Colors.white,
+                                              fontSize: 12.5,
+                                              fontWeight: FontWeight.w600,
+                                            ),
+                                            maxLines: 1,
+                                            overflow: TextOverflow.ellipsis,
+                                          ),
+                                          Text(
+                                            connectedQueendom ?? 'Queendom Group',
+                                            style: TextStyle(
+                                              color: connectedQueendom ==
+                                                      'Queen Pooja'
+                                                  ? const Color(0xFFFFD700)
+                                                  : const Color(0xFFFF4081),
+                                              fontSize: 10,
+                                              fontWeight: FontWeight.bold,
+                                            ),
+                                          ),
+                                        ],
+                                      ),
+                                    ),
+                                    const Icon(
+                                      Icons.swap_horiz_rounded,
+                                      color: Colors.grey,
+                                      size: 16,
+                                    ),
+                                  ],
+                                ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
               ],
             ),
           ),
@@ -523,6 +878,11 @@ class _EventsCalendarPageState extends ConsumerState<EventsCalendarPage> {
                     date: selectedDate,
                     time: selectedTime,
                     isRecurring: isRecurring,
+                    connectedGroupId: connectedGroupId,
+                    connectedGroupName: connectedGroupName,
+                    connectedGroupPic: connectedGroupPic,
+                    connectedQueendom: connectedQueendom,
+                    clearConnectedGroup: groupDisconnected,
                   );
                   Navigator.pop(context);
                 }
@@ -552,6 +912,10 @@ class _EventsCalendarPageState extends ConsumerState<EventsCalendarPage> {
     required DateTime date,
     required TimeOfDay time,
     required bool isRecurring,
+    String? connectedGroupId,
+    String? connectedGroupName,
+    String? connectedGroupPic,
+    String? connectedQueendom,
   }) async {
     try {
       await ref.read(eventControllerProvider.notifier).createEvent(
@@ -560,6 +924,10 @@ class _EventsCalendarPageState extends ConsumerState<EventsCalendarPage> {
             date: date,
             time: time,
             isRecurring: isRecurring,
+            connectedGroupId: connectedGroupId,
+            connectedGroupName: connectedGroupName,
+            connectedGroupPic: connectedGroupPic,
+            connectedQueendom: connectedQueendom,
           );
 
       if (mounted) {
@@ -568,22 +936,16 @@ class _EventsCalendarPageState extends ConsumerState<EventsCalendarPage> {
           _focusedDay = date;
         });
 
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text(
-              isRecurring
-                  ? '🎉 Recurring event created! Will appear every year on ${DateFormat('MMM dd').format(date)}'
-                  : 'Event created successfully!',
-            ),
-            backgroundColor: Colors.green,
-          ),
+        AppSnackBar.success(
+          context,
+          isRecurring
+              ? '🎉 Recurring event created! Will appear every year on ${DateFormat('MMM dd').format(date)}'
+              : 'Event created successfully!',
         );
       }
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text(e.toString()), backgroundColor: Colors.red),
-        );
+        AppSnackBar.error(context, e.toString());
       }
     }
   }
@@ -595,6 +957,11 @@ class _EventsCalendarPageState extends ConsumerState<EventsCalendarPage> {
     required DateTime date,
     required TimeOfDay time,
     required bool isRecurring,
+    String? connectedGroupId,
+    String? connectedGroupName,
+    String? connectedGroupPic,
+    String? connectedQueendom,
+    bool clearConnectedGroup = false,
   }) async {
     try {
       final updatedEvent = event.copyWith(
@@ -603,6 +970,11 @@ class _EventsCalendarPageState extends ConsumerState<EventsCalendarPage> {
         date: date,
         time: time,
         isRecurring: isRecurring,
+        connectedGroupId: connectedGroupId,
+        connectedGroupName: connectedGroupName,
+        connectedGroupPic: connectedGroupPic,
+        connectedQueendom: connectedQueendom,
+        clearConnectedGroup: clearConnectedGroup,
       );
 
       await ref.read(eventControllerProvider.notifier).updateEvent(updatedEvent);
@@ -613,22 +985,16 @@ class _EventsCalendarPageState extends ConsumerState<EventsCalendarPage> {
           _focusedDay = date;
         });
 
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text(
-              isRecurring
-                  ? 'Event updated! Will appear every year on ${DateFormat('MMM dd').format(date)}'
-                  : 'Event updated successfully!',
-            ),
-            backgroundColor: Colors.green,
-          ),
+        AppSnackBar.success(
+          context,
+          isRecurring
+              ? 'Event updated! Will appear every year on ${DateFormat('MMM dd').format(date)}'
+              : 'Event updated successfully!',
         );
       }
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text(e.toString()), backgroundColor: Colors.red),
-        );
+        AppSnackBar.error(context, e.toString());
       }
     }
   }
@@ -686,18 +1052,11 @@ class _EventsCalendarPageState extends ConsumerState<EventsCalendarPage> {
       await ref.read(eventControllerProvider.notifier).deleteEvent(event);
 
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('Event deleted successfully!'),
-            backgroundColor: Colors.green,
-          ),
-        );
+        AppSnackBar.success(context, 'Event deleted successfully!');
       }
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text(e.toString()), backgroundColor: Colors.red),
-        );
+        AppSnackBar.error(context, e.toString());
       }
     }
   }
@@ -710,9 +1069,7 @@ class _EventsCalendarPageState extends ConsumerState<EventsCalendarPage> {
     // Show error if any
     ref.listen<EventState>(eventControllerProvider, (previous, next) {
       if (next.error != null && mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text(next.error!), backgroundColor: Colors.red),
-        );
+        AppSnackBar.error(context, next.error!);
       }
     });
 
@@ -1374,14 +1731,14 @@ class _EventsCalendarPageState extends ConsumerState<EventsCalendarPage> {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                // Top Row: Avatar icon + Title + Status + Action buttons
+                // Top Row: Avatar icon + Title + Status Badges
                 Row(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     // Icon Box
                     Container(
-                      width: 42,
-                      height: 42,
+                      width: 44,
+                      height: 44,
                       decoration: BoxDecoration(
                         gradient: LinearGradient(
                           begin: Alignment.topLeft,
@@ -1392,7 +1749,7 @@ class _EventsCalendarPageState extends ConsumerState<EventsCalendarPage> {
                                   ? [const Color(0xFFFFB300), const Color(0xFFFF7043)]
                                   : [const Color(0xFF7928CA), const Color(0xFFFF0080)]),
                         ),
-                        borderRadius: BorderRadius.circular(11),
+                        borderRadius: BorderRadius.circular(12),
                         boxShadow: [
                           BoxShadow(
                             color: (isBirthday ? const Color(0xFFFF2D78) : tabColor)
@@ -1409,32 +1766,56 @@ class _EventsCalendarPageState extends ConsumerState<EventsCalendarPage> {
                                 ? Icons.auto_awesome_rounded
                                 : Icons.event_note_rounded),
                         color: Colors.white,
-                        size: 21,
+                        size: 22,
                       ),
                     ),
                     const SizedBox(width: 12),
 
-                    // Title & Time & Recurring tag
+                    // Title & Badges & Queendom Group (Full width, no crowding!)
                     Expanded(
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          Row(
+                          // Event Name: Full horizontal width, multi-line wrapping
+                          Text(
+                            event.title,
+                            style: const TextStyle(
+                              fontSize: 16,
+                              fontWeight: FontWeight.bold,
+                              color: Colors.white,
+                              height: 1.25,
+                            ),
+                            maxLines: 3,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                          const SizedBox(height: 6),
+
+                          // Badges Row (Time, Yearly, Status/Countdown)
+                          Wrap(
+                            spacing: 8,
+                            runSpacing: 4,
+                            crossAxisAlignment: WrapCrossAlignment.center,
                             children: [
-                              Expanded(
-                                child: Text(
-                                  event.title,
-                                  style: const TextStyle(
-                                    fontSize: 15.5,
-                                    fontWeight: FontWeight.bold,
-                                    color: Colors.white,
+                              Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  Icon(
+                                    Icons.access_time_rounded,
+                                    size: 13,
+                                    color: Colors.grey[400],
                                   ),
-                                  maxLines: 1,
-                                  overflow: TextOverflow.ellipsis,
-                                ),
+                                  const SizedBox(width: 4),
+                                  Text(
+                                    event.time.format(context),
+                                    style: TextStyle(
+                                      fontSize: 12,
+                                      color: Colors.grey[400],
+                                      fontWeight: FontWeight.w500,
+                                    ),
+                                  ),
+                                ],
                               ),
-                              if (event.isRecurring) ...[
-                                const SizedBox(width: 6),
+                              if (event.isRecurring)
                                 Container(
                                   padding: const EdgeInsets.symmetric(
                                       horizontal: 6, vertical: 2),
@@ -1443,6 +1824,7 @@ class _EventsCalendarPageState extends ConsumerState<EventsCalendarPage> {
                                     borderRadius: BorderRadius.circular(6),
                                     border: Border.all(
                                       color: accentOrange.withValues(alpha: 0.5),
+                                      width: 0.8,
                                     ),
                                   ),
                                   child: const Text(
@@ -1454,34 +1836,17 @@ class _EventsCalendarPageState extends ConsumerState<EventsCalendarPage> {
                                     ),
                                   ),
                                 ),
-                              ],
-                            ],
-                          ),
-                          const SizedBox(height: 4),
-                          Row(
-                            children: [
-                              Icon(
-                                Icons.access_time_rounded,
-                                size: 12.5,
-                                color: Colors.grey[400],
-                              ),
-                              const SizedBox(width: 4),
-                              Text(
-                                event.time.format(context),
-                                style: TextStyle(
-                                  fontSize: 12,
-                                  color: Colors.grey[400],
-                                  fontWeight: FontWeight.w500,
-                                ),
-                              ),
-                              if (statusBadge != null) ...[
-                                const SizedBox(width: 8),
+                              if (statusBadge != null)
                                 Container(
                                   padding: const EdgeInsets.symmetric(
-                                      horizontal: 6, vertical: 1.5),
+                                      horizontal: 6.5, vertical: 2),
                                   decoration: BoxDecoration(
-                                    color: statusBadgeColor.withValues(alpha: 0.15),
+                                    color: statusBadgeColor.withValues(alpha: 0.16),
                                     borderRadius: BorderRadius.circular(6),
+                                    border: Border.all(
+                                      color: statusBadgeColor.withValues(alpha: 0.45),
+                                      width: 0.8,
+                                    ),
                                   ),
                                   child: Text(
                                     statusBadge,
@@ -1492,35 +1857,77 @@ class _EventsCalendarPageState extends ConsumerState<EventsCalendarPage> {
                                     ),
                                   ),
                                 ),
-                              ],
                             ],
                           ),
+
+                          // Connected Queendom Group Pill
+                          if (event.connectedGroupName != null &&
+                              event.connectedGroupId != null) ...[
+                            const SizedBox(height: 7),
+                            InkWell(
+                              onTap: () {
+                                navigateToQueendomGroup(
+                                  context,
+                                  groupId: event.connectedGroupId!,
+                                  name: event.connectedGroupName ?? 'Queendom Group',
+                                  groupPic: event.connectedGroupPic,
+                                  queendom: event.connectedQueendom,
+                                );
+                              },
+                              borderRadius: BorderRadius.circular(6),
+                              child: Container(
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 7,
+                                  vertical: 2.5,
+                                ),
+                                decoration: BoxDecoration(
+                                  color: (event.connectedQueendom == 'Queen Pooja'
+                                          ? const Color(0xFFFFD700)
+                                          : const Color(0xFFFF4081))
+                                      .withValues(alpha: 0.15),
+                                  borderRadius: BorderRadius.circular(6),
+                                  border: Border.all(
+                                    color: (event.connectedQueendom == 'Queen Pooja'
+                                            ? const Color(0xFFFFD700)
+                                            : const Color(0xFFFF4081))
+                                        .withValues(alpha: 0.35),
+                                    width: 0.8,
+                                  ),
+                                ),
+                                child: Row(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    Text(
+                                      event.connectedQueendom == 'Queen Pooja'
+                                          ? '👑 Pooja'
+                                          : '👑 Rashmika',
+                                      style: TextStyle(
+                                        color: event.connectedQueendom == 'Queen Pooja'
+                                            ? const Color(0xFFFFD700)
+                                            : const Color(0xFFFF4081),
+                                        fontSize: 10,
+                                        fontWeight: FontWeight.bold,
+                                      ),
+                                    ),
+                                    const SizedBox(width: 5),
+                                    Flexible(
+                                      child: Text(
+                                        event.connectedGroupName!,
+                                        style: const TextStyle(
+                                          color: Colors.white70,
+                                          fontSize: 10,
+                                          fontWeight: FontWeight.w500,
+                                        ),
+                                        overflow: TextOverflow.ellipsis,
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            ),
+                          ],
                         ],
                       ),
-                    ),
-
-                    // Quick Action Buttons (Edit & Delete)
-                    Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        IconButton(
-                          icon: const Icon(Icons.edit_outlined, size: 18),
-                          color: tabColor,
-                          padding: const EdgeInsets.all(6),
-                          constraints: const BoxConstraints(),
-                          tooltip: 'Edit Event',
-                          onPressed: () => _showEditEventDialog(event),
-                        ),
-                        const SizedBox(width: 4),
-                        IconButton(
-                          icon: const Icon(Icons.delete_outline, size: 18),
-                          color: Colors.redAccent,
-                          padding: const EdgeInsets.all(6),
-                          constraints: const BoxConstraints(),
-                          tooltip: 'Delete Event',
-                          onPressed: () => _confirmDeleteEvent(event),
-                        ),
-                      ],
                     ),
                   ],
                 ),
@@ -1558,6 +1965,58 @@ class _EventsCalendarPageState extends ConsumerState<EventsCalendarPage> {
                         overflow: TextOverflow.ellipsis,
                       ),
                     ),
+                    if (event.connectedGroupId != null) ...[
+                      InkWell(
+                        onTap: () {
+                          navigateToQueendomGroup(
+                            context,
+                            groupId: event.connectedGroupId!,
+                            name: event.connectedGroupName ?? 'Queendom Group',
+                            groupPic: event.connectedGroupPic,
+                            queendom: event.connectedQueendom,
+                          );
+                        },
+                        borderRadius: BorderRadius.circular(6),
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 8, vertical: 3),
+                          decoration: BoxDecoration(
+                            gradient: LinearGradient(
+                              colors: event.connectedQueendom == 'Queen Pooja'
+                                  ? const [Color(0xFFFFD700), Color(0xFFFF9E00)]
+                                  : const [Color(0xFFFF4081), Color(0xFFFF007A)],
+                            ),
+                            borderRadius: BorderRadius.circular(6),
+                            boxShadow: [
+                              BoxShadow(
+                                color: (event.connectedQueendom == 'Queen Pooja'
+                                        ? const Color(0xFFFFD700)
+                                        : const Color(0xFFFF4081))
+                                    .withValues(alpha: 0.35),
+                                blurRadius: 4,
+                                offset: const Offset(0, 1),
+                              ),
+                            ],
+                          ),
+                          child: const Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Text(
+                                'Wish',
+                                style: TextStyle(
+                                  color: Colors.black,
+                                  fontSize: 11,
+                                  fontWeight: FontWeight.w800,
+                                ),
+                              ),
+                              SizedBox(width: 3),
+                              Text('🙇🏻‍♂️', style: TextStyle(fontSize: 10)),
+                            ],
+                          ),
+                        ),
+                      ),
+                      const SizedBox(width: 6),
+                    ],
                     InkWell(
                       onTap: () => _showEditEventDialog(event),
                       borderRadius: BorderRadius.circular(6),

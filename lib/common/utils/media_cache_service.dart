@@ -41,6 +41,8 @@ class MediaCacheService {
   /// Returns null if not cached yet.
   String? getCachedSync(String url) {
     if (url.isEmpty) return null;
+    // Reject file:// scheme URIs — they are not valid remote URLs or plain paths
+    if (url.startsWith('file://')) return null;
     if (_memoryCache.containsKey(url)) {
       return _memoryCache[url];
     }
@@ -55,7 +57,7 @@ class MediaCacheService {
     if (_cacheDir != null) {
       final fileName = _getFileNameFromUrl(url);
       final diskFile = File('$_cacheDir/$fileName');
-      if (diskFile.existsSync()) {
+      if (diskFile.existsSync() && diskFile.lengthSync() > 0) {
         final path = diskFile.path;
         _memoryCache[url] = path;
         return path;
@@ -64,11 +66,21 @@ class MediaCacheService {
     return null;
   }
 
-  // Generate unique filename from URL
+  // Generate unique filename from URL safely without path traversal
   String _getFileNameFromUrl(String url) {
     final bytes = utf8.encode(url);
     final hash = md5.convert(bytes).toString();
-    final extension = url.split('.').last.split('?').first;
+    String extension = 'jpg';
+    try {
+      final uri = Uri.parse(url);
+      final lastSegment = uri.pathSegments.isNotEmpty ? uri.pathSegments.last : '';
+      if (lastSegment.contains('.')) {
+        final ext = lastSegment.split('.').last.toLowerCase();
+        if (RegExp(r'^[a-z0-9]{2,5}$').hasMatch(ext)) {
+          extension = ext;
+        }
+      }
+    } catch (_) {}
     return '$hash.$extension';
   }
 
@@ -86,8 +98,11 @@ class MediaCacheService {
       final localPath = await _getLocalFilePath(url);
       final file = File(localPath);
       final exists = await file.exists();
-      if (exists) _memoryCache[url] = localPath;
-      return exists;
+      if (exists && (await file.length()) > 0) {
+        _memoryCache[url] = localPath;
+        return true;
+      }
+      return false;
     } catch (e) {
       log('Error checking cache: $e');
       return false;
@@ -97,6 +112,8 @@ class MediaCacheService {
   // Get cached file path or download if not cached
   Future<String?> getMediaPath(String url) async {
     if (url.isEmpty) return null;
+    // Reject file:// scheme URIs — they are not valid remote or plain file paths
+    if (url.startsWith('file://')) return null;
 
     // Check fast memory cache or local file first
     final fastSync = getCachedSync(url);
@@ -118,18 +135,27 @@ class MediaCacheService {
       final localPath = await _getLocalFilePath(url);
       final file = File(localPath);
 
-      // If file exists, return local path
-      if (await file.exists()) {
+      // If file exists and is valid, return local path
+      if (await file.exists() && (await file.length()) > 0) {
         _memoryCache[url] = localPath;
         log('Media found in cache: $localPath');
         return localPath;
       }
 
-      // Download file
+      // Ensure directory exists
+      if (!await file.parent.exists()) {
+        await file.parent.create(recursive: true);
+      }
+
+      // Download file with reasonable timeouts
       log('Downloading media: $url');
       await _dio.download(
         url,
         localPath,
+        options: Options(
+          receiveTimeout: const Duration(seconds: 20),
+          sendTimeout: const Duration(seconds: 15),
+        ),
         onReceiveProgress: (received, total) {
           if (total != -1) {
             final progress = (received / total * 100).toStringAsFixed(0);
@@ -138,13 +164,16 @@ class MediaCacheService {
         },
       );
 
-      if (await file.exists()) {
+      if (await file.exists() && (await file.length()) > 0) {
         _memoryCache[url] = localPath;
         log('Media downloaded successfully: $localPath');
         return localPath;
+      } else {
+        if (await file.exists()) {
+          await file.delete();
+        }
+        return null;
       }
-
-      return null;
     } catch (e) {
       log('Error downloading media: $e');
       return null;

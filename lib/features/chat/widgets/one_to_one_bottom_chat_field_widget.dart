@@ -1,16 +1,21 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:developer';
 import 'dart:io';
 import 'package:cached_network_image/cached_network_image.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:uuid/uuid.dart';
 import 'package:worship_chat/colors.dart';
 import 'package:worship_chat/common/providers/message_reply_provider.dart';
 import 'package:worship_chat/common/utils/utils.dart';
 import 'package:worship_chat/common/widgets/camera_screen.dart';
 import 'package:worship_chat/features/chat/controller/chat_controller.dart';
+import 'package:worship_chat/features/chat/screens/ai_magic_studio_screen.dart';
 import 'package:worship_chat/features/chat/widgets/camera_permission_handler.dart';
+import 'package:worship_chat/features/chat/widgets/location_picker_sheet.dart';
 import 'package:worship_chat/features/chat/widgets/message_reply_preview.dart';
 
 class OneToOneBottomChatFieldWidget extends ConsumerStatefulWidget {
@@ -36,13 +41,19 @@ class _BottomChatFieldState
     extends ConsumerState<OneToOneBottomChatFieldWidget> {
   final TextEditingController _messageController = TextEditingController();
   final FocusNode _focusNode = FocusNode();
+
+  // Single attachment (document / gif / camera result)
   dynamic imageFile;
   String messageType = "text";
+
+  // Multi-file media group (images or videos)
+  List<File> _mediaFiles = [];
+  String _mediaGroupType = ''; // 'image' or 'video'
+
   Timer? _typingTimer;
   bool _isTyping = false;
   bool _hasText = false;
   bool _isSendPressed = false;
-  final List<Uint8List> _selectedGifs = [];
 
   @override
   void initState() {
@@ -109,19 +120,16 @@ class _BottomChatFieldState
   }
 
   void sendTextMessage() async {
-    if (_messageController.text.trim().isEmpty && imageFile == null) {
+    final hasMedia = _mediaFiles.isNotEmpty || imageFile != null;
+    if (_messageController.text.trim().isEmpty && !hasMedia) {
       return;
     }
 
     if (widget.receiverUserId.trim().isEmpty) {
       log("❌ Cannot send message: receiverUserId is empty");
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text(
-            'Cannot send message: invalid contact. Please go back and re-open the chat.',
-          ),
-          backgroundColor: Colors.red,
-        ),
+      AppSnackBar.error(
+        context,
+        'Cannot send message: invalid contact. Please go back and re-open the chat.',
       );
       return;
     }
@@ -132,6 +140,13 @@ class _BottomChatFieldState
     final messageText = _messageController.text.trim();
     final currentImageFile = imageFile;
     final currentMessageType = messageType;
+    final currentMediaFiles = List<File>.from(_mediaFiles);
+    final currentMediaGroupType = _mediaGroupType;
+
+    // Validate that there is something to send
+    if (messageText.isEmpty && currentImageFile == null && currentMediaFiles.isEmpty) {
+      return;
+    }
 
     // Stop typing indicator
     if (_isTyping) {
@@ -142,131 +157,166 @@ class _BottomChatFieldState
           .setTypingStatus(widget.receiverUserId, false);
     }
 
-    // Show loading indicator for media uploads
-    bool showingLoader = false;
-    if ((currentMessageType == 'image' || currentMessageType == 'video') &&
-        currentImageFile != null) {
-      showingLoader = true;
-      showDialog(
-        context: context,
-        barrierDismissible: false,
-        builder: (context) => PopScope(
-          canPop: false,
-          child: Center(
-            child: Container(
-              padding: const EdgeInsets.all(20),
-              decoration: BoxDecoration(
-                color: Colors.black87,
-                borderRadius: BorderRadius.circular(10),
-              ),
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  const CircularProgressIndicator(color: Colors.white),
-                  const SizedBox(height: 16),
-                  Text(
-                    currentMessageType == 'image'
-                        ? 'Uploading image...'
-                        : 'Uploading video...',
-                    style: const TextStyle(color: Colors.white),
-                  ),
-                ],
-              ),
-            ),
-          ),
-        ),
-      );
+    // For document messages, default text to file name if caption is empty
+    String textToSend = messageText;
+    if (currentMessageType == 'document' &&
+        textToSend.isEmpty &&
+        currentImageFile is File) {
+      textToSend = currentImageFile.path.split(Platform.pathSeparator).last;
     }
 
     // Clear UI immediately
     setState(() {
       messageType = "text";
       imageFile = null;
+      _mediaFiles = [];
+      _mediaGroupType = '';
       _hasText = false;
     });
     _messageController.clear();
 
     try {
-      // Send message (upload happens inside)
-      await ref
-          .read(chatControllerProvider)
-          .sendTextMessage(
-            context,
-            messageText,
-            widget.receiverUserId,
-            currentMessageType,
-            currentImageFile,
-            widget.fcmToken,
-            widget.unseenCount,
-            widget.chatBackgroundUrl,
-            "others",
-          );
+      // ── Multi-file media group (images or videos sent together) ───────────
+      if (currentMediaFiles.isNotEmpty) {
+        final groupId = const Uuid().v1(); // shared group ID
+        for (int i = 0; i < currentMediaFiles.length; i++) {
+          await ref.read(chatControllerProvider).sendTextMessage(
+                context,
+                // Only attach caption to the first item so it appears once
+                i == 0 ? messageText : '',
+                widget.receiverUserId,
+                currentMediaGroupType,
+                currentMediaFiles[i],
+                widget.fcmToken,
+                widget.unseenCount,
+                widget.chatBackgroundUrl,
+                'others',
+                groupId: groupId,
+              );
+        }
+      } else {
+        // ── Single attachment ────────────────────────────────────────────────
+        await ref.read(chatControllerProvider).sendTextMessage(
+              context,
+              textToSend,
+              widget.receiverUserId,
+              currentMessageType,
+              currentImageFile,
+              widget.fcmToken,
+              widget.unseenCount,
+              widget.chatBackgroundUrl,
+              'others',
+            );
+      }
 
       log('✅ Message sent successfully');
-
-      // Dismiss loader
-      if (showingLoader && mounted) {
-        Navigator.of(context, rootNavigator: true).pop();
-      }
     } catch (e) {
       log('❌ Error sending message: $e');
 
-      // Dismiss loader
-      if (showingLoader && mounted) {
-        Navigator.of(context, rootNavigator: true).pop();
-      }
-
-      // Show error and restore message
+      // Show error notice
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Failed to send: ${e.toString()}'),
-            backgroundColor: Colors.red,
-            duration: const Duration(seconds: 4),
-            action: SnackBarAction(
-              label: 'Retry',
-              textColor: Colors.white,
-              onPressed: () {
-                setState(() {
-                  _messageController.text = messageText;
-                  imageFile = currentImageFile;
-                  messageType = currentMessageType;
-                  _hasText = messageText.isNotEmpty;
-                });
-              },
-            ),
-          ),
-        );
+        AppSnackBar.error(context, 'Failed to send: ${e.toString()}');
       }
     }
   }
 
+  void selectDocument() async {
+    final doc = await pickDocumentFile(context);
+    if (doc != null) {
+      setState(() {
+        imageFile = doc;
+        messageType = "document";
+      });
+    }
+  }
+
+  void openLocationPicker() async {
+    final result = await LocationPickerSheet.show(context);
+    if (result == null || !mounted) return;
+
+    final currentUserId = FirebaseAuth.instance.currentUser?.uid ?? '';
+    if (result.type == LocationShareType.current) {
+      final locData = jsonEncode({
+        'latitude': result.latitude,
+        'longitude': result.longitude,
+        'isLive': false,
+        'accuracy': result.accuracy,
+      });
+
+      ref.read(chatControllerProvider).sendTextMessage(
+            context,
+            'Current Location',
+            widget.receiverUserId,
+            'location',
+            locData,
+            widget.fcmToken,
+            widget.unseenCount,
+            widget.chatBackgroundUrl,
+            'others',
+          );
+    } else {
+      final duration = result.duration ?? const Duration(hours: 1);
+      final liveUntil = DateTime.now().add(duration).millisecondsSinceEpoch;
+      final liveData = jsonEncode({
+        'latitude': result.latitude,
+        'longitude': result.longitude,
+        'isLive': true,
+        'liveUntil': liveUntil,
+        'updatedAt': DateTime.now().millisecondsSinceEpoch,
+        'sharerId': currentUserId,
+      });
+
+      ref.read(chatControllerProvider).sendTextMessage(
+            context,
+            'Live Location',
+            widget.receiverUserId,
+            'live_location',
+            liveData,
+            widget.fcmToken,
+            widget.unseenCount,
+            widget.chatBackgroundUrl,
+            'others',
+          );
+    }
+  }
+
+  /// Pick multiple images – replaces single image selection.
   void selectImage() async {
-    File? image = await pickImageFromGallery(context);
-    if (image != null) {
+    final files = await pickMultipleImagesFromGallery(context);
+    if (files.isNotEmpty) {
       setState(() {
-        imageFile = image;
-        messageType = "image";
+        if (files.length == 1) {
+          // Single pick → keep legacy single-file path for simplicity
+          imageFile = files.first;
+          messageType = 'image';
+          _mediaFiles = [];
+          _mediaGroupType = '';
+        } else {
+          _mediaFiles = files;
+          _mediaGroupType = 'image';
+          imageFile = null;
+          messageType = 'text';
+        }
       });
     }
   }
 
+  /// Pick multiple videos.
   void selectVideo() async {
-    File? video = await pickVideoFromGallery(context);
-    if (video != null) {
+    final files = await pickMultipleVideosFromGallery(context);
+    if (files.isNotEmpty) {
       setState(() {
-        imageFile = video;
-        messageType = "video";
-      });
-    }
-  }
-
-  void selectGif() async {
-    final gif = await pickGif(context);
-    if (gif != null) {
-      setState(() {
-        imageFile = gif.url;
-        messageType = "gif";
+        if (files.length == 1) {
+          imageFile = files.first;
+          messageType = 'video';
+          _mediaFiles = [];
+          _mediaGroupType = '';
+        } else {
+          _mediaFiles = files;
+          _mediaGroupType = 'video';
+          imageFile = null;
+          messageType = 'text';
+        }
       });
     }
   }
@@ -358,6 +408,15 @@ class _BottomChatFieldState
               mainAxisAlignment: MainAxisAlignment.spaceAround,
               children: [
                 _buildMediaOptionItem(
+                  title: 'Document',
+                  icon: Icons.insert_drive_file_rounded,
+                  gradient: const [Color(0xFF2979FF), Color(0xFF1565C0)],
+                  onTap: () {
+                    Navigator.pop(context);
+                    selectDocument();
+                  },
+                ),
+                _buildMediaOptionItem(
                   title: 'Camera',
                   icon: Icons.camera_alt_rounded,
                   gradient: const [Color(0xFFFF6B2D), Color(0xFFFF8E53)],
@@ -375,6 +434,12 @@ class _BottomChatFieldState
                     selectImage();
                   },
                 ),
+              ],
+            ),
+            const SizedBox(height: 18),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceAround,
+              children: [
                 _buildMediaOptionItem(
                   title: 'Video',
                   icon: Icons.videocam_rounded,
@@ -385,14 +450,16 @@ class _BottomChatFieldState
                   },
                 ),
                 _buildMediaOptionItem(
-                  title: 'GIF',
-                  icon: Icons.gif_box_rounded,
-                  gradient: const [Color(0xFF00CEC9), Color(0xFF00B894)],
+                  title: 'Location',
+                  icon: Icons.location_on_rounded,
+                  gradient: const [Color(0xFF00E676), Color(0xFF00B074)],
                   onTap: () {
                     Navigator.pop(context);
-                    selectGif();
+                    openLocationPicker();
                   },
                 ),
+                // Empty placeholder to keep 3-column symmetry
+                const SizedBox(width: 56),
               ],
             ),
           ],
@@ -450,6 +517,174 @@ class _BottomChatFieldState
   }
 
   Widget _buildAttachedMediaPreview() {
+    // ── Multi-file grid preview ───────────────────────────────────────────────
+    if (_mediaFiles.isNotEmpty) {
+      return Container(
+        margin: const EdgeInsets.only(left: 10, right: 10, bottom: 8),
+        padding: const EdgeInsets.all(8),
+        decoration: BoxDecoration(
+          color: const Color(0xFF161524),
+          borderRadius: BorderRadius.circular(16),
+          border: Border.all(color: Colors.white.withValues(alpha: 0.08)),
+          boxShadow: [
+            BoxShadow(
+              color: Colors.black.withValues(alpha: 0.25),
+              blurRadius: 8,
+              offset: const Offset(0, 2),
+            ),
+          ],
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Icon(
+                  _mediaGroupType == 'video'
+                      ? Icons.videocam_rounded
+                      : Icons.photo_library_rounded,
+                  color: tabColor,
+                  size: 18,
+                ),
+                const SizedBox(width: 6),
+                Text(
+                  '${_mediaFiles.length} ${_mediaGroupType == 'video' ? 'videos' : 'photos'} selected',
+                  style: const TextStyle(
+                    color: textColor,
+                    fontSize: 13,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+                const Spacer(),
+                GestureDetector(
+                  onTap: () => setState(() {
+                    _mediaFiles = [];
+                    _mediaGroupType = '';
+                  }),
+                  child: Container(
+                    padding: const EdgeInsets.all(5),
+                    decoration: BoxDecoration(
+                      color: Colors.white.withValues(alpha: 0.08),
+                      shape: BoxShape.circle,
+                    ),
+                    child: const Icon(
+                      Icons.close_rounded,
+                      size: 16,
+                      color: greyColor,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 8),
+            SizedBox(
+              height: 72,
+              child: ListView.separated(
+                scrollDirection: Axis.horizontal,
+                itemCount: _mediaFiles.length,
+                separatorBuilder: (_, __) => const SizedBox(width: 6),
+                itemBuilder: (context, idx) {
+                  final file = _mediaFiles[idx];
+                  return Stack(
+                    children: [
+                      ClipRRect(
+                        borderRadius: BorderRadius.circular(8),
+                        child: SizedBox(
+                          width: 72,
+                          height: 72,
+                          child: _mediaGroupType == 'image'
+                              ? Image.file(file, fit: BoxFit.cover)
+                              : Container(
+                                  color: const Color(0xFF222034),
+                                  child: const Icon(
+                                    Icons.videocam_rounded,
+                                    color: greyColor,
+                                    size: 28,
+                                  ),
+                                ),
+                        ),
+                      ),
+                      if (_mediaGroupType == 'video')
+                        const Positioned(
+                          bottom: 4,
+                          right: 4,
+                          child: Icon(
+                            Icons.play_circle_filled,
+                            color: Colors.white70,
+                            size: 18,
+                          ),
+                        ),
+                      // AI Magic Studio Edit button for photos
+                      if (_mediaGroupType == 'image')
+                        Positioned(
+                          bottom: 2,
+                          left: 2,
+                          child: GestureDetector(
+                            onTap: () async {
+                              final edited = await Navigator.push<File>(
+                                context,
+                                MaterialPageRoute(
+                                  builder: (context) => AiMagicStudioScreen(
+                                    initialImage: file,
+                                  ),
+                                ),
+                              );
+                              if (edited != null && mounted) {
+                                setState(() {
+                                  _mediaFiles[idx] = edited;
+                                });
+                              }
+                            },
+                            child: Container(
+                              padding: const EdgeInsets.all(4),
+                              decoration: const BoxDecoration(
+                                color: Color(0xFF6C5CE7),
+                                shape: BoxShape.circle,
+                              ),
+                              child: const Icon(
+                                Icons.auto_fix_high_rounded,
+                                size: 12,
+                                color: Colors.white,
+                              ),
+                            ),
+                          ),
+                        ),
+                      // Remove individual file button
+                      Positioned(
+                        top: 2,
+                        right: 2,
+                        child: GestureDetector(
+                          onTap: () {
+                            setState(() {
+                              _mediaFiles.removeAt(idx);
+                              if (_mediaFiles.isEmpty) _mediaGroupType = '';
+                            });
+                          },
+                          child: Container(
+                            padding: const EdgeInsets.all(2),
+                            decoration: const BoxDecoration(
+                              color: Colors.black54,
+                              shape: BoxShape.circle,
+                            ),
+                            child: const Icon(
+                              Icons.close,
+                              size: 12,
+                              color: Colors.white,
+                            ),
+                          ),
+                        ),
+                      ),
+                    ],
+                  );
+                },
+              ),
+            ),
+          ],
+        ),
+      );
+    }
+
+    // ── Single file preview (original) ───────────────────────────────────────
     if (imageFile == null) return const SizedBox.shrink();
 
     return Container(
@@ -528,11 +763,15 @@ class _BottomChatFieldState
               mainAxisSize: MainAxisSize.min,
               children: [
                 Text(
-                  messageType == 'image'
-                      ? 'Photo attached'
-                      : messageType == 'video'
-                          ? 'Video attached'
-                          : 'GIF attached',
+                  messageType == 'document'
+                      ? (imageFile is File
+                          ? (imageFile as File).path.split(Platform.pathSeparator).last
+                          : 'Document attached')
+                      : messageType == 'image'
+                          ? 'Photo attached'
+                          : messageType == 'video'
+                              ? 'Video attached'
+                              : 'GIF attached',
                   style: const TextStyle(
                     color: textColor,
                     fontSize: 13.5,
@@ -550,6 +789,61 @@ class _BottomChatFieldState
               ],
             ),
           ),
+          if (messageType == 'image' && imageFile is File) ...[
+            Material(
+              color: Colors.transparent,
+              child: InkWell(
+                onTap: () async {
+                  final edited = await Navigator.push<File>(
+                    context,
+                    MaterialPageRoute(
+                      builder: (context) => AiMagicStudioScreen(
+                        initialImage: imageFile as File,
+                      ),
+                    ),
+                  );
+                  if (edited != null && mounted) {
+                    setState(() {
+                      imageFile = edited;
+                    });
+                  }
+                },
+                borderRadius: BorderRadius.circular(16),
+                child: Container(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 10,
+                    vertical: 6,
+                  ),
+                  decoration: BoxDecoration(
+                    gradient: const LinearGradient(
+                      colors: [Color(0xFF6C5CE7), Color(0xFFA29BFE)],
+                    ),
+                    borderRadius: BorderRadius.circular(16),
+                  ),
+                  child: const Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(
+                        Icons.auto_fix_high_rounded,
+                        size: 14,
+                        color: Colors.white,
+                      ),
+                      SizedBox(width: 4),
+                      Text(
+                        'AI Edit',
+                        style: TextStyle(
+                          color: Colors.white,
+                          fontSize: 12,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+            const SizedBox(width: 8),
+          ],
           Material(
             color: Colors.transparent,
             child: InkWell(
@@ -583,6 +877,12 @@ class _BottomChatFieldState
     if (messageType == 'image' && imageFile is File) {
       return Image.file(imageFile as File, fit: BoxFit.cover);
     }
+    if (messageType == 'document') {
+      return Container(
+        color: const Color(0xFF222034),
+        child: const Icon(Icons.description_rounded, color: Color(0xFF42A5F5), size: 28),
+      );
+    }
     if (messageType == 'video' && imageFile is File) {
       return Container(
         color: const Color(0xFF222034),
@@ -590,6 +890,9 @@ class _BottomChatFieldState
       );
     }
     if (messageType == 'gif') {
+      if (imageFile is File) {
+        return Image.file(imageFile as File, fit: BoxFit.cover);
+      }
       if (imageFile is String && (imageFile as String).startsWith('http')) {
         return CachedNetworkImage(
           imageUrl: imageFile as String,
@@ -607,7 +910,7 @@ class _BottomChatFieldState
   }
 
   Widget _buildSendButton() {
-    final hasContent = _hasText || imageFile != null;
+    final hasContent = _hasText || imageFile != null || _mediaFiles.isNotEmpty;
 
     return GestureDetector(
       onTapDown: (_) => setState(() => _isSendPressed = true),
@@ -722,38 +1025,6 @@ class _BottomChatFieldState
                     child: Row(
                       crossAxisAlignment: CrossAxisAlignment.center,
                       children: [
-                        // GIF chip
-                        Material(
-                          color: Colors.transparent,
-                          child: InkWell(
-                            onTap: selectGif,
-                            borderRadius: BorderRadius.circular(12),
-                            child: Container(
-                              padding: const EdgeInsets.symmetric(
-                                horizontal: 7,
-                                vertical: 4,
-                              ),
-                              margin: const EdgeInsets.only(left: 4, right: 2),
-                              decoration: BoxDecoration(
-                                color: Colors.white.withValues(alpha: 0.07),
-                                borderRadius: BorderRadius.circular(10),
-                                border: Border.all(
-                                  color: Colors.white.withValues(alpha: 0.08),
-                                  width: 0.8,
-                                ),
-                              ),
-                              child: const Text(
-                                'GIF',
-                                style: TextStyle(
-                                  color: greyColor,
-                                  fontSize: 11,
-                                  fontWeight: FontWeight.w700,
-                                  letterSpacing: 0.5,
-                                ),
-                              ),
-                            ),
-                          ),
-                        ),
                         Expanded(
                           child: TextField(
                             controller: _messageController,
@@ -779,20 +1050,24 @@ class _BottomChatFieldState
                               ),
                               border: InputBorder.none,
                               isCollapsed: true,
-                              contentPadding: const EdgeInsets.symmetric(
-                                horizontal: 8,
-                                vertical: 10,
+                              contentPadding: const EdgeInsets.only(
+                                left: 14,
+                                right: 8,
+                                top: 10,
+                                bottom: 10,
                               ),
                             ),
                             contentInsertionConfiguration:
                                 ContentInsertionConfiguration(
                                   onContentInserted:
                                       (KeyboardInsertedContent content) {
-                                        _handleContentInsertion(content);
-                                      },
+                                    _handleContentInsertion(content);
+                                  },
                                   allowedMimeTypes: const [
                                     'image/gif',
-                                    'image/*',
+                                    'image/png',
+                                    'image/jpeg',
+                                    'image/webp',
                                   ],
                                 ),
                           ),
@@ -847,64 +1122,22 @@ class _BottomChatFieldState
 
   Future<void> _handleContentInsertion(KeyboardInsertedContent content) async {
     try {
-      Uint8List? gifData;
-
-      if (content.data != null) {
-        // Direct inline data
-        gifData = content.data;
-      } else {
-        // Content URI - need to read from it
-        gifData = await _readContentUri(content.uri.toString());
-      }
-
-      log("test gif ${content.data.toString()}");
-
-      if (gifData != null) {
-        final insertedGif = gifData;
+      final file = await getFileFromKeyboardInsertedContent(content);
+      if (file != null && await file.exists()) {
+        final isGif = content.mimeType.toLowerCase().contains('gif') ||
+            file.path.toLowerCase().endsWith('.gif');
         setState(() {
-          messageType = "gif";
-          imageFile = content.data.toString();
-          _selectedGifs.add(insertedGif);
+          imageFile = file;
+          messageType = isGif ? 'gif' : 'image';
         });
       } else {
-        throw Exception('No data available');
+        throw Exception('Could not process inserted media');
       }
     } catch (e) {
+      log('Error handling content insertion: $e');
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Error loading GIF: $e'),
-            backgroundColor: Colors.red,
-          ),
-        );
+        AppSnackBar.error(context, 'Error adding media: $e');
       }
     }
-  }
-
-  Future<Uint8List?> _readContentUri(String uri) async {
-    try {
-      // Use platform channel to read content URI
-      const platform = MethodChannel('my.app/accounts');
-      final result = await platform.invokeMethod('readContentUri', {
-        'uri': uri,
-      });
-
-      if (result != null) {
-        return Uint8List.fromList(List<int>.from(result));
-      }
-    } catch (e) {
-      log('Error reading content URI: $e');
-
-      // Fallback: Try to read as file if it's a file:// URI
-      if (uri.startsWith('file://')) {
-        final filePath = uri.replaceFirst('file://', '');
-        final file = File(filePath);
-        if (await file.exists()) {
-          return await file.readAsBytes();
-        }
-      }
-    }
-
-    return null;
   }
 }

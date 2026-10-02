@@ -9,6 +9,7 @@ import 'package:worship_chat/colors.dart';
 import 'package:worship_chat/common/providers/message_reply_provider.dart';
 import 'package:worship_chat/common/utils/utils.dart';
 import 'package:worship_chat/common/widgets/camera_screen.dart';
+import 'package:worship_chat/features/chat/screens/ai_magic_studio_screen.dart';
 import 'package:worship_chat/features/chat/widgets/camera_permission_handler.dart';
 import 'package:worship_chat/features/chat/widgets/message_reply_preview.dart';
 import 'package:worship_chat/features/group/controller/group_controller.dart';
@@ -125,11 +126,18 @@ class _BottomChatFieldState extends ConsumerState<GroupBottomChatFieldWidget> {
             .setGroupTypingStatus(widget.groupId, false);
       }
 
+      String textToSend = _messageController.text.trim();
+      if (messageType == 'document' &&
+          textToSend.isEmpty &&
+          imageFile is File) {
+        textToSend = (imageFile as File).path.split(Platform.pathSeparator).last;
+      }
+
       ref
           .read(groupControllerProvider)
           .sendTextMessage(
             context,
-            _messageController.text.trim(),
+            textToSend,
             widget.groupId,
             messageType,
             imageFile,
@@ -200,12 +208,12 @@ class _BottomChatFieldState extends ConsumerState<GroupBottomChatFieldWidget> {
     }
   }
 
-  void selectGif() async {
-    final gif = await pickGif(context);
-    if (gif != null) {
+  void selectDocument() async {
+    final doc = await pickDocumentFile(context);
+    if (doc != null) {
       setState(() {
-        imageFile = gif.url;
-        messageType = "gif";
+        imageFile = doc;
+        messageType = "document";
       });
     }
   }
@@ -297,6 +305,15 @@ class _BottomChatFieldState extends ConsumerState<GroupBottomChatFieldWidget> {
               mainAxisAlignment: MainAxisAlignment.spaceAround,
               children: [
                 _buildMediaOptionItem(
+                  title: 'Document',
+                  icon: Icons.insert_drive_file_rounded,
+                  gradient: const [Color(0xFF2979FF), Color(0xFF1565C0)],
+                  onTap: () {
+                    Navigator.pop(context);
+                    selectDocument();
+                  },
+                ),
+                _buildMediaOptionItem(
                   title: 'Camera',
                   icon: Icons.camera_alt_rounded,
                   gradient: const [Color(0xFFFF6B2D), Color(0xFFFF8E53)],
@@ -314,6 +331,12 @@ class _BottomChatFieldState extends ConsumerState<GroupBottomChatFieldWidget> {
                     selectImage();
                   },
                 ),
+              ],
+            ),
+            const SizedBox(height: 18),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceAround,
+              children: [
                 _buildMediaOptionItem(
                   title: 'Video',
                   icon: Icons.videocam_rounded,
@@ -323,15 +346,8 @@ class _BottomChatFieldState extends ConsumerState<GroupBottomChatFieldWidget> {
                     selectVideo();
                   },
                 ),
-                _buildMediaOptionItem(
-                  title: 'GIF',
-                  icon: Icons.gif_box_rounded,
-                  gradient: const [Color(0xFF00CEC9), Color(0xFF00B894)],
-                  onTap: () {
-                    Navigator.pop(context);
-                    selectGif();
-                  },
-                ),
+                const SizedBox(width: 56),
+                const SizedBox(width: 56),
               ],
             ),
           ],
@@ -467,11 +483,15 @@ class _BottomChatFieldState extends ConsumerState<GroupBottomChatFieldWidget> {
               mainAxisSize: MainAxisSize.min,
               children: [
                 Text(
-                  messageType == 'image'
-                      ? 'Photo attached'
-                      : messageType == 'video'
-                          ? 'Video attached'
-                          : 'GIF attached',
+                  messageType == 'document'
+                      ? (imageFile is File
+                          ? (imageFile as File).path.split(Platform.pathSeparator).last
+                          : 'Document attached')
+                      : messageType == 'image'
+                          ? 'Photo attached'
+                          : messageType == 'video'
+                              ? 'Video attached'
+                              : 'GIF attached',
                   style: const TextStyle(
                     color: textColor,
                     fontSize: 13.5,
@@ -489,6 +509,61 @@ class _BottomChatFieldState extends ConsumerState<GroupBottomChatFieldWidget> {
               ],
             ),
           ),
+          if (messageType == 'image' && imageFile is File) ...[
+            Material(
+              color: Colors.transparent,
+              child: InkWell(
+                onTap: () async {
+                  final edited = await Navigator.push<File>(
+                    context,
+                    MaterialPageRoute(
+                      builder: (context) => AiMagicStudioScreen(
+                        initialImage: imageFile as File,
+                      ),
+                    ),
+                  );
+                  if (edited != null && mounted) {
+                    setState(() {
+                      imageFile = edited;
+                    });
+                  }
+                },
+                borderRadius: BorderRadius.circular(16),
+                child: Container(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 10,
+                    vertical: 6,
+                  ),
+                  decoration: BoxDecoration(
+                    gradient: const LinearGradient(
+                      colors: [Color(0xFF6C5CE7), Color(0xFFA29BFE)],
+                    ),
+                    borderRadius: BorderRadius.circular(16),
+                  ),
+                  child: const Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(
+                        Icons.auto_fix_high_rounded,
+                        size: 14,
+                        color: Colors.white,
+                      ),
+                      SizedBox(width: 4),
+                      Text(
+                        'AI Edit',
+                        style: TextStyle(
+                          color: Colors.white,
+                          fontSize: 12,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+            const SizedBox(width: 8),
+          ],
           Material(
             color: Colors.transparent,
             child: InkWell(
@@ -522,6 +597,12 @@ class _BottomChatFieldState extends ConsumerState<GroupBottomChatFieldWidget> {
     if (messageType == 'image' && imageFile is File) {
       return Image.file(imageFile as File, fit: BoxFit.cover);
     }
+    if (messageType == 'document') {
+      return Container(
+        color: const Color(0xFF222034),
+        child: const Icon(Icons.description_rounded, color: Color(0xFF42A5F5), size: 28),
+      );
+    }
     if (messageType == 'video' && imageFile is File) {
       return Container(
         color: const Color(0xFF222034),
@@ -529,6 +610,9 @@ class _BottomChatFieldState extends ConsumerState<GroupBottomChatFieldWidget> {
       );
     }
     if (messageType == 'gif') {
+      if (imageFile is File) {
+        return Image.file(imageFile as File, fit: BoxFit.cover);
+      }
       if (imageFile is String && (imageFile as String).startsWith('http')) {
         return CachedNetworkImage(
           imageUrl: imageFile as String,
@@ -661,38 +745,6 @@ class _BottomChatFieldState extends ConsumerState<GroupBottomChatFieldWidget> {
                     child: Row(
                       crossAxisAlignment: CrossAxisAlignment.center,
                       children: [
-                        // GIF chip
-                        Material(
-                          color: Colors.transparent,
-                          child: InkWell(
-                            onTap: selectGif,
-                            borderRadius: BorderRadius.circular(12),
-                            child: Container(
-                              padding: const EdgeInsets.symmetric(
-                                horizontal: 7,
-                                vertical: 4,
-                              ),
-                              margin: const EdgeInsets.only(left: 4, right: 2),
-                              decoration: BoxDecoration(
-                                color: Colors.white.withValues(alpha: 0.07),
-                                borderRadius: BorderRadius.circular(10),
-                                border: Border.all(
-                                  color: Colors.white.withValues(alpha: 0.08),
-                                  width: 0.8,
-                                ),
-                              ),
-                              child: const Text(
-                                'GIF',
-                                style: TextStyle(
-                                  color: greyColor,
-                                  fontSize: 11,
-                                  fontWeight: FontWeight.w700,
-                                  letterSpacing: 0.5,
-                                ),
-                              ),
-                            ),
-                          ),
-                        ),
                         Expanded(
                           child: TextField(
                             controller: _messageController,
@@ -718,11 +770,26 @@ class _BottomChatFieldState extends ConsumerState<GroupBottomChatFieldWidget> {
                               ),
                               border: InputBorder.none,
                               isCollapsed: true,
-                              contentPadding: const EdgeInsets.symmetric(
-                                horizontal: 8,
-                                vertical: 10,
+                              contentPadding: const EdgeInsets.only(
+                                left: 14,
+                                right: 8,
+                                top: 10,
+                                bottom: 10,
                               ),
                             ),
+                            contentInsertionConfiguration:
+                                ContentInsertionConfiguration(
+                                  onContentInserted:
+                                      (KeyboardInsertedContent content) {
+                                    _handleContentInsertion(content);
+                                  },
+                                  allowedMimeTypes: const [
+                                    'image/gif',
+                                    'image/png',
+                                    'image/jpeg',
+                                    'image/webp',
+                                  ],
+                                ),
                           ),
                         ),
                         // Attachment button
@@ -815,5 +882,26 @@ class _BottomChatFieldState extends ConsumerState<GroupBottomChatFieldWidget> {
         ],
       ),
     );
+  }
+
+  Future<void> _handleContentInsertion(KeyboardInsertedContent content) async {
+    try {
+      final file = await getFileFromKeyboardInsertedContent(content);
+      if (file != null && await file.exists()) {
+        final isGif = content.mimeType.toLowerCase().contains('gif') ||
+            file.path.toLowerCase().endsWith('.gif');
+        setState(() {
+          imageFile = file;
+          messageType = isGif ? 'gif' : 'image';
+        });
+      } else {
+        throw Exception('Could not process inserted media');
+      }
+    } catch (e) {
+      log('Error handling content insertion: $e');
+      if (mounted) {
+        AppSnackBar.error(context, 'Error adding media: $e');
+      }
+    }
   }
 }

@@ -5,7 +5,10 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:intl/intl.dart';
 import 'package:worship_chat/colors.dart';
 import 'package:worship_chat/common/widgets/loader.dart';
+import 'package:worship_chat/features/dashboard/repositories/event_repository.dart';
 import 'package:worship_chat/features/group/controller/group_controller.dart';
+import 'package:worship_chat/features/group/screens/edit_group_screen.dart';
+import 'package:worship_chat/models/event.dart';
 import 'package:worship_chat/models/group.dart';
 import 'package:worship_chat/models/group_chat_message_model.dart';
 
@@ -119,6 +122,52 @@ class _GroupInfoScreenState extends ConsumerState<GroupInfoScreen>
                       ),
                     ),
                   ),
+                  actions: [
+                    if (group != null)
+                      GestureDetector(
+                        onTap: () {
+                          Navigator.push(
+                            context,
+                            MaterialPageRoute(
+                              builder: (_) => EditGroupScreen(
+                                group: group,
+                                type: group.queendom == 'Queen Pooja'
+                                    ? 'queenPooja'
+                                    : group.queendom == 'Queen Rashmika'
+                                        ? 'queenRashmika'
+                                        : 'others',
+                              ),
+                            ),
+                          );
+                        },
+                        child: Container(
+                          margin: const EdgeInsets.all(8),
+                          padding: const EdgeInsets.symmetric(horizontal: 10),
+                          decoration: BoxDecoration(
+                            color: Colors.black38,
+                            borderRadius: BorderRadius.circular(12),
+                            border:
+                                Border.all(color: Colors.white12, width: 0.8),
+                          ),
+                          child: const Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Icon(Icons.edit_outlined,
+                                  color: Colors.white, size: 16),
+                              SizedBox(width: 4),
+                              Text(
+                                'Edit',
+                                style: TextStyle(
+                                  color: Colors.white,
+                                  fontSize: 13,
+                                  fontWeight: FontWeight.w500,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                  ],
                   flexibleSpace: FlexibleSpaceBar(
                     stretchModes: const [
                       StretchMode.zoomBackground,
@@ -216,6 +265,131 @@ class _GroupInfoScreenState extends ConsumerState<GroupInfoScreen>
               ),
               _Hairline(),
             ],
+            // ── Connected Birthday Row ───────────────────────────────────────
+            StreamBuilder<List<Event>>(
+              stream: ref.watch(eventRepositoryProvider).eventsStream(),
+              builder: (context, eventSnapshot) {
+                final allEvents = eventSnapshot.data ?? [];
+                Event? connectedBirthday;
+                for (final e in allEvents) {
+                  if (e.connectedGroupId == widget.groupId) {
+                    connectedBirthday = e;
+                    break;
+                  }
+                }
+
+                if (connectedBirthday != null) {
+                  final now = DateTime.now();
+                  final today = DateTime(now.year, now.month, now.day);
+                  DateTime occurrence;
+                  if (connectedBirthday.isRecurring) {
+                    final thisYear = DateTime(
+                      now.year,
+                      connectedBirthday.date.month,
+                      connectedBirthday.date.day,
+                    );
+                    if (thisYear.isBefore(today)) {
+                      occurrence = DateTime(
+                        now.year + 1,
+                        connectedBirthday.date.month,
+                        connectedBirthday.date.day,
+                      );
+                    } else {
+                      occurrence = thisYear;
+                    }
+                  } else {
+                    occurrence = DateTime(
+                      connectedBirthday.date.year,
+                      connectedBirthday.date.month,
+                      connectedBirthday.date.day,
+                    );
+                  }
+
+                  final diff = occurrence.difference(today).inDays;
+                  final isToday = diff == 0;
+                  final formattedDate =
+                      DateFormat('d MMMM').format(connectedBirthday.date);
+                  final celebrationText = isToday
+                      ? '🎉 Today!'
+                      : (diff > 0 && diff <= 30
+                          ? '🎂 in $diff day${diff > 1 ? 's' : ''}'
+                          : (connectedBirthday.isRecurring
+                              ? 'Annual • $formattedDate'
+                              : formattedDate));
+
+                  return Column(
+                    children: [
+                      _DetailRow(
+                        icon: Icons.cake_rounded,
+                        label: 'Birthday',
+                        value:
+                            '${connectedBirthday.title} ($celebrationText)',
+                        accentColor: _accentColor,
+                        trailing: isToday
+                            ? Container(
+                                padding: const EdgeInsets.symmetric(
+                                    horizontal: 8, vertical: 3),
+                                decoration: BoxDecoration(
+                                  gradient: LinearGradient(
+                                    colors: [
+                                      _accentColor,
+                                      _accentColor.withValues(alpha: 0.75),
+                                    ],
+                                  ),
+                                  borderRadius: BorderRadius.circular(12),
+                                ),
+                                child: const Text(
+                                  '🎉 Today',
+                                  style: TextStyle(
+                                    color: Colors.black,
+                                    fontWeight: FontWeight.bold,
+                                    fontSize: 10.5,
+                                  ),
+                                ),
+                              )
+                            : null,
+                        onTap: () {
+                          _showBirthdayDetailsModal(
+                              context, connectedBirthday!, group);
+                        },
+                      ),
+                      _Hairline(),
+                    ],
+                  );
+                }
+
+                if (group?.queendom != null && group!.queendom != 'None') {
+                  return Column(
+                    children: [
+                      _DetailRow(
+                        icon: Icons.cake_outlined,
+                        label: 'Birthday',
+                        value: 'Not connected (Tap to set)',
+                        accentColor: _accentColor,
+                        onTap: () {
+                          Navigator.push(
+                              context,
+                              MaterialPageRoute(
+                                builder: (_) => EditGroupScreen(
+                                  group: group,
+                                  type: group.queendom == 'Queen Pooja'
+                                      ? 'queenPooja'
+                                      : group.queendom == 'Queen Rashmika'
+                                          ? 'queenRashmika'
+                                          : 'others',
+                                ),
+                              ),
+                            );
+                        },
+                      ),
+                      _Hairline(),
+                    ],
+                  );
+                }
+
+                return const SizedBox.shrink();
+              },
+            ),
             FutureBuilder<List<GroupChatMessageModel>>(
               future: _mediaFuture,
               builder: (context, snapshot) {
@@ -239,6 +413,196 @@ class _GroupInfoScreenState extends ConsumerState<GroupInfoScreen>
           ],
         ),
       ),
+    );
+  }
+
+  void _showBirthdayDetailsModal(
+    BuildContext context,
+    Event event,
+    GroupModel? group,
+  ) {
+    final now = DateTime.now();
+    final today = DateTime(now.year, now.month, now.day);
+    DateTime occurrence;
+    if (event.isRecurring) {
+      final thisYear = DateTime(
+        now.year,
+        event.date.month,
+        event.date.day,
+      );
+      if (thisYear.isBefore(today)) {
+        occurrence = DateTime(
+          now.year + 1,
+          event.date.month,
+          event.date.day,
+        );
+      } else {
+        occurrence = thisYear;
+      }
+    } else {
+      occurrence = DateTime(
+        event.date.year,
+        event.date.month,
+        event.date.day,
+      );
+    }
+    final diff = occurrence.difference(today).inDays;
+    final isToday = diff == 0;
+
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: const Color(0xFF161324),
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+      ),
+      builder: (ctx) {
+        return SafeArea(
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(20, 12, 20, 24),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Container(
+                  width: 40,
+                  height: 4,
+                  margin: const EdgeInsets.only(bottom: 18),
+                  decoration: BoxDecoration(
+                    color: Colors.white24,
+                    borderRadius: BorderRadius.circular(2),
+                  ),
+                ),
+                Container(
+                  padding: const EdgeInsets.all(16),
+                  decoration: BoxDecoration(
+                    shape: BoxShape.circle,
+                    gradient: LinearGradient(
+                      colors: [
+                        _accentColor.withValues(alpha: 0.3),
+                        _accentColor.withValues(alpha: 0.1),
+                      ],
+                    ),
+                    border: Border.all(color: _accentColor, width: 2),
+                    boxShadow: [
+                      BoxShadow(
+                        color: _accentColor.withValues(alpha: 0.3),
+                        blurRadius: 16,
+                      ),
+                    ],
+                  ),
+                  child: const Text('🎂', style: TextStyle(fontSize: 32)),
+                ),
+                const SizedBox(height: 14),
+                Text(
+                  event.title,
+                  style: const TextStyle(
+                    fontSize: 20,
+                    fontWeight: FontWeight.bold,
+                    color: Colors.white,
+                  ),
+                  textAlign: TextAlign.center,
+                ),
+                const SizedBox(height: 6),
+                Container(
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+                  decoration: BoxDecoration(
+                    color: isToday
+                        ? _accentColor.withValues(alpha: 0.25)
+                        : Colors.white.withValues(alpha: 0.08),
+                    borderRadius: BorderRadius.circular(16),
+                    border: Border.all(
+                      color: isToday
+                          ? _accentColor
+                          : Colors.white.withValues(alpha: 0.15),
+                    ),
+                  ),
+                  child: Text(
+                    isToday
+                        ? '🎉 TODAY IS THE CELEBRATION! ✨'
+                        : '🎂 In $diff days (${DateFormat('EEEE, d MMMM').format(event.date)})',
+                    style: TextStyle(
+                      color: isToday ? _accentColor : Colors.white70,
+                      fontWeight: FontWeight.bold,
+                      fontSize: 12,
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 20),
+                if (group?.wish != null && group!.wish!.trim().isNotEmpty) ...[
+                  Container(
+                    width: double.infinity,
+                    padding: const EdgeInsets.all(12),
+                    decoration: BoxDecoration(
+                      color: Colors.white.withValues(alpha: 0.04),
+                      borderRadius: BorderRadius.circular(12),
+                      border: Border.all(color: Colors.white10),
+                    ),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Row(
+                          children: [
+                            Icon(Icons.favorite,
+                                size: 14, color: _accentColor),
+                            const SizedBox(width: 6),
+                            Text(
+                              'Royal Wish Message',
+                              style: TextStyle(
+                                color: _accentColor,
+                                fontSize: 11,
+                                fontWeight: FontWeight.bold,
+                              ),
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 4),
+                        Text(
+                          group.wish!.trim(),
+                          style: const TextStyle(
+                            color: Colors.white,
+                            fontSize: 13,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(height: 16),
+                ],
+                ElevatedButton.icon(
+                  onPressed: () {
+                    Navigator.pop(ctx);
+                    if (group != null) {
+                      Navigator.push(
+                        context,
+                        MaterialPageRoute(
+                          builder: (_) => EditGroupScreen(
+                            group: group,
+                            type: group.queendom == 'Queen Pooja'
+                                ? 'queenPooja'
+                                : group.queendom == 'Queen Rashmika'
+                                    ? 'queenRashmika'
+                                    : 'others',
+                          ),
+                        ),
+                      );
+                    }
+                  },
+                  icon: const Icon(Icons.edit_outlined, size: 16),
+                  label: const Text('Edit Birthday in Group Settings'),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: _accentColor,
+                    foregroundColor: Colors.black,
+                    minimumSize: const Size.fromHeight(46),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        );
+      },
     );
   }
 }
@@ -622,17 +986,21 @@ class _DetailRow extends StatelessWidget {
   final String label;
   final String value;
   final Color accentColor;
+  final VoidCallback? onTap;
+  final Widget? trailing;
 
   const _DetailRow({
     required this.icon,
     required this.label,
     required this.value,
     required this.accentColor,
+    this.onTap,
+    this.trailing,
   });
 
   @override
   Widget build(BuildContext context) {
-    return Padding(
+    final rowContent = Padding(
       padding: const EdgeInsets.symmetric(vertical: 12),
       child: Row(
         children: [
@@ -670,14 +1038,24 @@ class _DetailRow extends StatelessWidget {
               ],
             ),
           ),
-          Icon(
-            Icons.chevron_right_rounded,
-            color: Colors.white.withOpacity(0.2),
-            size: 18,
-          ),
+          trailing ??
+              Icon(
+                Icons.chevron_right_rounded,
+                color: Colors.white.withOpacity(0.2),
+                size: 18,
+              ),
         ],
       ),
     );
+
+    if (onTap != null) {
+      return InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(10),
+        child: rowContent,
+      );
+    }
+    return rowContent;
   }
 }
 

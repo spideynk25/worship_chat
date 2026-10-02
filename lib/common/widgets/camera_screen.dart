@@ -2,6 +2,7 @@ import 'dart:io';
 import 'package:camera/camera.dart';
 import 'package:flutter/material.dart';
 import 'package:worship_chat/colors.dart';
+import 'package:worship_chat/common/utils/utils.dart';
 
 class CameraScreen extends StatefulWidget {
   const CameraScreen({super.key});
@@ -66,9 +67,7 @@ class _CameraScreenState extends State<CameraScreen> {
 
   void _showError(String message) {
     if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(message)),
-      );
+      AppSnackBar.error(context, message);
     }
   }
 

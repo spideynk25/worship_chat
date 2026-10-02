@@ -48,6 +48,11 @@ class OneToOneChatScreen extends ConsumerStatefulWidget {
 
 class _OneToOneChatScreenState extends ConsumerState<OneToOneChatScreen>
     with WidgetsBindingObserver {
+  // Cache the typing stream once so ref.watch is never called inside build().
+  // Calling ref.watch(chatControllerProvider) in build() re-runs the full
+  // build whenever a message is sent, causing the whole screen to blink.
+  Stream<bool> _typingStream = Stream.value(false);
+
   @override
   void initState() {
     super.initState();
@@ -57,8 +62,16 @@ class _OneToOneChatScreenState extends ConsumerState<OneToOneChatScreen>
       widget.uid,
       chatName: widget.name,
     );
+    // Initialise typing stream directly (ref is available in initState for
+    // ConsumerStatefulWidget). Using ref.read (not watch) means
+    // chatControllerProvider notifications will NOT trigger build().
+    _typingStream = ref.read(chatControllerProvider).getTypingStatus(widget.uid);
     displayOrHideImage();
     WidgetsBinding.instance.addPostFrameCallback((_) {
+      FirebaseNotificationService.cancelNotificationsForChat(
+        widget.uid,
+        chatName: widget.name,
+      );
       if (mounted) {
         ref.read(chatControllerProvider).markChatAsSeen(widget.uid);
       }
@@ -84,6 +97,10 @@ class _OneToOneChatScreenState extends ConsumerState<OneToOneChatScreen>
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     ActiveChatNotifier.instance.leave();
+    FirebaseNotificationService.cancelNotificationsForChat(
+      widget.uid,
+      chatName: widget.name,
+    );
     super.dispose();
   }
 
@@ -154,12 +171,7 @@ class _OneToOneChatScreenState extends ConsumerState<OneToOneChatScreen>
     } catch (e) {
       log('Error cropping image: $e');
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Error cropping image: $e'),
-            backgroundColor: Colors.red,
-          ),
-        );
+        AppSnackBar.error(context, 'Error cropping image: $e');
       }
       return null;
     }
@@ -192,33 +204,20 @@ class _OneToOneChatScreenState extends ConsumerState<OneToOneChatScreen>
             .read(chatControllerProvider)
             .updateChatBackground(widget.uid, imageUrl);
         if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(
-              content: Text('Background updated successfully!'),
-              backgroundColor: Colors.green,
-              duration: Duration(seconds: 2),
-            ),
+          AppSnackBar.success(
+            context,
+            'Background updated successfully!',
           );
         }
       } else {
         if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(
-              content: Text('Failed to upload image'),
-              backgroundColor: Colors.red,
-            ),
-          );
+          AppSnackBar.error(context, 'Failed to upload image');
         }
       }
     } catch (e) {
       if (mounted) {
         Navigator.pop(context);
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Error uploading image: $e'),
-            backgroundColor: Colors.red,
-          ),
-        );
+        AppSnackBar.error(context, 'Error uploading image: $e');
       }
       log('Error uploading cropped image: $e');
     }
@@ -263,7 +262,7 @@ class _OneToOneChatScreenState extends ConsumerState<OneToOneChatScreen>
         leadingWidth: 20,
         backgroundColor: appBarColor,
         title: StreamBuilder<UserModel>(
-          stream: ref.watch(authControllerProvider).userDataById(widget.uid),
+          stream: ref.read(authControllerProvider).userDataById(widget.uid),
           builder: (context, snapshot) {
             final user = snapshot.data;
             final displayName = (user?.name != null && user!.name!.isNotEmpty)
@@ -309,9 +308,7 @@ class _OneToOneChatScreenState extends ConsumerState<OneToOneChatScreen>
                         ),
                         const SizedBox(height: 2),
                         StreamBuilder<bool>(
-                          stream: ref
-                              .watch(chatControllerProvider)
-                              .getTypingStatus(widget.uid),
+                          stream: _typingStream,
                           builder: (context, typingSnapshot) {
                             final isTyping = typingSnapshot.data ?? false;
 
@@ -385,9 +382,7 @@ class _OneToOneChatScreenState extends ConsumerState<OneToOneChatScreen>
               ),
               // Floating in-chat typing bubble
               StreamBuilder<bool>(
-                stream: ref
-                    .watch(chatControllerProvider)
-                    .getTypingStatus(widget.uid),
+                stream: _typingStream,
                 builder: (context, snapshot) {
                   final isTyping = snapshot.data ?? false;
                   return InChatTypingBubble(

@@ -1,4 +1,3 @@
-import 'dart:convert';
 import 'dart:io';
 import 'package:any_link_preview/any_link_preview.dart';
 import 'package:flutter/gestures.dart';
@@ -14,16 +13,23 @@ import 'package:permission_handler/permission_handler.dart';
 import 'package:photo_view/photo_view.dart';
 import 'dart:developer';
 import 'package:worship_chat/colors.dart';
+import 'package:worship_chat/common/utils/utils.dart';
+import 'package:worship_chat/features/chat/screens/ai_magic_studio_screen.dart';
+import 'document_message_widget.dart';
+import 'location_message_widget.dart';
+import 'forward_message_sheet.dart';
 
 // Enhanced MediaPreviewWidget with download and fullscreen
 class MediaPreviewWidget extends StatefulWidget {
   final String mediaType;
   final String mediaUrl;
+  final bool showAppBar;
 
   const MediaPreviewWidget({
     super.key,
     required this.mediaType,
     required this.mediaUrl,
+    this.showAppBar = true,
   });
 
   @override
@@ -117,7 +123,7 @@ class _MediaPreviewWidgetState extends State<MediaPreviewWidget> {
 
         // For Android 11+ (API 30+), try photos permission
         if (!status.isGranted) {
-          if (widget.mediaType == 'image') {
+          if (widget.mediaType == 'image' || widget.mediaType == 'gif') {
             status = await Permission.photos.request();
           } else {
             status = await Permission.videos.request();
@@ -131,9 +137,7 @@ class _MediaPreviewWidgetState extends State<MediaPreviewWidget> {
 
         if (!status.isGranted) {
           if (mounted) {
-            ScaffoldMessenger.of(context).showSnackBar(
-              const SnackBar(content: Text('Storage permission denied')),
-            );
+            AppSnackBar.warning(context, 'Storage permission denied');
           }
           setState(() => _isDownloading = false);
           return;
@@ -176,7 +180,11 @@ class _MediaPreviewWidgetState extends State<MediaPreviewWidget> {
 
       // Create unique filename with proper extension
       final timestamp = DateTime.now().millisecondsSinceEpoch;
-      final extension = widget.mediaType == 'video' ? 'mp4' : 'jpg';
+      final extension = widget.mediaType == 'video'
+          ? 'mp4'
+          : widget.mediaType == 'gif'
+              ? 'gif'
+              : 'jpg';
       final fileName = 'WorshipChat_$timestamp.$extension';
       final filePath = '${directory.path}/$fileName';
 
@@ -187,23 +195,12 @@ class _MediaPreviewWidgetState extends State<MediaPreviewWidget> {
       log('Media saved to: $filePath');
 
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Saved to $displayPath'),
-            duration: const Duration(seconds: 3),
-            action: SnackBarAction(label: 'OK', onPressed: () {}),
-          ),
-        );
+        AppSnackBar.success(context, 'Saved to $displayPath');
       }
     } catch (e) {
       log('Download error: $e');
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Download failed: $e'),
-            duration: const Duration(seconds: 3),
-          ),
-        );
+        AppSnackBar.error(context, 'Download failed: $e');
       }
     } finally {
       setState(() => _isDownloading = false);
@@ -282,7 +279,7 @@ class _MediaPreviewWidgetState extends State<MediaPreviewWidget> {
 
     return Scaffold(
       backgroundColor: Colors.black,
-      appBar: _isFullscreen
+      appBar: (_isFullscreen || !widget.showAppBar)
           ? null
           : AppBar(
               backgroundColor: Colors.black,
@@ -303,12 +300,42 @@ class _MediaPreviewWidgetState extends State<MediaPreviewWidget> {
                       ),
                     ),
                   )
-                else
+                else ...[
+                  if (widget.mediaType == 'image' && _localMediaPath != null)
+                    IconButton(
+                      icon: const Icon(Icons.auto_fix_high_rounded, color: Colors.white),
+                      tooltip: 'AI Magic Studio',
+                      onPressed: () async {
+                        await Navigator.push(
+                          context,
+                          MaterialPageRoute(
+                            builder: (context) => AiMagicStudioScreen(
+                              initialImage: File(_localMediaPath!),
+                            ),
+                          ),
+                        );
+                      },
+                    ),
                   IconButton(
                     icon: const Icon(Icons.download, color: Colors.white),
                     onPressed: _downloadMedia,
                     tooltip: 'Download',
                   ),
+                  IconButton(
+                    icon: const Icon(Icons.forward_rounded, color: Colors.white),
+                    onPressed: () {
+                      ForwardMessageSheet.show(
+                        context,
+                        ForwardMessagePayload(
+                          text: '',
+                          messageType: widget.mediaType,
+                          fileMessageData: widget.mediaUrl,
+                        ),
+                      );
+                    },
+                    tooltip: 'Forward',
+                  ),
+                ],
               ],
             ),
       body: Center(
@@ -327,14 +354,16 @@ class _MediaPreviewWidgetState extends State<MediaPreviewWidget> {
                   ),
                 ],
               )
-            : widget.mediaType == 'image' && _localMediaPath != null
-            ? PhotoView(
-                imageProvider: FileImage(File(_localMediaPath!)),
-                minScale: PhotoViewComputedScale.contained,
-                maxScale: PhotoViewComputedScale.covered * 3,
-                initialScale: PhotoViewComputedScale.contained,
-                backgroundDecoration: const BoxDecoration(color: Colors.black),
-              )
+            : (widget.mediaType == 'image' || widget.mediaType == 'gif') &&
+                    _localMediaPath != null
+                ? PhotoView(
+                    imageProvider: FileImage(File(_localMediaPath!)),
+                    minScale: PhotoViewComputedScale.contained,
+                    maxScale: PhotoViewComputedScale.covered * 3,
+                    initialScale: PhotoViewComputedScale.contained,
+                    backgroundDecoration:
+                        const BoxDecoration(color: Colors.black),
+                  )
             : _isVideoInitialized && _videoController != null
             ? GestureDetector(
                 onTap: _toggleControls,
@@ -506,6 +535,13 @@ class DisplayMessages extends StatefulWidget {
   final bool isPreviewable;
   final bool useCachedMedia;
   final bool showLinkPreview; // NEW: Option to show link previews
+  final bool isMe;
+  final bool isSending;
+  final String? messageId;
+  final String? currentUserId;
+  final String? receiverId;
+  final String? senderName;
+  final String? senderProfilePic;
 
   const DisplayMessages({
     super.key,
@@ -515,6 +551,13 @@ class DisplayMessages extends StatefulWidget {
     this.isPreviewable = true,
     this.useCachedMedia = true,
     this.showLinkPreview = true, // Default to true
+    this.isMe = false,
+    this.isSending = false,
+    this.messageId,
+    this.currentUserId,
+    this.receiverId,
+    this.senderName,
+    this.senderProfilePic,
   });
 
   @override
@@ -548,6 +591,31 @@ class _DisplayMessagesState extends State<DisplayMessages> {
     // Extract URLs from message for link preview
     if (widget.messageType == 'text' && widget.showLinkPreview) {
       _extractedUrls = _extractUrls(widget.message);
+    }
+  }
+
+  @override
+  void didUpdateWidget(covariant DisplayMessages oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (widget.messageType == 'video') {
+      if (_videoController != null && _isVideoInitialized) {
+        final oldCached = oldWidget.fileMessageData != null
+            ? MediaCacheService().getCachedSync(oldWidget.fileMessageData!)
+            : null;
+        final newCached = widget.fileMessageData != null
+            ? MediaCacheService().getCachedSync(widget.fileMessageData!)
+            : null;
+        if (oldCached != null && newCached != null && oldCached == newCached) {
+          return;
+        }
+      }
+      if (oldWidget.fileMessageData != widget.fileMessageData) {
+        if (widget.useCachedMedia && widget.fileMessageData != null) {
+          _loadAndInitializeVideo();
+        } else if (!widget.useCachedMedia && widget.fileMessageData != null) {
+          _initializeNetworkVideo();
+        }
+      }
     }
   }
 
@@ -665,7 +733,9 @@ class _DisplayMessagesState extends State<DisplayMessages> {
         widget.fileMessageData!.isEmpty) {
       return;
     }
-    if (widget.messageType != 'image' && widget.messageType != 'video') {
+    if (widget.messageType != 'image' &&
+        widget.messageType != 'video' &&
+        widget.messageType != 'gif') {
       return;
     }
 
@@ -739,12 +809,7 @@ class _DisplayMessagesState extends State<DisplayMessages> {
 
       if (!canLaunch) {
         if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: Text('Cannot open this link: $cleanUrl'),
-              duration: const Duration(seconds: 3),
-            ),
-          );
+          AppSnackBar.error(context, 'Cannot open this link: $cleanUrl');
         }
         return;
       }
@@ -768,26 +833,17 @@ class _DisplayMessagesState extends State<DisplayMessages> {
       }
 
       if (!launched && mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Could not open link: $cleanUrl'),
-            action: SnackBarAction(
-              label: 'Retry',
-              onPressed: () => _launchURL(url),
-            ),
-            duration: const Duration(seconds: 4),
-          ),
+        AppSnackBar.error(
+          context,
+          'Could not open link: $cleanUrl',
+          actionLabel: 'Retry',
+          onAction: () => _launchURL(url),
         );
       }
     } catch (e) {
       log('Error launching URL: $e');
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Failed to open link: $e'),
-            duration: const Duration(seconds: 3),
-          ),
-        );
+        AppSnackBar.error(context, 'Failed to open link: $e');
       }
     }
   }
@@ -884,9 +940,7 @@ class _DisplayMessagesState extends State<DisplayMessages> {
 
         if (!status.isGranted) {
           if (mounted) {
-            ScaffoldMessenger.of(context).showSnackBar(
-              const SnackBar(content: Text('Storage permission denied')),
-            );
+            AppSnackBar.warning(context, 'Storage permission denied');
           }
           setState(() => _isDownloading = false);
           return;
@@ -930,19 +984,12 @@ class _DisplayMessagesState extends State<DisplayMessages> {
       log('Video saved to: $filePath');
 
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Saved to $displayPath'),
-            duration: const Duration(seconds: 3),
-          ),
-        );
+        AppSnackBar.success(context, 'Saved to $displayPath');
       }
     } catch (e) {
       log('Download error: $e');
       if (mounted) {
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(SnackBar(content: Text('Download failed: $e')));
+        AppSnackBar.error(context, 'Download failed: $e');
       }
     } finally {
       setState(() => _isDownloading = false);
@@ -1057,22 +1104,46 @@ class _DisplayMessagesState extends State<DisplayMessages> {
             widget.fileMessageData != null && widget.fileMessageData!.isNotEmpty
             ? widget.useCachedMedia
                   ? _CachedImageWidget(
+                      key: ValueKey('cached_img_${widget.messageId ?? widget.fileMessageData}'),
                       imageUrl: widget.fileMessageData!,
                       screenWidth: screenWidth,
                     )
                   : CachedNetworkImage(
+                      key: ValueKey('cni_${widget.messageId ?? widget.fileMessageData}'),
                       imageUrl: widget.fileMessageData!,
                       fit: BoxFit.contain,
                       maxWidthDiskCache: (screenWidth * 0.8).toInt(),
-                      placeholder: (context, url) =>
-                          const Center(child: CircularProgressIndicator()),
+                      fadeInDuration: Duration.zero,
+                      fadeOutDuration: Duration.zero,
+                      placeholder: (context, url) => Container(
+                        constraints: BoxConstraints(
+                          maxWidth: screenWidth * 0.8,
+                          minHeight: 120,
+                        ),
+                        color: Theme.of(context).colorScheme.surfaceVariant.withOpacity(0.2),
+                      ),
                       errorWidget: (context, url, error) => Container(
                         constraints: BoxConstraints(
                           maxWidth: screenWidth * 0.8,
+                          minHeight: 80,
                         ),
-                        color: Theme.of(context).colorScheme.surfaceVariant,
-                        child: const Center(
-                          child: Icon(Icons.error, color: Colors.red),
+                        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                        decoration: BoxDecoration(
+                          color: Theme.of(context).colorScheme.surfaceVariant.withOpacity(0.4),
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                        child: Center(
+                          child: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Icon(Icons.broken_image_outlined, color: Colors.grey[400], size: 20),
+                              const SizedBox(width: 8),
+                              Text(
+                                'Image unavailable',
+                                style: TextStyle(fontSize: 13, color: Colors.grey[300]),
+                              ),
+                            ],
+                          ),
                         ),
                       ),
                     )
@@ -1105,7 +1176,7 @@ class _DisplayMessagesState extends State<DisplayMessages> {
                   _isVideoInitialized &&
                   _videoController != null
             ? VisibilityDetector(
-                key: Key(widget.fileMessageData!),
+                key: ValueKey('vd_${widget.messageId ?? widget.fileMessageData!}'),
                 onVisibilityChanged: (info) {
                   if (_videoController != null) {
                     if (info.visibleFraction > 0.5) {
@@ -1316,30 +1387,115 @@ class _DisplayMessagesState extends State<DisplayMessages> {
         break;
 
       case 'gif':
-        if (widget.fileMessageData != null && widget.fileMessageData!.isNotEmpty) {
-          log('Rendering GIF with data length: ${widget.fileMessageData!.length}');
-        }
-        content =
-            widget.fileMessageData != null && widget.fileMessageData!.isNotEmpty
-            ? Image.memory(
-                Uint8List.fromList(utf8.encode(widget.fileMessageData!)),
-                fit: BoxFit.contain,
-                errorBuilder: (context, error, stackTrace) {
-                  log('GIF error: $error');
-                  return Container(
-                    constraints: BoxConstraints(maxWidth: screenWidth * 0.8),
-                    color: Theme.of(context).colorScheme.surfaceVariant,
-                    child: const Center(
-                      child: Icon(Icons.error, color: Colors.red),
-                    ),
-                  );
-                },
-              )
+        final gifData = widget.fileMessageData;
+        final hasGif = gifData != null && gifData.isNotEmpty;
+        content = hasGif
+            ? (widget.useCachedMedia
+                ? _CachedImageWidget(
+                    key: ValueKey('cached_gif_${widget.messageId ?? gifData}'),
+                    imageUrl: gifData,
+                    screenWidth: screenWidth,
+                  )
+                : (gifData.startsWith('http://') ||
+                        gifData.startsWith('https://'))
+                    ? CachedNetworkImage(
+                        key: ValueKey('cni_gif_${widget.messageId ?? gifData}'),
+                        imageUrl: gifData,
+                        fit: BoxFit.contain,
+                        maxWidthDiskCache: (screenWidth * 0.8).toInt(),
+                        fadeInDuration: Duration.zero,
+                        fadeOutDuration: Duration.zero,
+                        placeholder: (context, url) => Container(
+                          constraints: BoxConstraints(
+                            maxWidth: screenWidth * 0.8,
+                            minHeight: 120,
+                          ),
+                          color: Theme.of(context).colorScheme.surfaceVariant.withOpacity(0.2),
+                        ),
+                        errorWidget: (context, url, error) => Container(
+                          constraints: BoxConstraints(
+                            maxWidth: screenWidth * 0.8,
+                            minHeight: 80,
+                          ),
+                          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                          decoration: BoxDecoration(
+                            color: Theme.of(context).colorScheme.surfaceVariant.withOpacity(0.4),
+                            borderRadius: BorderRadius.circular(12),
+                          ),
+                          child: Center(
+                            child: Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Icon(Icons.broken_image_outlined, color: Colors.grey[400], size: 20),
+                                const SizedBox(width: 8),
+                                Text(
+                                  'GIF unavailable',
+                                  style: TextStyle(fontSize: 13, color: Colors.grey[300]),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ),
+                      )
+                    : Image.file(
+                        File(gifData),
+                        fit: BoxFit.contain,
+                        gaplessPlayback: true,
+                        errorBuilder: (context, error, stackTrace) => Container(
+                          constraints: BoxConstraints(
+                            maxWidth: screenWidth * 0.8,
+                            minHeight: 80,
+                          ),
+                          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                          decoration: BoxDecoration(
+                            color: Theme.of(context).colorScheme.surfaceVariant.withOpacity(0.4),
+                            borderRadius: BorderRadius.circular(12),
+                          ),
+                          child: Center(
+                            child: Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Icon(Icons.broken_image_outlined, color: Colors.grey[400], size: 20),
+                                const SizedBox(width: 8),
+                                Text(
+                                  'GIF unavailable',
+                                  style: TextStyle(fontSize: 13, color: Colors.grey[300]),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ),
+                      ))
             : Container(
                 constraints: BoxConstraints(maxWidth: screenWidth * 0.8),
                 color: Theme.of(context).colorScheme.surfaceVariant,
                 child: const Center(child: Text('GIF not available')),
               );
+        break;
+
+      case 'document':
+        content = DocumentMessageWidget(
+          key: ValueKey('doc_${widget.messageId ?? widget.fileMessageData ?? widget.message}'),
+          fileName: widget.message.isNotEmpty ? widget.message : 'Document',
+          fileUrl: widget.fileMessageData,
+          isMe: widget.isMe,
+          isSending: widget.isSending,
+        );
+        break;
+
+      case 'location':
+      case 'live_location':
+        content = LocationMessageWidget(
+          key: ValueKey('loc_${widget.messageId ?? widget.fileMessageData}'),
+          messageType: widget.messageType,
+          locationData: widget.fileMessageData,
+          isMe: widget.isMe,
+          messageId: widget.messageId,
+          currentUserId: widget.currentUserId,
+          receiverId: widget.receiverId,
+          senderName: widget.senderName,
+          senderProfilePic: widget.senderProfilePic,
+        );
         break;
 
       default:
@@ -1353,7 +1509,9 @@ class _DisplayMessagesState extends State<DisplayMessages> {
     }
 
     return widget.isPreviewable &&
-            (widget.messageType == 'image' || widget.messageType == 'video') &&
+            (widget.messageType == 'image' ||
+                widget.messageType == 'video' ||
+                widget.messageType == 'gif') &&
             widget.fileMessageData != null &&
             widget.fileMessageData!.isNotEmpty
         ? GestureDetector(onTap: () => _openPreview(context), child: content)
@@ -1367,12 +1525,16 @@ class _DisplayMessagesState extends State<DisplayMessages> {
   }
 }
 
-// Helper widget for cached images
+// Helper widget for cached images with automatic network fallback and zero flicker
 class _CachedImageWidget extends StatefulWidget {
   final String imageUrl;
   final double screenWidth;
 
-  const _CachedImageWidget({required this.imageUrl, required this.screenWidth});
+  const _CachedImageWidget({
+    super.key,
+    required this.imageUrl,
+    required this.screenWidth,
+  });
 
   @override
   State<_CachedImageWidget> createState() => _CachedImageWidgetState();
@@ -1380,89 +1542,129 @@ class _CachedImageWidget extends StatefulWidget {
 
 class _CachedImageWidgetState extends State<_CachedImageWidget> {
   String? _localPath;
-  bool _isLoading = true;
-  bool _hasError = false;
 
   @override
   void initState() {
     super.initState();
-    // Fast synchronous check — if already cached in memory or on disk, no loading flicker!
-    final fastSync = MediaCacheService().getCachedSync(widget.imageUrl);
-    if (fastSync != null) {
-      _localPath = fastSync;
-      _isLoading = false;
-      _hasError = false;
-    } else {
-      _loadImage();
-    }
+    _checkLocalSync();
   }
 
   @override
   void didUpdateWidget(covariant _CachedImageWidget oldWidget) {
     super.didUpdateWidget(oldWidget);
     if (oldWidget.imageUrl != widget.imageUrl) {
-      final fastSync = MediaCacheService().getCachedSync(widget.imageUrl);
-      if (fastSync != null) {
-        setState(() {
-          _localPath = fastSync;
-          _isLoading = false;
-          _hasError = false;
-        });
-      } else {
-        _loadImage();
+      _checkLocalSync();
+    }
+  }
+
+  void _checkLocalSync() {
+    final url = widget.imageUrl;
+    if (url.isEmpty) return;
+
+    // 1. Direct local file path or file:// URI
+    if (!url.startsWith('http://') && !url.startsWith('https://')) {
+      final clean = url.startsWith('file://') ? url.substring(7) : url;
+      final f = File(clean);
+      if (f.existsSync() && f.lengthSync() > 0) {
+        _localPath = clean;
+        return;
+      }
+    }
+
+    // 2. Synchronous cache check (e.g. optimistic mapping from freshly uploaded file)
+    final fastSync = MediaCacheService().getCachedSync(url);
+    if (fastSync != null) {
+      final f = File(fastSync);
+      if (f.existsSync() && f.lengthSync() > 0) {
+        _localPath = fastSync;
+        return;
       }
     }
   }
 
-  Future<void> _loadImage() async {
-    try {
-      final path = await MediaCacheService().getMediaPath(widget.imageUrl);
-      if (mounted) {
-        setState(() {
-          _localPath = path;
-          _isLoading = false;
-          _hasError = path == null;
-        });
-      }
-    } catch (e) {
-      log('Error loading cached image: $e');
-      if (mounted) {
-        setState(() {
-          _isLoading = false;
-          _hasError = true;
-        });
-      }
+  Widget _buildRetryWidget(BuildContext context) {
+    return Container(
+      constraints: BoxConstraints(
+        maxWidth: widget.screenWidth * 0.8,
+        minHeight: 90,
+      ),
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+      decoration: BoxDecoration(
+        color: Theme.of(context).colorScheme.surfaceVariant.withOpacity(0.4),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(
+          color: Colors.white.withOpacity(0.08),
+        ),
+      ),
+      child: InkWell(
+        onTap: () {
+          _checkLocalSync();
+          setState(() {});
+        },
+        borderRadius: BorderRadius.circular(8),
+        child: Center(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(
+                Icons.refresh_rounded,
+                size: 26,
+                color: Theme.of(context).colorScheme.primary,
+              ),
+              const SizedBox(height: 6),
+              Text(
+                'Tap to retry image',
+                style: TextStyle(
+                  fontSize: 12.5,
+                  fontWeight: FontWeight.w500,
+                  color: Colors.white.withOpacity(0.85),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildNetworkImage(BuildContext context) {
+    if (widget.imageUrl.startsWith('http://') ||
+        widget.imageUrl.startsWith('https://')) {
+      return CachedNetworkImage(
+        imageUrl: widget.imageUrl,
+        fit: BoxFit.contain,
+        maxWidthDiskCache: (widget.screenWidth * 0.8).toInt(),
+        fadeInDuration: Duration.zero,
+        fadeOutDuration: Duration.zero,
+        placeholder: (context, url) => Container(
+          constraints: BoxConstraints(
+            maxWidth: widget.screenWidth * 0.8,
+            minHeight: 120,
+          ),
+          color: Theme.of(context).colorScheme.surfaceVariant.withOpacity(0.2),
+        ),
+        errorWidget: (context, url, error) => _buildRetryWidget(context),
+      );
     }
+    return _buildRetryWidget(context);
   }
 
   @override
   Widget build(BuildContext context) {
-    if (_isLoading) {
-      return Container(
-        constraints: BoxConstraints(maxWidth: widget.screenWidth * 0.8),
-        child: const Center(child: CircularProgressIndicator()),
-      );
-    }
-
-    if (_hasError || _localPath == null) {
-      return Container(
-        constraints: BoxConstraints(maxWidth: widget.screenWidth * 0.8),
-        color: Theme.of(context).colorScheme.surfaceVariant,
-        child: const Center(child: Icon(Icons.error, color: Colors.red)),
-      );
-    }
-
-    return Image.file(
-      File(_localPath!),
-      fit: BoxFit.contain,
-      gaplessPlayback: true,
-      errorBuilder: (context, error, stackTrace) {
-        return Container(
-          constraints: BoxConstraints(maxWidth: widget.screenWidth * 0.8),
-          color: Theme.of(context).colorScheme.surfaceVariant,
-          child: const Center(child: Icon(Icons.error, color: Colors.red)),
+    if (_localPath != null) {
+      final localFile = File(_localPath!);
+      if (localFile.existsSync() && localFile.lengthSync() > 0) {
+        return Image.file(
+          localFile,
+          fit: BoxFit.contain,
+          gaplessPlayback: true,
+          errorBuilder: (context, error, stackTrace) {
+            return _buildNetworkImage(context);
+          },
         );
-      },
-    );
+      }
+    }
+
+    return _buildNetworkImage(context);
   }
 }

@@ -51,6 +51,9 @@ class GroupChatMessageModel {
   final bool? _isSending;
   bool get isSending => _isSending ?? false;
 
+  @HiveField(13)
+  final Map<String, String> reactions; // userId -> emoji
+
   GroupChatMessageModel({
     required this.senderId,
     required this.receiverIds,
@@ -66,9 +69,11 @@ class GroupChatMessageModel {
     required this.repliedTo,
     required this.repliedMessageType,
     required this.groupId,
+    Map<String, String>? reactions,
   })  : _isSeen = isSeen ?? false,
         _isDelivered = isDelivered ?? false,
-        _isSending = isSending ?? false;
+        _isSending = isSending ?? false,
+        reactions = reactions ?? const {};
 
   Map<String, dynamic> toMap() {
     return <String, dynamic>{
@@ -85,6 +90,7 @@ class GroupChatMessageModel {
       'repliedTo': repliedTo,
       'repliedMessageType': repliedMessageType,
       'groupId': groupId,
+      'reactions': reactions,
     };
   }
 
@@ -106,6 +112,15 @@ class GroupChatMessageModel {
       parsedTime = DateTime.now();
     }
 
+    Map<String, String> parsedReactions = {};
+    if (map['reactions'] is Map) {
+      (map['reactions'] as Map).forEach((k, v) {
+        if (k != null && v != null) {
+          parsedReactions[k.toString()] = v.toString();
+        }
+      });
+    }
+
     return GroupChatMessageModel(
       senderId: map['senderId']?.toString() ?? '',
       receiverIds: (map['receiverIds'] as List<dynamic>?)
@@ -124,6 +139,7 @@ class GroupChatMessageModel {
       repliedTo: map['repliedTo']?.toString() ?? '',
       repliedMessageType: map['repliedMessageType']?.toString() ?? 'text',
       groupId: map['groupId']?.toString() ?? '',
+      reactions: parsedReactions,
     );
   }
 
@@ -143,6 +159,7 @@ class GroupChatMessageModel {
     String? repliedMessage,
     String? repliedTo,
     String? repliedMessageType,
+    Map<String, String>? reactions,
   }) {
     return GroupChatMessageModel(
       senderId: senderId ?? this.senderId,
@@ -159,6 +176,7 @@ class GroupChatMessageModel {
       repliedMessage: repliedMessage ?? this.repliedMessage,
       repliedTo: repliedTo ?? this.repliedTo,
       repliedMessageType: repliedMessageType ?? this.repliedMessageType,
+      reactions: reactions ?? this.reactions,
     );
   }
 }

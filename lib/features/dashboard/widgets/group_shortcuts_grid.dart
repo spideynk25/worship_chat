@@ -306,7 +306,7 @@ class _GroupShortcutsGridState extends ConsumerState<GroupShortcutsGrid> {
             ),
             const SizedBox(height: 4),
             Text(
-              'Select groups for fast 1-tap access on your dashboard',
+              'Select groups for fast 1-tap access',
               textAlign: TextAlign.center,
               style: TextStyle(color: Colors.grey[500], fontSize: 12),
             ),

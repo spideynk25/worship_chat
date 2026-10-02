@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:intl/intl.dart';
 import 'package:worship_chat/colors.dart';
+import 'package:worship_chat/common/utils/utils.dart';
 import 'package:worship_chat/features/dashboard/controller/todo_controller.dart';
 import 'package:worship_chat/features/dashboard/providers/todo_providers.dart';
 import 'package:worship_chat/features/dashboard/screens/subtask_page.dart';
@@ -208,7 +209,6 @@ class _TodoPageState extends ConsumerState<TodoPage> {
                           if (title.isEmpty) return;
 
                           final navigator = Navigator.of(bottomSheetContext);
-                          final messenger = ScaffoldMessenger.of(context);
 
                           try {
                             await ref
@@ -218,21 +218,9 @@ class _TodoPageState extends ConsumerState<TodoPage> {
                                   description: description,
                                 );
                             navigator.pop();
-                            messenger.showSnackBar(
-                              const SnackBar(
-                                content: Text('Task created'),
-                                backgroundColor: mobileChatBoxColor,
-                                behavior: SnackBarBehavior.floating,
-                              ),
-                            );
+                            AppSnackBar.success(context, 'Task created');
                           } catch (e) {
-                            messenger.showSnackBar(
-                              SnackBar(
-                                content: Text('Error: $e'),
-                                backgroundColor: Colors.redAccent,
-                                behavior: SnackBarBehavior.floating,
-                              ),
-                            );
+                            AppSnackBar.error(context, 'Error: $e');
                           }
                         },
                         style: ElevatedButton.styleFrom(
@@ -327,24 +315,11 @@ class _TodoPageState extends ConsumerState<TodoPage> {
     );
 
     if (confirm == true && mounted) {
-      final messenger = ScaffoldMessenger.of(context);
       try {
         await ref.read(todoControllerProvider.notifier).deleteTodo(todo.id!);
-        messenger.showSnackBar(
-          const SnackBar(
-            content: Text('Task deleted'),
-            backgroundColor: mobileChatBoxColor,
-            behavior: SnackBarBehavior.floating,
-          ),
-        );
+        AppSnackBar.success(context, 'Task deleted');
       } catch (e) {
-        messenger.showSnackBar(
-          SnackBar(
-            content: Text('Failed to delete: $e'),
-            backgroundColor: Colors.redAccent,
-            behavior: SnackBarBehavior.floating,
-          ),
-        );
+        AppSnackBar.error(context, 'Failed to delete: $e');
       }
     }
   }

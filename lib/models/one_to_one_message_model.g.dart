@@ -29,13 +29,20 @@ class OneToOneMessageModelAdapter extends TypeAdapter<OneToOneMessageModel> {
       repliedTo: fields[9] as String? ?? '',
       repliedMessageType: fields[10] as String? ?? 'text',
       isDelivered: fields[11] as bool? ?? false,
+      reactions: (fields[12] is Map)
+          ? Map<String, String>.from(
+              (fields[12] as Map).map(
+                (k, v) => MapEntry(k.toString(), v.toString()),
+              ),
+            )
+          : const {},
     );
   }
 
   @override
   void write(BinaryWriter writer, OneToOneMessageModel obj) {
     writer
-      ..writeByte(12)
+      ..writeByte(13)
       ..writeByte(0)
       ..write(obj.senderId)
       ..writeByte(1)
@@ -59,7 +66,9 @@ class OneToOneMessageModelAdapter extends TypeAdapter<OneToOneMessageModel> {
       ..writeByte(10)
       ..write(obj.repliedMessageType)
       ..writeByte(11)
-      ..write(obj.isDelivered);
+      ..write(obj.isDelivered)
+      ..writeByte(12)
+      ..write(obj.reactions);
   }
 
   @override

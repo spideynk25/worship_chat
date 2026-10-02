@@ -3,6 +3,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:hive_flutter/hive_flutter.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:worship_chat/models/user_model.dart';
 
 class FCMTokenManager {
@@ -113,8 +114,11 @@ class FCMTokenManager {
 
       log('✅ FCM token saved to Firestore for user: $userId');
 
-      // 2. Sync to local Hive user cache immediately
+      // 2. Sync to local Hive user cache and SharedPreferences
       try {
+        final prefs = await SharedPreferences.getInstance();
+        await prefs.setString('cached_current_user_id', userId);
+
         if (Hive.isBoxOpen('userBox')) {
           final box = Hive.box<UserModel>('userBox');
           final current = box.get('currentUser');
@@ -131,10 +135,17 @@ class FCMTokenManager {
             );
             await box.put('currentUser', updated);
             log('✅ Synced fresh FCM token to Hive userBox');
+
+            if (current.name != null && current.name!.isNotEmpty) {
+              await prefs.setString('cached_current_user_name', current.name!);
+            }
+            if (current.profilePic != null && current.profilePic!.isNotEmpty) {
+              await prefs.setString('cached_current_user_pic', current.profilePic!);
+            }
           }
         }
       } catch (e) {
-        log('Note: could not update token in userBox: $e');
+        log('Note: could not update token in userBox/prefs: $e');
       }
     } catch (e) {
       log('❌ Error saving FCM token to Firestore: $e');

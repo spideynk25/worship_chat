@@ -66,6 +66,10 @@ class EventController extends StateNotifier<EventState> {
     required DateTime date,
     required TimeOfDay time,
     required bool isRecurring,
+    String? connectedGroupId,
+    String? connectedGroupName,
+    String? connectedGroupPic,
+    String? connectedQueendom,
   }) async {
     try {
       final user = _repository.currentUser;
@@ -82,6 +86,10 @@ class EventController extends StateNotifier<EventState> {
         createdBy: user.displayName ?? user.email ?? 'Anonymous',
         userId: user.uid,
         isRecurring: isRecurring,
+        connectedGroupId: connectedGroupId,
+        connectedGroupName: connectedGroupName,
+        connectedGroupPic: connectedGroupPic,
+        connectedQueendom: connectedQueendom,
       );
 
       final createdEvent = await _repository.createEvent(event);
