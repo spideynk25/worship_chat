@@ -83,6 +83,76 @@ Future<void> _firebaseMessagingBackgroundHandler(RemoteMessage message) async {
 class MyApp extends ConsumerStatefulWidget {
   const MyApp({super.key});
 
+  static ThemeData get theme => ThemeData.dark().copyWith(
+    scaffoldBackgroundColor: backgroundColor,
+    appBarTheme: const AppBarTheme(
+      backgroundColor: appBarColor,
+      foregroundColor: textColor,
+      elevation: 0,
+      titleTextStyle: TextStyle(
+        color: textColor,
+        fontSize: 18,
+        fontWeight: FontWeight.w700,
+      ),
+      iconTheme: IconThemeData(color: textColor),
+    ),
+    colorScheme: const ColorScheme.dark(
+      primary: tabColor,
+      secondary: accentOrange,
+      surface: mobileChatBoxColor,
+      onPrimary: Colors.white,
+      onSecondary: Colors.white,
+      onSurface: textColor,
+      primaryContainer: Color(0xFF3D0B21),
+      onPrimaryContainer: tabColor,
+      secondaryContainer: Color(0xFF3D2010),
+      onSecondaryContainer: accentOrange,
+    ),
+    bottomNavigationBarTheme: const BottomNavigationBarThemeData(
+      backgroundColor: appBarColor,
+      selectedItemColor: tabColor,
+      unselectedItemColor: greyColor,
+      elevation: 0,
+    ),
+    floatingActionButtonTheme: const FloatingActionButtonThemeData(
+      backgroundColor: tabColor,
+      foregroundColor: Colors.white,
+    ),
+    elevatedButtonTheme: ElevatedButtonThemeData(
+      style: ElevatedButton.styleFrom(
+        backgroundColor: tabColor,
+        foregroundColor: Colors.white,
+        shape: const RoundedRectangleBorder(
+          borderRadius: BorderRadius.all(Radius.circular(14)),
+        ),
+      ),
+    ),
+    textButtonTheme: TextButtonThemeData(
+      style: TextButton.styleFrom(foregroundColor: tabColor),
+    ),
+    inputDecorationTheme: const InputDecorationTheme(
+      hintStyle: TextStyle(color: greyColor),
+      labelStyle: TextStyle(color: greyColor),
+      border: InputBorder.none,
+      enabledBorder: InputBorder.none,
+      focusedBorder: InputBorder.none,
+      disabledBorder: InputBorder.none,
+      errorBorder: InputBorder.none,
+      focusedErrorBorder: InputBorder.none,
+    ),
+    dividerColor: dividerColor,
+    popupMenuTheme: const PopupMenuThemeData(
+      color: Color(0xFF1C1C28),
+      textStyle: TextStyle(color: textColor),
+    ),
+    snackBarTheme: const SnackBarThemeData(
+      backgroundColor: Colors.transparent,
+      elevation: 0,
+      behavior: SnackBarBehavior.floating,
+      contentTextStyle: TextStyle(color: textColor),
+    ),
+  );
+
   @override
   ConsumerState<MyApp> createState() => _MyAppState();
 }
@@ -108,75 +178,7 @@ class _MyAppState extends ConsumerState<MyApp> with WidgetsBindingObserver {
       title: 'Worship Chat',
       debugShowCheckedModeBanner: false,
       navigatorKey: navigatorKey,
-      theme: ThemeData.dark().copyWith(
-        scaffoldBackgroundColor: backgroundColor,
-        appBarTheme: const AppBarTheme(
-          backgroundColor: appBarColor,
-          foregroundColor: textColor,
-          elevation: 0,
-          titleTextStyle: TextStyle(
-            color: textColor,
-            fontSize: 18,
-            fontWeight: FontWeight.w700,
-          ),
-          iconTheme: IconThemeData(color: textColor),
-        ),
-        colorScheme: const ColorScheme.dark(
-          primary: tabColor,
-          secondary: accentOrange,
-          surface: mobileChatBoxColor,
-          onPrimary: Colors.white,
-          onSecondary: Colors.white,
-          onSurface: textColor,
-          primaryContainer: Color(0xFF3D0B21),
-          onPrimaryContainer: tabColor,
-          secondaryContainer: Color(0xFF3D2010),
-          onSecondaryContainer: accentOrange,
-        ),
-        bottomNavigationBarTheme: const BottomNavigationBarThemeData(
-          backgroundColor: appBarColor,
-          selectedItemColor: tabColor,
-          unselectedItemColor: greyColor,
-          elevation: 0,
-        ),
-        floatingActionButtonTheme: const FloatingActionButtonThemeData(
-          backgroundColor: tabColor,
-          foregroundColor: Colors.white,
-        ),
-        elevatedButtonTheme: ElevatedButtonThemeData(
-          style: ElevatedButton.styleFrom(
-            backgroundColor: tabColor,
-            foregroundColor: Colors.white,
-            shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.all(Radius.circular(14)),
-            ),
-          ),
-        ),
-        textButtonTheme: TextButtonThemeData(
-          style: TextButton.styleFrom(foregroundColor: tabColor),
-        ),
-        inputDecorationTheme: const InputDecorationTheme(
-          hintStyle: TextStyle(color: greyColor),
-          labelStyle: TextStyle(color: greyColor),
-          enabledBorder: UnderlineInputBorder(
-            borderSide: BorderSide(color: dividerColor),
-          ),
-          focusedBorder: UnderlineInputBorder(
-            borderSide: BorderSide(color: tabColor),
-          ),
-        ),
-        dividerColor: dividerColor,
-        popupMenuTheme: const PopupMenuThemeData(
-          color: Color(0xFF1C1C28),
-          textStyle: TextStyle(color: textColor),
-        ),
-        snackBarTheme: const SnackBarThemeData(
-          backgroundColor: Colors.transparent,
-          elevation: 0,
-          behavior: SnackBarBehavior.floating,
-          contentTextStyle: TextStyle(color: textColor),
-        ),
-      ),
+      theme: MyApp.theme,
       onGenerateRoute: (settings) => generateRoute(settings),
       home: const RootGate(),
     );

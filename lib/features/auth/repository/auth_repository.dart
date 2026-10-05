@@ -300,6 +300,34 @@ class AuthRepository {
       await _saveUserToHive(user);
       log('User data saved to Firestore and Hive: ${user.toMap()}');
 
+      // Update existing bookmarks created by this user to keep profile pic and name in sync
+      try {
+        final bookmarksQuery = await firestore
+            .collection('bookmarks')
+            .where('userId', isEqualTo: currentUserData.uid)
+            .get();
+        if (bookmarksQuery.docs.isNotEmpty) {
+          final docs = bookmarksQuery.docs;
+          for (var i = 0; i < docs.length; i += 450) {
+            final chunk = docs.sublist(
+              i,
+              i + 450 > docs.length ? docs.length : i + 450,
+            );
+            final batch = firestore.batch();
+            for (final doc in chunk) {
+              batch.update(doc.reference, {
+                'userProfilePic': photoUrl ?? "",
+                'userName': name,
+              });
+            }
+            await batch.commit();
+          }
+          log('✅ Updated ${bookmarksQuery.docs.length} bookmarks with new user profile pic');
+        }
+      } catch (e) {
+        log('⚠️ Could not batch update bookmarks on profile pic change: $e');
+      }
+
       Navigator.pushAndRemoveUntil(
         context,
         MaterialPageRoute(builder: (context) => const HomeScreen()),

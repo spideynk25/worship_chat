@@ -5,6 +5,7 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:uuid/uuid.dart';
 import 'package:worship_chat/common/utils/file_messages.dart';
+import 'package:worship_chat/common/utils/utils.dart';
 import 'package:worship_chat/models/group_gallery_image.dart';
 
 final groupGalleryRepositoryProvider = Provider(
@@ -124,10 +125,11 @@ class GroupGalleryRepository {
 
     try {
       final imageId = const Uuid().v1();
+      final cleanUrl = getOriginalHighQualityImageUrl(imageUrl.trim());
       final galleryImage = GroupGalleryImage(
         imageId: imageId,
         groupId: groupId,
-        imageUrl: imageUrl.trim(),
+        imageUrl: cleanUrl,
         uploadedBy: currentUserId,
         uploadedByName: uploaderName,
         uploadedAt: DateTime.now(),

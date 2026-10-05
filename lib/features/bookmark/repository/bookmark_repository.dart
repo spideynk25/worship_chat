@@ -51,12 +51,25 @@ class BookmarkRepository {
         await existing.docs.first.reference.delete();
         return false;
       } else {
+        String latestPic = userProfilePic;
+        String latestName = userName;
+        try {
+          final userDoc = await firestore.collection('users').doc(_uid).get();
+          if (userDoc.exists && userDoc.data() != null) {
+            final uData = userDoc.data()!;
+            final p = uData['profilePic'] as String?;
+            if (p != null && p.isNotEmpty) latestPic = p;
+            final n = uData['name'] as String?;
+            if (n != null && n.isNotEmpty) latestName = n;
+          }
+        } catch (_) {}
+
         final id = const Uuid().v1();
         final bookmark = BookmarkModel(
           bookmarkId: id,
           userId: _uid!,
-          userName: userName,
-          userProfilePic: userProfilePic,
+          userName: latestName,
+          userProfilePic: latestPic,
           imageUrl: imageUrl,
           groupId: groupId,
           groupName: groupName,

@@ -6,6 +6,8 @@ import 'package:worship_chat/colors.dart';
 import 'package:worship_chat/common/widgets/skeleton_loader.dart';
 import 'package:worship_chat/features/group/controller/group_controller.dart';
 import 'package:worship_chat/features/group/screens/group_chat_screen.dart';
+import 'package:worship_chat/features/group/utils/queendom_emblem_helper.dart';
+import 'package:worship_chat/features/group/widgets/royal_avatar_decoration.dart';
 import 'package:worship_chat/models/group.dart';
 import 'dart:developer';
 
@@ -138,7 +140,7 @@ class GroupList extends ConsumerWidget {
                                   groupPic: groupChatListData.groupPic,
                                   chatBackgroundUrl:
                                       groupChatListData.chatBackgroundUrl,
-                                  name: groupChatListData.name,
+                                  name: groupChatListData.nameWithPosition,
                                   groupId: groupChatListData.groupId,
                                   fcmToken:
                                       groupChatListData.fcmTokens
@@ -169,14 +171,19 @@ class GroupList extends ConsumerWidget {
                                 title: Row(
                                   children: [
                                     Expanded(
-                                      child: Text(
-                                        groupChatListData.name,
+                                      child:
+                                          QueendomEmblemHelper.buildRichTitle(
+                                        title: groupChatListData
+                                            .effectiveLivingPlace,
+                                        family: groupChatListData.family,
+                                        fallbackFamily: 'Main',
                                         style: TextStyle(
                                           fontWeight: hasUnseenForCurrentUser
                                               ? FontWeight.bold
                                               : FontWeight.normal,
                                           fontSize: 16,
                                         ),
+                                        emblemSize: 18,
                                       ),
                                     ),
                                     // Unread indicator dot next to name
@@ -209,45 +216,61 @@ class GroupList extends ConsumerWidget {
                                     ),
                                   ),
                                 ),
-                                leading: Stack(
-                                  children: [
-                                    profileImage != null &&
-                                            profileImage.isNotEmpty
-                                        ? CircleAvatar(
-                                            radius: 30,
-                                            backgroundImage: NetworkImage(
-                                              profileImage,
+                                leading: RoyalAvatarDecoration(
+                                  avatarRadius: 26,
+                                  position: groupChatListData.position,
+                                  livingPlace: groupChatListData.effectiveLivingPlace,
+                                  accentColor: tabColor,
+                                  badge:
+                                      QueendomFamilyEmblemHelper.buildFamilyEmblemBadge(
+                                    family: groupChatListData.family,
+                                    fallbackText:
+                                        groupChatListData.effectiveLivingPlace,
+                                    accentColor: tabColor,
+                                    size: 14.0,
+                                    overlayWidget: hasUnseenForCurrentUser
+                                        ? Container(
+                                            width: 9,
+                                            height: 9,
+                                            decoration: BoxDecoration(
+                                              color: Colors.redAccent,
+                                              shape: BoxShape.circle,
+                                              border: Border.all(
+                                                color: backgroundColor,
+                                                width: 1.5,
+                                              ),
                                             ),
-                                            onBackgroundImageError:
-                                                (error, stackTrace) {
-                                                  log(
-                                                    'Error loading profile image: $error',
-                                                  );
-                                                },
                                           )
-                                        : const CircleAvatar(
-                                            radius: 30,
-                                            child: Icon(Icons.group),
-                                          ),
-                                    // Red dot indicator on avatar for unseen
-                                    if (hasUnseenForCurrentUser)
-                                      Positioned(
-                                        right: 0,
-                                        top: 0,
-                                        child: Container(
-                                          width: 16,
-                                          height: 16,
-                                          decoration: BoxDecoration(
-                                            color: Colors.red,
-                                            shape: BoxShape.circle,
-                                            border: Border.all(
-                                              color: backgroundColor,
-                                              width: 2,
-                                            ),
-                                          ),
+                                        : null,
+                                  ) ??
+                                      (hasUnseenForCurrentUser
+                                          ? Container(
+                                              width: 14,
+                                              height: 14,
+                                              decoration: BoxDecoration(
+                                                color: Colors.red,
+                                                shape: BoxShape.circle,
+                                                border: Border.all(
+                                                  color: backgroundColor,
+                                                  width: 2,
+                                                ),
+                                              ),
+                                            )
+                                          : null),
+                                  badgeBottomOffset: 0,
+                                  badgeRightOffset: 0,
+                                  child: profileImage != null && profileImage.isNotEmpty
+                                      ? CircleAvatar(
+                                          radius: 26,
+                                          backgroundImage: NetworkImage(profileImage),
+                                          onBackgroundImageError: (error, stackTrace) {
+                                            log('Error loading profile image: $error');
+                                          },
+                                        )
+                                      : const CircleAvatar(
+                                          radius: 26,
+                                          child: Icon(Icons.group),
                                         ),
-                                      ),
-                                  ],
                                 ),
                                 trailing: Column(
                                   mainAxisAlignment: MainAxisAlignment.center,

@@ -10,9 +10,44 @@ import 'package:worship_chat/common/widgets/skeleton_loader.dart';
 import 'package:worship_chat/features/chat/widgets/sender_message_card.dart';
 import 'package:worship_chat/features/group/controller/group_controller.dart';
 import 'package:worship_chat/models/group_chat_message_model.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:worship_chat/colors.dart';
-import 'package:worship_chat/features/chat/widgets/my_message_card.dart';
+import 'package:worship_chat/common/widgets/user_avatar.dart';
 import 'package:worship_chat/features/chat/widgets/forward_message_sheet.dart';
+import 'package:worship_chat/features/chat/widgets/my_message_card.dart';
+import 'package:worship_chat/models/user_model.dart';
+
+final _groupUserProvider =
+    FutureProvider.family<UserModel?, String>((ref, userId) async {
+  if (userId.isEmpty) return null;
+
+  if (userId == FirebaseAuth.instance.currentUser?.uid) {
+    if (Hive.isBoxOpen('userBox')) {
+      final currentUser = Hive.box<UserModel>('userBox').get('currentUser');
+      if (currentUser != null) return currentUser;
+    }
+  }
+
+  if (Hive.isBoxOpen('userBox')) {
+    final cached = Hive.box<UserModel>('userBox').get(userId);
+    if (cached != null) return cached;
+  }
+
+  try {
+    final doc =
+        await FirebaseFirestore.instance.collection('users').doc(userId).get();
+    if (doc.exists && doc.data() != null) {
+      final user = UserModel.fromMap(doc.data()!);
+      if (Hive.isBoxOpen('userBox')) {
+        Hive.box<UserModel>('userBox').put(userId, user);
+      }
+      return user;
+    }
+  } catch (e) {
+    debugPrint('Error fetching user for group avatar: $e');
+  }
+  return null;
+});
 
 class GroupChatListWidget extends ConsumerStatefulWidget {
   final String groupId;
@@ -30,6 +65,7 @@ class _GroupChatListWidgetState extends ConsumerState<GroupChatListWidget>
   final Set<String> _processedMessages = {};
   bool _isAtBottom = true;
   String? _lastMessageId;
+  String _currentUserProfilePic = "";
   List<GroupChatMessageModel> _displayMessages = [];
   late Stream<List<GroupChatMessageModel>> _groupChatStream;
 
@@ -38,6 +74,9 @@ class _GroupChatListWidgetState extends ConsumerState<GroupChatListWidget>
   int _visibleCount = _pageSize;
   bool _isLoadingMore = false;
   int _prevTotalMessages = 0;
+  final Set<String> _initialMessageIds = <String>{};
+  final Set<String> _newlyArrivedIds = <String>{};
+  bool _hasRecordedInitialIds = false;
 
   @override
   bool get wantKeepAlive => true;
@@ -45,10 +84,23 @@ class _GroupChatListWidgetState extends ConsumerState<GroupChatListWidget>
   @override
   void initState() {
     super.initState();
+    _initializeUserProfile();
     _groupChatStream =
         ref.read(groupControllerProvider).getGroupChat(widget.groupId);
     _loadInitialCachedMessages();
     _setupScrollListener();
+  }
+
+  void _initializeUserProfile() {
+    try {
+      if (Hive.isBoxOpen('userBox')) {
+        final userBox = Hive.box<UserModel>('userBox');
+        final user = userBox.get('currentUser');
+        _currentUserProfilePic = user?.profilePic ?? "";
+      }
+    } catch (e) {
+      log('Error loading user profile: $e');
+    }
   }
 
   @override
@@ -57,6 +109,9 @@ class _GroupChatListWidgetState extends ConsumerState<GroupChatListWidget>
     if (oldWidget.groupId != widget.groupId) {
       _groupChatStream =
           ref.read(groupControllerProvider).getGroupChat(widget.groupId);
+      _hasRecordedInitialIds = false;
+      _initialMessageIds.clear();
+      _newlyArrivedIds.clear();
       _loadInitialCachedMessages();
     }
   }
@@ -83,6 +138,8 @@ class _GroupChatListWidgetState extends ConsumerState<GroupChatListWidget>
             _displayMessages = parsed;
             _lastMessageId = _displayMessages.last.messageId;
             _prevTotalMessages = _displayMessages.length;
+            _initialMessageIds.addAll(parsed.map((m) => m.messageId));
+            _hasRecordedInitialIds = true;
             log('⚡ Pre-seeded ${_displayMessages.length} group messages from Hive in initState');
           }
         }
@@ -301,6 +358,18 @@ class _GroupChatListWidgetState extends ConsumerState<GroupChatListWidget>
           final isNewData =
               newLastMessageId != _lastMessageId || hasStatusChanges;
 
+          if (!_hasRecordedInitialIds) {
+            _initialMessageIds.addAll(newMessages.map((m) => m.messageId));
+            _hasRecordedInitialIds = true;
+          } else {
+            for (final m in newMessages) {
+              if (!_initialMessageIds.contains(m.messageId)) {
+                _newlyArrivedIds.add(m.messageId);
+                _initialMessageIds.add(m.messageId);
+              }
+            }
+          }
+
           if (isNewData) {
             log('📨 Messages updated: ${newMessages.length} total');
             final oldMessageCount = _displayMessages.length;
@@ -452,12 +521,22 @@ class _GroupChatListWidgetState extends ConsumerState<GroupChatListWidget>
               .map((e) => '${e.key}:${e.value}')
               .join('_');
 
+          final isNewlyArrived = _newlyArrivedIds.contains(messageData.messageId) ||
+              ((index < 3) &&
+                  (DateTime.now()
+                          .difference(messageData.timeSent)
+                          .inSeconds
+                          .abs() <
+                      25));
+
           return _GroupMessageItemWidget(
             key: ValueKey(
               '${messageData.messageId}_$reactionsKey',
             ),
             messageData: messageData,
+            isNewlySent: isNewlyArrived,
             currentUserId: currentUserId,
+            currentUserProfilePic: _currentUserProfilePic,
             isMyMessage: isMyMessage,
             showDateSeparator: showDateSeparator,
             onMessageSwipe: onMessageSwipe,
@@ -471,7 +550,9 @@ class _GroupChatListWidgetState extends ConsumerState<GroupChatListWidget>
 
 class _GroupMessageItemWidget extends ConsumerWidget {
   final GroupChatMessageModel messageData;
+  final bool isNewlySent;
   final String currentUserId;
+  final String currentUserProfilePic;
   final bool isMyMessage;
   final bool showDateSeparator;
   final Function(String, bool, String, String) onMessageSwipe;
@@ -480,12 +561,25 @@ class _GroupMessageItemWidget extends ConsumerWidget {
   const _GroupMessageItemWidget({
     super.key,
     required this.messageData,
+    this.isNewlySent = false,
     required this.currentUserId,
+    required this.currentUserProfilePic,
     required this.isMyMessage,
     required this.showDateSeparator,
     required this.onMessageSwipe,
     required this.getDateSeparatorText,
   });
+
+  Widget _buildProfileAvatar(String? profilePic, bool isCurrentUser) {
+    final padding = isCurrentUser
+        ? const EdgeInsets.only(left: 2.0, right: 6.0, bottom: 2.0)
+        : const EdgeInsets.only(left: 6.0, right: 2.0, bottom: 2.0);
+    final pic = profilePic ?? '';
+    return Padding(
+      padding: padding,
+      child: UserAvatar(url: pic.isNotEmpty ? pic : null, radius: 17.5),
+    );
+  }
 
   Widget _buildDateSeparator(DateTime date) {
     return Center(
@@ -518,90 +612,118 @@ class _GroupMessageItemWidget extends ConsumerWidget {
         .map((e) => '${e.key}:${e.value}')
         .join('_');
 
+    final senderUserAsync = isMyMessage
+        ? null
+        : ref.watch(_groupUserProvider(messageData.senderId));
+    final senderPic = senderUserAsync?.value?.profilePic;
+    final myPic = currentUserProfilePic.isNotEmpty
+        ? currentUserProfilePic
+        : ref.watch(_groupUserProvider(currentUserId)).value?.profilePic;
+
     return Column(
       children: [
         if (showDateSeparator) _buildDateSeparator(messageData.timeSent),
         isMyMessage
-            ? MyMessageCard(
-                key: ValueKey(
-                  'my_${messageData.messageId}_$reactionsKey',
-                ),
-                message: messageData.text,
-                date: timeSent,
-                messageType: messageData.messageType,
-                fileMessageData: messageData.fileMessageData,
-                repliedText: messageData.repliedMessage,
-                username: messageData.repliedTo,
-                repliedMessageType: messageData.repliedMessageType,
-                onLeftSwipe: () => onMessageSwipe(
-                  messageData.text,
-                  true,
-                  messageData.messageType,
-                  messageData.fileMessageData ?? "",
-                ),
-                isSeen: seen,
-                isDelivered: delivered,
-                isSending: sending,
-                messageId: messageData.messageId,
-                currentUserId: currentUserId,
-                reactions: messageData.reactions,
-                onReactionSelected: (emoji) {
-                  ref.read(groupControllerProvider).toggleGroupReaction(
-                        groupId: messageData.groupId,
-                        messageId: messageData.messageId,
-                        emoji: emoji,
-                      );
-                },
-                onForward: () {
-                  ForwardMessageSheet.show(
-                    context,
-                    ForwardMessagePayload(
-                      text: messageData.text,
+            ? Row(
+                mainAxisAlignment: MainAxisAlignment.end,
+                crossAxisAlignment: CrossAxisAlignment.end,
+                children: [
+                  Flexible(
+                    child: MyMessageCard(
+                      key: ValueKey(
+                        'my_${messageData.messageId}_$reactionsKey',
+                      ),
+                      message: messageData.text,
+                      date: timeSent,
                       messageType: messageData.messageType,
                       fileMessageData: messageData.fileMessageData,
-                      sourceGroupId: messageData.groupId,
+                      repliedText: messageData.repliedMessage,
+                      username: messageData.repliedTo,
+                      repliedMessageType: messageData.repliedMessageType,
+                      onLeftSwipe: () => onMessageSwipe(
+                        messageData.text,
+                        true,
+                        messageData.messageType,
+                        messageData.fileMessageData ?? "",
+                      ),
+                      isSeen: seen,
+                      isDelivered: delivered,
+                      isSending: sending,
+                      isNewlySent: sending || isNewlySent,
+                      messageId: messageData.messageId,
+                      currentUserId: currentUserId,
+                      reactions: messageData.reactions,
+                      onReactionSelected: (emoji) {
+                        ref.read(groupControllerProvider).toggleGroupReaction(
+                              groupId: messageData.groupId,
+                              messageId: messageData.messageId,
+                              emoji: emoji,
+                            );
+                      },
+                      onForward: () {
+                        ForwardMessageSheet.show(
+                          context,
+                          ForwardMessagePayload(
+                            text: messageData.text,
+                            messageType: messageData.messageType,
+                            fileMessageData: messageData.fileMessageData,
+                            sourceGroupId: messageData.groupId,
+                          ),
+                        );
+                      },
                     ),
-                  );
-                },
+                  ),
+                  _buildProfileAvatar(myPic, true),
+                ],
               )
-            : SenderMessageCard(
-                key: ValueKey(
-                  'sender_${messageData.messageId}_$reactionsKey',
-                ),
-                message: messageData.text,
-                date: timeSent,
-                messageType: messageData.messageType,
-                fileMessageData: messageData.fileMessageData,
-                repliedText: messageData.repliedMessage,
-                username: messageData.repliedTo,
-                repliedMessageType: messageData.repliedMessageType,
-                onRightSwipe: () => onMessageSwipe(
-                  messageData.text,
-                  false,
-                  messageData.messageType,
-                  messageData.fileMessageData ?? "",
-                ),
-                messageId: messageData.messageId,
-                currentUserId: currentUserId,
-                reactions: messageData.reactions,
-                onReactionSelected: (emoji) {
-                  ref.read(groupControllerProvider).toggleGroupReaction(
-                        groupId: messageData.groupId,
-                        messageId: messageData.messageId,
-                        emoji: emoji,
-                      );
-                },
-                onForward: () {
-                  ForwardMessageSheet.show(
-                    context,
-                    ForwardMessagePayload(
-                      text: messageData.text,
+            : Row(
+                crossAxisAlignment: CrossAxisAlignment.end,
+                children: [
+                  _buildProfileAvatar(senderPic, false),
+                  Flexible(
+                    child: SenderMessageCard(
+                      key: ValueKey(
+                        'sender_${messageData.messageId}_$reactionsKey',
+                      ),
+                      message: messageData.text,
+                      date: timeSent,
                       messageType: messageData.messageType,
                       fileMessageData: messageData.fileMessageData,
-                      sourceGroupId: messageData.groupId,
+                      repliedText: messageData.repliedMessage,
+                      username: messageData.repliedTo,
+                      repliedMessageType: messageData.repliedMessageType,
+                      onRightSwipe: () => onMessageSwipe(
+                        messageData.text,
+                        false,
+                        messageData.messageType,
+                        messageData.fileMessageData ?? "",
+                      ),
+                      isNewlyReceived: isNewlySent,
+                      messageId: messageData.messageId,
+                      currentUserId: currentUserId,
+                      senderProfilePic: senderPic,
+                      reactions: messageData.reactions,
+                      onReactionSelected: (emoji) {
+                        ref.read(groupControllerProvider).toggleGroupReaction(
+                              groupId: messageData.groupId,
+                              messageId: messageData.messageId,
+                              emoji: emoji,
+                            );
+                      },
+                      onForward: () {
+                        ForwardMessageSheet.show(
+                          context,
+                          ForwardMessagePayload(
+                            text: messageData.text,
+                            messageType: messageData.messageType,
+                            fileMessageData: messageData.fileMessageData,
+                            sourceGroupId: messageData.groupId,
+                          ),
+                        );
+                      },
                     ),
-                  );
-                },
+                  ),
+                ],
               ),
       ],
     );

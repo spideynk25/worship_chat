@@ -7,6 +7,8 @@ import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:worship_chat/features/group/controller/group_controller.dart';
 import 'package:worship_chat/features/group/screens/group_chat_screen.dart';
+import 'package:worship_chat/features/group/utils/group_template_helper.dart';
+import 'package:worship_chat/features/group/utils/queendom_emblem_helper.dart';
 import 'package:worship_chat/models/group.dart';
 
 /// Helper to navigate directly to a Queendom group chat
@@ -44,7 +46,7 @@ Future<void> navigateToQueendomGroup(
           builder: (context) => GroupChatScreen(
             groupPic: group.groupPic,
             chatBackgroundUrl: group.chatBackgroundUrl,
-            name: group.name,
+            name: group.nameWithPosition,
             groupId: group.groupId,
             fcmToken: List<String>.from(group.fcmTokens),
             membersUid: List<String>.from(group.membersUid),
@@ -69,7 +71,7 @@ Future<void> navigateToQueendomGroup(
         builder: (context) => GroupChatScreen(
           groupPic: groupPic,
           chatBackgroundUrl: null,
-          name: name,
+          name: GroupTemplateHelper.getNameWithPosition(name: name),
           groupId: groupId,
           fcmToken: const [],
           membersUid: const [],
@@ -158,8 +160,10 @@ class _QueendomGroupPickerSheetState extends State<_QueendomGroupPickerSheet>
         color: Color(0xFF161324),
         borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
       ),
-      child: Column(
-        children: [
+      child: SafeArea(
+        top: false,
+        child: Column(
+          children: [
           // Drag handle
           Center(
             child: Container(
@@ -186,7 +190,7 @@ class _QueendomGroupPickerSheetState extends State<_QueendomGroupPickerSheet>
                     ),
                     borderRadius: BorderRadius.circular(10),
                   ),
-                  child: const Text('👑', style: TextStyle(fontSize: 18)),
+                  child: const QueendomEmblemWidget(position: 'Queen', size: 22),
                 ),
                 const SizedBox(width: 12),
                 const Expanded(
@@ -278,8 +282,26 @@ class _QueendomGroupPickerSheetState extends State<_QueendomGroupPickerSheet>
               ),
               onTap: (_) => setState(() {}),
               tabs: const [
-                Tab(text: '👑 Queen Pooja'),
-                Tab(text: '👑 Queen Rashmika'),
+                Tab(
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      QueendomEmblemWidget(position: 'Queen', size: 16),
+                      SizedBox(width: 6),
+                      Text('Queen Pooja'),
+                    ],
+                  ),
+                ),
+                Tab(
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      QueendomEmblemWidget(position: 'Queen', size: 16),
+                      SizedBox(width: 6),
+                      Text('Queen Rashmika'),
+                    ],
+                  ),
+                ),
               ],
             ),
           ),
@@ -306,7 +328,8 @@ class _QueendomGroupPickerSheetState extends State<_QueendomGroupPickerSheet>
           ),
         ],
       ),
-    );
+    ),
+  );
   }
 
   Widget _buildGroupList({
@@ -323,7 +346,10 @@ class _QueendomGroupPickerSheetState extends State<_QueendomGroupPickerSheet>
             .where((g) =>
                 g.queendom == queendomName &&
                 (_searchQuery.isEmpty ||
-                    g.name.toLowerCase().contains(_searchQuery.toLowerCase())))
+                    g.name.toLowerCase().contains(_searchQuery.toLowerCase()) ||
+                    g.effectiveLivingPlace
+                        .toLowerCase()
+                        .contains(_searchQuery.toLowerCase())))
             .toList();
 
         if (groups.isEmpty) {
@@ -412,14 +438,16 @@ class _QueendomGroupPickerSheetState extends State<_QueendomGroupPickerSheet>
                           Row(
                             children: [
                               Flexible(
-                                child: Text(
-                                  group.name,
+                                child: QueendomEmblemHelper.buildRichTitle(
+                                  title: group.effectiveLivingPlace,
+                                  family: group.family,
+                                  fallbackFamily: 'Main',
                                   style: const TextStyle(
                                     color: Colors.white,
                                     fontSize: 14.5,
                                     fontWeight: FontWeight.w600,
                                   ),
-                                  overflow: TextOverflow.ellipsis,
+                                  emblemSize: 18,
                                 ),
                               ),
                               if (isSelected) ...[

@@ -103,7 +103,7 @@ class _GroupShortcutsGridState extends ConsumerState<GroupShortcutsGrid> {
         builder: (context) => GroupChatScreen(
           groupPic: group.groupPic,
           chatBackgroundUrl: group.chatBackgroundUrl,
-          name: group.name,
+          name: group.nameWithPosition,
           groupId: group.groupId,
           fcmToken: List<String>.from(group.fcmTokens),
           membersUid: List<String>.from(group.membersUid),
@@ -920,29 +920,34 @@ class _ManageShortcutsSheetState extends State<_ManageShortcutsSheet> {
 
           // ── Bottom Save Action Bar ──────────────────────────────────
           Container(
-            padding: const EdgeInsets.fromLTRB(20, 12, 20, 20),
             decoration: const BoxDecoration(
               color: Color(0xFF101018),
               border: Border(top: BorderSide(color: dividerColor)),
             ),
-            child: SizedBox(
-              width: double.infinity,
-              height: 48,
-              child: ElevatedButton(
-                onPressed: _save,
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: tabColor,
-                  elevation: 0,
-                  shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(14),
-                  ),
-                ),
-                child: Text(
-                  'Save Shortcuts (${_selectedIds.length})',
-                  style: const TextStyle(
-                    color: Colors.white,
-                    fontWeight: FontWeight.bold,
-                    fontSize: 15,
+            child: SafeArea(
+              top: false,
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(20, 12, 20, 16),
+                child: SizedBox(
+                  width: double.infinity,
+                  height: 48,
+                  child: ElevatedButton(
+                    onPressed: _save,
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: tabColor,
+                      elevation: 0,
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(14),
+                      ),
+                    ),
+                    child: Text(
+                      'Save Shortcuts (${_selectedIds.length})',
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontWeight: FontWeight.bold,
+                        fontSize: 15,
+                      ),
+                    ),
                   ),
                 ),
               ),

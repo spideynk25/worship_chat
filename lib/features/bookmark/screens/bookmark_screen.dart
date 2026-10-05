@@ -1,5 +1,6 @@
 import 'dart:io';
 import 'package:cached_network_image/cached_network_image.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:dio/dio.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
@@ -14,6 +15,7 @@ import 'package:worship_chat/common/utils/utils.dart';
 import 'package:worship_chat/common/widgets/skeleton_loader.dart';
 import 'package:worship_chat/common/widgets/user_avatar.dart';
 import 'package:worship_chat/features/bookmark/controller/bookmark_controller.dart';
+import 'package:worship_chat/features/chat/widgets/forward_message_sheet.dart';
 import 'package:worship_chat/features/group/screens/slide_show_screen.dart';
 import 'package:worship_chat/models/bookmark_model.dart';
 import 'package:worship_chat/models/group_gallery_image.dart';
@@ -44,7 +46,9 @@ class BookmarkScreen extends ConsumerWidget {
           style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18),
         ),
       ),
-      body: StreamBuilder<List<BookmarkModel>>(
+      body: SafeArea(
+        top: false,
+        child: StreamBuilder<List<BookmarkModel>>(
         stream: ref.watch(bookmarkControllerProvider).allBookmarks(),
         builder: (context, snapshot) {
           if (snapshot.connectionState == ConnectionState.waiting) {
@@ -101,115 +105,154 @@ class BookmarkScreen extends ConsumerWidget {
                 Divider(color: Colors.grey[800], height: 1, indent: 72),
             itemBuilder: (context, index) {
               final u = users[index];
-              final isMe = u.userId == currentUserId;
-              final previews = u.bookmarks.take(3).toList();
-
-              return ListTile(
-                contentPadding: const EdgeInsets.symmetric(
-                  horizontal: 16,
-                  vertical: 8,
-                ),
-                leading: Stack(
-                  children: [
-                    UserAvatar(url: u.userProfilePic, radius: 26),
-                    if (isMe)
-                      Positioned(
-                        bottom: 0,
-                        right: 0,
-                        child: Container(
-                          padding: const EdgeInsets.all(2),
-                          decoration: BoxDecoration(
-                            color: tabColor,
-                            shape: BoxShape.circle,
-                            border: Border.all(
-                              color: backgroundColor,
-                              width: 1.5,
-                            ),
-                          ),
-                          child: const Icon(
-                            Icons.person,
-                            size: 10,
-                            color: Colors.white,
-                          ),
-                        ),
-                      ),
-                  ],
-                ),
-                title: Text(
-                  isMe ? '${u.userName} (You)' : u.userName,
-                  style: const TextStyle(
-                    color: Colors.white,
-                    fontWeight: FontWeight.w600,
-                    fontSize: 14,
-                  ),
-                ),
-                subtitle: Text(
-                  '${u.bookmarks.length} bookmark${u.bookmarks.length == 1 ? '' : 's'}',
-                  style: TextStyle(color: Colors.grey[500], fontSize: 12),
-                ),
-                trailing: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    ...previews.map(
-                      (bm) => Padding(
-                        padding: const EdgeInsets.only(left: 4),
-                        child: ClipRRect(
-                          borderRadius: BorderRadius.circular(6),
-                          child: CachedNetworkImage(
-                            imageUrl: bm.imageUrl,
-                            width: 36,
-                            height: 36,
-                            fit: BoxFit.cover,
-                          ),
-                        ),
-                      ),
-                    ),
-                    if (u.bookmarks.length > 3)
-                      Padding(
-                        padding: const EdgeInsets.only(left: 4),
-                        child: Container(
-                          width: 36,
-                          height: 36,
-                          decoration: BoxDecoration(
-                            color: Colors.grey[800],
-                            borderRadius: BorderRadius.circular(6),
-                          ),
-                          child: Center(
-                            child: Text(
-                              '+${u.bookmarks.length - 3}',
-                              style: const TextStyle(
-                                color: Colors.white70,
-                                fontSize: 11,
-                                fontWeight: FontWeight.bold,
-                              ),
-                            ),
-                          ),
-                        ),
-                      ),
-                    const SizedBox(width: 8),
-                    const Icon(
-                      Icons.chevron_right,
-                      color: Colors.grey,
-                      size: 20,
-                    ),
-                  ],
-                ),
-                onTap: () => Navigator.push(
-                  context,
-                  MaterialPageRoute(
-                    builder: (_) => _UserBookmarksScreen(
-                      userId: u.userId,
-                      userName: isMe ? '${u.userName} (You)' : u.userName,
-                      userProfilePic: u.userProfilePic,
-                      currentUserId: currentUserId,
-                    ),
-                  ),
-                ),
+              return _BookmarkUserTile(
+                summary: u,
+                currentUserId: currentUserId,
               );
             },
           );
         },
       ),
+    ),
+  );
+  }
+}
+
+class _BookmarkUserTile extends StatelessWidget {
+  final _UserBookmarkSummary summary;
+  final String currentUserId;
+
+  const _BookmarkUserTile({
+    required this.summary,
+    required this.currentUserId,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final isMe = summary.userId == currentUserId;
+    final previews = summary.bookmarks.take(3).toList();
+
+    return StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
+      stream: FirebaseFirestore.instance
+          .collection('users')
+          .doc(summary.userId)
+          .snapshots(),
+      builder: (context, snapshot) {
+        final userData = snapshot.data?.data();
+        final liveProfilePic = userData?['profilePic'] as String?;
+        final liveName = userData?['name'] as String?;
+
+        final effectiveProfilePic =
+            (liveProfilePic != null && liveProfilePic.isNotEmpty)
+                ? liveProfilePic
+                : summary.userProfilePic;
+        final effectiveName = (liveName != null && liveName.isNotEmpty)
+            ? liveName
+            : summary.userName;
+
+        return ListTile(
+          contentPadding: const EdgeInsets.symmetric(
+            horizontal: 16,
+            vertical: 8,
+          ),
+          leading: Stack(
+            children: [
+              UserAvatar(url: effectiveProfilePic, radius: 26),
+              if (isMe)
+                Positioned(
+                  bottom: 0,
+                  right: 0,
+                  child: Container(
+                    padding: const EdgeInsets.all(2),
+                    decoration: BoxDecoration(
+                      color: tabColor,
+                      shape: BoxShape.circle,
+                      border: Border.all(
+                        color: backgroundColor,
+                        width: 1.5,
+                      ),
+                    ),
+                    child: const Icon(
+                      Icons.person,
+                      size: 10,
+                      color: Colors.white,
+                    ),
+                  ),
+                ),
+            ],
+          ),
+          title: Text(
+            isMe ? '$effectiveName (You)' : effectiveName,
+            style: const TextStyle(
+              color: Colors.white,
+              fontWeight: FontWeight.w600,
+              fontSize: 14,
+            ),
+          ),
+          subtitle: Text(
+            '${summary.bookmarks.length} bookmark${summary.bookmarks.length == 1 ? '' : 's'}',
+            style: TextStyle(color: Colors.grey[500], fontSize: 12),
+          ),
+          trailing: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              ...previews.map(
+                (bm) => Padding(
+                  padding: const EdgeInsets.only(left: 4),
+                  child: ClipRRect(
+                    borderRadius: BorderRadius.circular(6),
+                    child: CachedNetworkImage(
+                      imageUrl: bm.imageUrl,
+                      width: 36,
+                      height: 36,
+                      fit: BoxFit.cover,
+                    ),
+                  ),
+                ),
+              ),
+              if (summary.bookmarks.length > 3)
+                Padding(
+                  padding: const EdgeInsets.only(left: 4),
+                  child: Container(
+                    width: 36,
+                    height: 36,
+                    decoration: BoxDecoration(
+                      color: Colors.grey[800],
+                      borderRadius: BorderRadius.circular(6),
+                    ),
+                    child: Center(
+                      child: Text(
+                        '+${summary.bookmarks.length - 3}',
+                        style: const TextStyle(
+                          color: Colors.white70,
+                          fontSize: 11,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+              const SizedBox(width: 8),
+              const Icon(
+                Icons.chevron_right,
+                color: Colors.grey,
+                size: 20,
+              ),
+            ],
+          ),
+          onTap: () => Navigator.push(
+            context,
+            MaterialPageRoute(
+              builder: (_) => _UserBookmarksScreen(
+                userId: summary.userId,
+                userName: isMe ? '$effectiveName (You)' : effectiveName,
+                userProfilePic: effectiveProfilePic,
+                currentUserId: currentUserId,
+              ),
+            ),
+          ),
+        );
+      },
     );
   }
 }
@@ -290,6 +333,190 @@ class _UserBookmarksScreenState extends ConsumerState<_UserBookmarksScreen> {
         .toList();
   }
 
+  Future<void> _savePhoto(BookmarkModel bm) async {
+    try {
+      final originalUrl = getOriginalHighQualityImageUrl(bm.imageUrl);
+      final ext = getImageExtensionFromUrl(originalUrl);
+      final dir = await getTemporaryDirectory();
+      final filePath =
+          '${dir.path}/${bm.bookmarkId}_${DateTime.now().millisecondsSinceEpoch}.$ext';
+
+      final dio = Dio();
+      await dio.download(
+        originalUrl,
+        filePath,
+        options: Options(
+          responseType: ResponseType.bytes,
+          followRedirects: true,
+        ),
+      );
+      final saved = await GallerySaver.saveImage(
+        filePath,
+        albumName: 'Worship Chat',
+        toDcim: false,
+      );
+      final tempFile = File(filePath);
+      if (await tempFile.exists()) {
+        await tempFile.delete();
+      }
+
+      if (mounted) {
+        AppSnackBar.show(
+          context,
+          message: saved == true
+              ? '✅ Saved in high quality to Worship Chat album'
+              : '⚠️ Could not save',
+        );
+      }
+    } catch (_) {
+      if (mounted) {
+        AppSnackBar.show(context, message: '⚠️ Download failed');
+      }
+    }
+  }
+
+  void _showBookmarkOptions({
+    required BookmarkModel bm,
+    required List<BookmarkModel> bookmarks,
+    required int index,
+    required bool isMe,
+  }) {
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: const Color(0xFF1B1728),
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (ctx) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Container(
+              margin: const EdgeInsets.only(top: 8, bottom: 4),
+              width: 36,
+              height: 4,
+              decoration: BoxDecoration(
+                color: Colors.white24,
+                borderRadius: BorderRadius.circular(2),
+              ),
+            ),
+            ListTile(
+              leading: const Icon(Icons.forward_rounded, color: tabColor),
+              title: const Text(
+                'Forward Photo',
+                style: TextStyle(color: Colors.white),
+              ),
+              subtitle: const Text(
+                'Send to chat or another gallery',
+                style: TextStyle(color: Colors.white54, fontSize: 12),
+              ),
+              onTap: () {
+                Navigator.pop(ctx);
+                ForwardMessageSheet.show(
+                  context,
+                  ForwardMessagePayload(
+                    text: '',
+                    messageType: 'image',
+                    fileMessageData: bm.imageUrl,
+                    isFromGallery: true,
+                    sourceGroupId: bm.groupId,
+                    sourceGroupName:
+                        bm.groupName.isNotEmpty ? bm.groupName : 'Bookmarks',
+                  ),
+                );
+              },
+            ),
+            ListTile(
+              leading: const Icon(Icons.slideshow_rounded, color: tabColor),
+              title: const Text(
+                'Start Slideshow',
+                style: TextStyle(color: Colors.white),
+              ),
+              onTap: () {
+                Navigator.pop(ctx);
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(
+                    builder: (_) => SlideshowScreen(
+                      images: _toGalleryImages(bookmarks),
+                      initialIndex: index,
+                      accentColor: tabColor,
+                      groupName: '${widget.userName}\'s Bookmarks',
+                    ),
+                  ),
+                );
+              },
+            ),
+            ListTile(
+              leading:
+                  const Icon(Icons.download_rounded, color: Colors.white70),
+              title: const Text(
+                'Save Photo',
+                style: TextStyle(color: Colors.white),
+              ),
+              onTap: () {
+                Navigator.pop(ctx);
+                _savePhoto(bm);
+              },
+            ),
+            if (isMe)
+              ListTile(
+                leading: const Icon(
+                  Icons.bookmark_remove,
+                  color: Colors.redAccent,
+                ),
+                title: const Text(
+                  'Remove Bookmark',
+                  style: TextStyle(color: Colors.redAccent),
+                ),
+                onTap: () async {
+                  Navigator.pop(ctx);
+                  final ok = await showDialog<bool>(
+                    context: context,
+                    builder: (_) => AlertDialog(
+                      backgroundColor: Colors.grey[900],
+                      title: const Text(
+                        'Remove Bookmark?',
+                        style: TextStyle(color: Colors.white),
+                      ),
+                      actions: [
+                        TextButton(
+                          onPressed: () => Navigator.pop(context, false),
+                          child: const Text('Cancel'),
+                        ),
+                        TextButton(
+                          onPressed: () => Navigator.pop(context, true),
+                          child: const Text(
+                            'Remove',
+                            style: TextStyle(color: Colors.redAccent),
+                          ),
+                        ),
+                      ],
+                    ),
+                  );
+
+                  if (ok == true) {
+                    await ref
+                        .read(bookmarkControllerProvider)
+                        .toggleBookmark(
+                          imageUrl: bm.imageUrl,
+                          groupId: bm.groupId,
+                          groupName: bm.groupName,
+                          userName: bm.userName,
+                          userProfilePic: bm.userProfilePic,
+                        );
+                    if (mounted) {
+                      AppSnackBar.show(context, message: 'Bookmark removed');
+                    }
+                  }
+                },
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final isMe = widget.userId == widget.currentUserId;
@@ -303,21 +530,37 @@ class _UserBookmarksScreenState extends ConsumerState<_UserBookmarksScreen> {
           icon: const Icon(Icons.arrow_back_ios_new_rounded, size: 18),
           onPressed: () => Navigator.pop(context),
         ),
-        title: Row(
-          children: [
-            UserAvatar(url: widget.userProfilePic, radius: 16),
-            const SizedBox(width: 10),
-            Expanded(
-              child: Text(
-                widget.userName,
-                style: const TextStyle(
-                  fontWeight: FontWeight.bold,
-                  fontSize: 16,
+        title: StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
+          stream: FirebaseFirestore.instance
+              .collection('users')
+              .doc(widget.userId)
+              .snapshots(),
+          builder: (context, snapshot) {
+            final data = snapshot.data?.data();
+            final pic = (data?['profilePic'] as String?)?.isNotEmpty == true
+                ? data!['profilePic'] as String
+                : widget.userProfilePic;
+            final name = (data?['name'] as String?)?.isNotEmpty == true
+                ? (isMe ? '${data!['name']} (You)' : data!['name'] as String)
+                : widget.userName;
+
+            return Row(
+              children: [
+                UserAvatar(url: pic, radius: 16),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Text(
+                    name,
+                    style: const TextStyle(
+                      fontWeight: FontWeight.bold,
+                      fontSize: 16,
+                    ),
+                    overflow: TextOverflow.ellipsis,
+                  ),
                 ),
-                overflow: TextOverflow.ellipsis,
-              ),
-            ),
-          ],
+              ],
+            );
+          },
         ),
         actions: [
           StreamBuilder<List<BookmarkModel>>(
@@ -359,7 +602,9 @@ class _UserBookmarksScreenState extends ConsumerState<_UserBookmarksScreen> {
           ),
         ],
       ),
-      body: StreamBuilder<List<BookmarkModel>>(
+      body: SafeArea(
+        top: false,
+        child: StreamBuilder<List<BookmarkModel>>(
         stream: ref
             .watch(bookmarkControllerProvider)
             .bookmarksForUser(widget.userId),
@@ -428,16 +673,11 @@ class _UserBookmarksScreenState extends ConsumerState<_UserBookmarksScreen> {
                     ),
                   ),
                 ),
-                onLongPress: () => Navigator.push(
-                  context,
-                  MaterialPageRoute(
-                    builder: (_) => SlideshowScreen(
-                      images: _toGalleryImages(bookmarks),
-                      initialIndex: index,
-                      accentColor: tabColor,
-                      groupName: '${widget.userName}\'s Bookmarks',
-                    ),
-                  ),
+                onLongPress: () => _showBookmarkOptions(
+                  bm: bm,
+                  bookmarks: bookmarks,
+                  index: index,
+                  isMe: isMe,
                 ),
                 child: Stack(
                   fit: StackFit.expand,
@@ -463,7 +703,8 @@ class _UserBookmarksScreenState extends ConsumerState<_UserBookmarksScreen> {
           );
         },
       ),
-    );
+    ),
+  );
   }
 }
 
@@ -532,20 +773,36 @@ class _BookmarkFullscreenViewerState
 
     try {
       final bm = widget.bookmarks[_index];
+      final originalUrl = getOriginalHighQualityImageUrl(bm.imageUrl);
+      final ext = getImageExtensionFromUrl(originalUrl);
       final dir = await getTemporaryDirectory();
-      final filePath = '${dir.path}/${bm.bookmarkId}.jpg';
+      final filePath =
+          '${dir.path}/${bm.bookmarkId}_${DateTime.now().millisecondsSinceEpoch}.$ext';
 
-      await Dio().download(bm.imageUrl, filePath);
+      final dio = Dio();
+      await dio.download(
+        originalUrl,
+        filePath,
+        options: Options(
+          responseType: ResponseType.bytes,
+          followRedirects: true,
+        ),
+      );
       final saved = await GallerySaver.saveImage(
         filePath,
         albumName: 'Worship Chat',
         toDcim: false,
       );
-      await File(filePath).delete();
+      final tempFile = File(filePath);
+      if (await tempFile.exists()) {
+        await tempFile.delete();
+      }
 
       if (mounted) {
         _snack(
-          saved == true ? '✅ Saved to Worship Chat album' : '⚠️ Could not save',
+          saved == true
+              ? '✅ Saved in high quality to Worship Chat album'
+              : '⚠️ Could not save',
           saved == true ? Colors.green[700]! : Colors.redAccent,
         );
       }
@@ -559,6 +816,22 @@ class _BookmarkFullscreenViewerState
   void _snack(String msg, [Color? color]) {
     if (!mounted) return;
     AppSnackBar.show(context, message: msg);
+  }
+
+  void _forwardCurrent() {
+    final bm = widget.bookmarks[_index];
+    ForwardMessageSheet.show(
+      context,
+      ForwardMessagePayload(
+        text: '',
+        messageType: 'image',
+        fileMessageData: bm.imageUrl,
+        isFromGallery: true,
+        sourceGroupId: bm.groupId,
+        sourceGroupName:
+            bm.groupName.isNotEmpty ? bm.groupName : 'Bookmarks',
+      ),
+    );
   }
 
   Future<void> _confirmRemove() async {
@@ -616,7 +889,7 @@ class _BookmarkFullscreenViewerState
             backgroundDecoration: const BoxDecoration(color: Colors.black),
             builder: (context, i) => PhotoViewGalleryPageOptions(
               imageProvider: CachedNetworkImageProvider(
-                widget.bookmarks[i].imageUrl,
+                getOriginalHighQualityImageUrl(widget.bookmarks[i].imageUrl),
               ),
               minScale: PhotoViewComputedScale.contained,
               maxScale: PhotoViewComputedScale.covered * 4,
@@ -704,6 +977,16 @@ class _BookmarkFullscreenViewerState
                                   : _downloadCurrent,
                             ),
 
+                            // ── Forward ────────────────────────────
+                            IconButton(
+                              icon: const Icon(
+                                Icons.forward_rounded,
+                                color: Colors.white,
+                              ),
+                              tooltip: 'Forward photo',
+                              onPressed: _forwardCurrent,
+                            ),
+
                             // ── Slideshow ──────────────────────────
                             IconButton(
                               icon: const Icon(
@@ -761,48 +1044,66 @@ class _BookmarkFullscreenViewerState
                             mainAxisSize: MainAxisSize.min,
                             children: [
                               // Uploader info
-                              Row(
-                                children: [
-                                  UserAvatar(
-                                    url: bm.userProfilePic,
-                                    radius: 14,
-                                  ),
-                                  const SizedBox(width: 8),
-                                  Expanded(
-                                    child: Column(
-                                      crossAxisAlignment:
-                                          CrossAxisAlignment.start,
-                                      children: [
-                                        Text(
-                                          bm.userId == widget.currentUserId
-                                              ? 'You'
-                                              : bm.userName,
-                                          style: const TextStyle(
-                                            color: Colors.white,
-                                            fontSize: 13,
-                                            fontWeight: FontWeight.bold,
-                                          ),
+                              StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
+                                stream: FirebaseFirestore.instance
+                                    .collection('users')
+                                    .doc(bm.userId)
+                                    .snapshots(),
+                                builder: (context, snapshot) {
+                                  final data = snapshot.data?.data();
+                                  final pic = (data?['profilePic'] as String?)?.isNotEmpty == true
+                                      ? data!['profilePic'] as String
+                                      : bm.userProfilePic;
+                                  final name = (data?['name'] as String?)?.isNotEmpty == true
+                                      ? (bm.userId == widget.currentUserId
+                                          ? 'You'
+                                          : data!['name'] as String)
+                                      : (bm.userId == widget.currentUserId
+                                          ? 'You'
+                                          : bm.userName);
+
+                                  return Row(
+                                    children: [
+                                      UserAvatar(
+                                        url: pic,
+                                        radius: 14,
+                                      ),
+                                      const SizedBox(width: 8),
+                                      Expanded(
+                                        child: Column(
+                                          crossAxisAlignment:
+                                              CrossAxisAlignment.start,
+                                          children: [
+                                            Text(
+                                              name,
+                                              style: const TextStyle(
+                                                color: Colors.white,
+                                                fontSize: 13,
+                                                fontWeight: FontWeight.bold,
+                                              ),
+                                            ),
+                                            Text(
+                                              DateFormat(
+                                                'd MMM yyyy',
+                                              ).format(bm.bookmarkedAt),
+                                              style: const TextStyle(
+                                                color: Colors.white54,
+                                                fontSize: 11,
+                                              ),
+                                            ),
+                                          ],
                                         ),
-                                        Text(
-                                          DateFormat(
-                                            'd MMM yyyy',
-                                          ).format(bm.bookmarkedAt),
-                                          style: const TextStyle(
-                                            color: Colors.white54,
-                                            fontSize: 11,
-                                          ),
+                                      ),
+                                      Text(
+                                        '${_index + 1} / ${widget.bookmarks.length}',
+                                        style: const TextStyle(
+                                          color: Colors.white70,
+                                          fontSize: 12,
                                         ),
-                                      ],
-                                    ),
-                                  ),
-                                  Text(
-                                    '${_index + 1} / ${widget.bookmarks.length}',
-                                    style: const TextStyle(
-                                      color: Colors.white70,
-                                      fontSize: 12,
-                                    ),
-                                  ),
-                                ],
+                                      ),
+                                    ],
+                                  );
+                                },
                               ),
                             ],
                           ),

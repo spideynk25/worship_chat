@@ -123,21 +123,35 @@ class _SlideshowScreenState extends State<SlideshowScreen>
 
     try {
       final img = _playlist[_currentIndex];
+      final originalUrl = getOriginalHighQualityImageUrl(img.imageUrl);
+      final ext = getImageExtensionFromUrl(originalUrl);
       final dir = await getTemporaryDirectory();
-      final filePath = '${dir.path}/${img.imageId}.jpg';
+      final filePath =
+          '${dir.path}/${img.imageId}_${DateTime.now().millisecondsSinceEpoch}.$ext';
 
-      await Dio().download(img.imageUrl, filePath);
+      final dio = Dio();
+      await dio.download(
+        originalUrl,
+        filePath,
+        options: Options(
+          responseType: ResponseType.bytes,
+          followRedirects: true,
+        ),
+      );
       final saved = await GallerySaver.saveImage(
         filePath,
         albumName: 'Worship Chat', 
         toDcim: false,
       );
-      await File(filePath).delete();
+      final tempFile = File(filePath);
+      if (await tempFile.exists()) {
+        await tempFile.delete();
+      }
 
       if (mounted) {
         _snack(
           saved == true
-              ? '✅ Saved to Worship Chat album'
+              ? '✅ Saved in high quality to Worship Chat album'
               : '⚠️ Could not save image',
           saved == true ? widget.accentColor : Colors.redAccent,
         );
@@ -188,7 +202,7 @@ class _SlideshowScreenState extends State<SlideshowScreen>
               },
               itemBuilder: (ctx, i) => PhotoView(
                 imageProvider: CachedNetworkImageProvider(
-                  _playlist[i].imageUrl,
+                  getOriginalHighQualityImageUrl(_playlist[i].imageUrl),
                 ),
                 backgroundDecoration: const BoxDecoration(color: Colors.black),
                 minScale: PhotoViewComputedScale.contained,
@@ -238,9 +252,11 @@ class _SlideshowScreenState extends State<SlideshowScreen>
             title: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                const Text(
-                  'Slideshow',
-                  style: TextStyle(
+                Text(
+                  _playlist.isNotEmpty
+                      ? 'Slideshow (${_currentIndex + 1}/${_playlist.length})'
+                      : 'Slideshow',
+                  style: const TextStyle(
                     color: Colors.white,
                     fontSize: 14,
                     fontWeight: FontWeight.bold,
@@ -249,6 +265,8 @@ class _SlideshowScreenState extends State<SlideshowScreen>
                 Text(
                   widget.groupName,
                   style: const TextStyle(color: Colors.white70, fontSize: 11),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
                 ),
               ],
             ),

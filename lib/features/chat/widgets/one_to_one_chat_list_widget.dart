@@ -51,6 +51,9 @@ class _OneToOneChatListWidgetState extends ConsumerState<OneToOneChatListWidget>
   int _visibleCount = _pageSize;
   bool _isLoadingMore = false;
   int _prevTotalMessages = 0;
+  final Set<String> _initialMessageIds = <String>{};
+  final Set<String> _newlyArrivedIds = <String>{};
+  bool _hasRecordedInitialIds = false;
 
   @override
   bool get wantKeepAlive => true;
@@ -102,6 +105,18 @@ class _OneToOneChatListWidgetState extends ConsumerState<OneToOneChatListWidget>
         (newMessages.isNotEmpty && newLastMessageId != _lastMessageId);
     final addedCount = newMessages.length - _prevTotalMessages;
 
+    if (!_hasRecordedInitialIds) {
+      _initialMessageIds.addAll(newMessages.map((m) => m.messageId));
+      _hasRecordedInitialIds = true;
+    } else {
+      for (final m in newMessages) {
+        if (!_initialMessageIds.contains(m.messageId)) {
+          _newlyArrivedIds.add(m.messageId);
+          _initialMessageIds.add(m.messageId);
+        }
+      }
+    }
+
     setState(() {
       if (addedCount > 0 && _prevTotalMessages > 0) {
         _visibleCount += addedCount;
@@ -128,6 +143,9 @@ class _OneToOneChatListWidgetState extends ConsumerState<OneToOneChatListWidget>
     if (oldWidget.receiverUserId != widget.receiverUserId) {
       _displayMessages = [];
       _isInitialLoad = true;
+      _hasRecordedInitialIds = false;
+      _initialMessageIds.clear();
+      _newlyArrivedIds.clear();
       _loadInitialCachedMessages();
       _subscribeToStream();
     }
@@ -157,6 +175,8 @@ class _OneToOneChatListWidgetState extends ConsumerState<OneToOneChatListWidget>
             _displayMessages = parsed;
             _lastMessageId = _displayMessages.last.messageId;
             _prevTotalMessages = _displayMessages.length;
+            _initialMessageIds.addAll(parsed.map((m) => m.messageId));
+            _hasRecordedInitialIds = true;
             log('⚡ Pre-seeded ${_displayMessages.length} messages from Hive in initState');
           }
         }
@@ -479,10 +499,19 @@ class _OneToOneChatListWidgetState extends ConsumerState<OneToOneChatListWidget>
           // RepaintBoundary isolates each row's raster cache so that when
           // a new message arrives, only the new/changed rows repaint —
           // image and video rows are NOT repainted at all.
+          final isNewlyArrived = _newlyArrivedIds.contains(row.messages.last.messageId) ||
+              ((index < 3) &&
+                  (DateTime.now()
+                          .difference(row.messages.last.timeSent)
+                          .inSeconds
+                          .abs() <
+                      25));
+
           return RepaintBoundary(
             child: _ChatRowWidget(
               key: ValueKey('${row.key}_$rowReactionsKey'),
               row: row,
+              isNewlySent: isNewlyArrived,
               currentUserProfilePic: currentUserProfilePic,
               receiverProfilePic: widget.profilePic,
               receiverUserId: widget.receiverUserId,
@@ -574,6 +603,7 @@ class _ChatRow {
 // ─────────────────────────────────────────────────────────────────────────────
 class _ChatRowWidget extends ConsumerWidget {
   final _ChatRow row;
+  final bool isNewlySent;
   final String currentUserProfilePic;
   final String receiverProfilePic;
   final String receiverUserId;
@@ -585,6 +615,7 @@ class _ChatRowWidget extends ConsumerWidget {
   const _ChatRowWidget({
     super.key,
     required this.row,
+    this.isNewlySent = false,
     required this.currentUserProfilePic,
     required this.receiverProfilePic,
     required this.receiverUserId,
@@ -727,6 +758,7 @@ class _ChatRowWidget extends ConsumerWidget {
                       isSeen: seen,
                       isDelivered: delivered,
                       isSending: sending,
+                      isNewlySent: sending || isNewlySent,
                       messageId: messageData.messageId,
                       currentUserId: currentUserId,
                       receiverId: receiverUserId,
@@ -774,6 +806,7 @@ class _ChatRowWidget extends ConsumerWidget {
                         messageData.messageType,
                         messageData.fileMessageData ?? '',
                       ),
+                      isNewlyReceived: isNewlySent,
                       messageId: messageData.messageId,
                       currentUserId: currentUserId,
                       receiverId: receiverUserId,

@@ -236,14 +236,14 @@ class _OneToOneChatScreenState extends ConsumerState<OneToOneChatScreen>
   }
 
   // ✅ Navigate to user info screen
-  void _openUserInfo() {
+  void _openUserInfo({String? name, String? pic}) {
     Navigator.push(
       context,
       MaterialPageRoute(
         builder: (_) => UserInfoScreen(
           userId: widget.uid,
-          profilePic: widget.profilePic ?? '',
-          name: widget.name,
+          profilePic: pic ?? widget.profilePic ?? '',
+          name: name ?? widget.name,
         ),
       ),
     );
@@ -253,103 +253,285 @@ class _OneToOneChatScreenState extends ConsumerState<OneToOneChatScreen>
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        actionsPadding: const EdgeInsets.only(left: 0),
-        leading: IconButton(
-          padding: const EdgeInsets.only(left: 12),
-          onPressed: () => Navigator.pop(context),
-          icon: const Icon(CupertinoIcons.back),
-        ),
-        leadingWidth: 20,
+        toolbarHeight: 64,
+        elevation: 0,
+        scrolledUnderElevation: 0,
         backgroundColor: appBarColor,
-        title: StreamBuilder<UserModel>(
-          stream: ref.read(authControllerProvider).userDataById(widget.uid),
-          builder: (context, snapshot) {
-            final user = snapshot.data;
-            final displayName = (user?.name != null && user!.name!.isNotEmpty)
-                ? user.name!
-                : widget.name;
-            final displayPic = (user?.profilePic != null && user!.profilePic!.isNotEmpty)
-                ? user.profilePic
-                : widget.profilePic;
+        automaticallyImplyLeading: false,
+        leadingWidth: 0,
+        titleSpacing: 0,
+        bottom: PreferredSize(
+          preferredSize: const Size.fromHeight(0.6),
+          child: Container(
+            color: dividerColor.withValues(alpha: 0.5),
+            height: 0.6,
+          ),
+        ),
+        title: Padding(
+          padding: const EdgeInsets.only(left: 4, right: 4),
+          child: Row(
+            children: [
+              IconButton(
+                alignment: Alignment.centerLeft,
+                onPressed: () => Navigator.pop(context),
+                icon: const Icon(CupertinoIcons.back, size: 24),
+                padding: const EdgeInsets.only(left: 6, right: 4),
+                constraints: const BoxConstraints(minWidth: 36, minHeight: 44),
+                tooltip: 'Back',
+              ),
+              Expanded(
+                child: StreamBuilder<UserModel>(
+                  stream:
+                      ref.read(authControllerProvider).userDataById(widget.uid),
+                  builder: (context, snapshot) {
+                    final user = snapshot.data;
+                    final displayName =
+                        (user?.name != null && user!.name!.isNotEmpty)
+                            ? user.name!
+                            : widget.name;
+                    final displayPic =
+                        (user?.profilePic != null && user!.profilePic!.isNotEmpty)
+                            ? user.profilePic
+                            : widget.profilePic;
 
-            // Show skeleton only if both display name and profile are empty while connecting
-            if (displayName.isEmpty && (displayPic == null || displayPic.isEmpty) && snapshot.connectionState == ConnectionState.waiting) {
-              return const ChatAppBarSkeleton();
-            }
-            // ✅ Wrap entire title in GestureDetector to open user info
-            return GestureDetector(
-              onTap: _openUserInfo,
-              child: Row(
-                mainAxisAlignment: MainAxisAlignment.start,
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  UserAvatar(
-                    url: displayPic,
-                    radius: 20,
-                    isOnline: user?.isOnline,
-                    showOnlineIndicator: user != null,
-                    borderColor: appBarColor,
-                  ),
-                  const SizedBox(width: 10),
-                  Flexible(
-                    child: Column(
-                      mainAxisSize: MainAxisSize.min,
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          displayName,
-                          style: const TextStyle(
-                            fontSize: 16,
-                            fontWeight: FontWeight.w600,
-                            letterSpacing: 0.1,
+                    // Show skeleton only if both display name and profile are empty while connecting
+                    if (displayName.isEmpty &&
+                        (displayPic == null || displayPic.isEmpty) &&
+                        snapshot.connectionState == ConnectionState.waiting) {
+                      return const ChatAppBarSkeleton();
+                    }
+
+                    return GestureDetector(
+                      onTap: () => _openUserInfo(
+                        name: displayName,
+                        pic: displayPic,
+                      ),
+                      behavior: HitTestBehavior.opaque,
+                      child: Row(
+                        children: [
+                          Container(
+                            decoration: BoxDecoration(
+                              shape: BoxShape.circle,
+                              border: Border.all(
+                                color: user?.isOnline == true
+                                    ? const Color(0xFF00E676)
+                                        .withValues(alpha: 0.5)
+                                    : Colors.white.withValues(alpha: 0.14),
+                                width: 1.5,
+                              ),
+                              boxShadow: user?.isOnline == true
+                                  ? [
+                                      BoxShadow(
+                                        color: const Color(0xFF00E676)
+                                            .withValues(alpha: 0.22),
+                                        blurRadius: 6,
+                                        spreadRadius: 0.5,
+                                      ),
+                                    ]
+                                  : null,
+                            ),
+                            child: UserAvatar(
+                              url: displayPic,
+                              radius: 20,
+                              isOnline: user?.isOnline,
+                              showOnlineIndicator: user?.isOnline == true,
+                              borderColor: appBarColor,
+                            ),
                           ),
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                        ),
-                        const SizedBox(height: 2),
-                        StreamBuilder<bool>(
-                          stream: _typingStream,
-                          builder: (context, typingSnapshot) {
-                            final isTyping = typingSnapshot.data ?? false;
-
-                            // If snapshot is still connecting and has no user data yet
-                            if (!snapshot.hasData && user == null) {
-                              return ShimmerEffect(
-                                child: Container(
-                                  width: 44,
-                                  height: 9,
-                                  margin: const EdgeInsets.only(top: 2),
-                                  decoration: BoxDecoration(
-                                    color: Colors.white24,
-                                    borderRadius: BorderRadius.circular(4),
+                          const SizedBox(width: 10),
+                          Expanded(
+                            child: Column(
+                              mainAxisAlignment: MainAxisAlignment.center,
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(
+                                  displayName,
+                                  style: const TextStyle(
+                                    fontSize: 16.0,
+                                    fontWeight: FontWeight.w600,
+                                    letterSpacing: 0.15,
+                                    color: Colors.white,
                                   ),
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
                                 ),
-                              );
-                            }
+                                const SizedBox(height: 2),
+                                StreamBuilder<bool>(
+                                  stream: _typingStream,
+                                  builder: (context, typingSnapshot) {
+                                    final isTyping =
+                                        typingSnapshot.data ?? false;
 
-                            return AppBarStatusSubtitle(
-                              isTyping: isTyping,
-                              isOnline: user?.isOnline == true,
-                              accentColor: tabColor,
-                            );
-                          },
+                                    if (!snapshot.hasData && user == null) {
+                                      return ShimmerEffect(
+                                        child: Container(
+                                          width: 44,
+                                          height: 9,
+                                          margin: const EdgeInsets.only(top: 2),
+                                          decoration: BoxDecoration(
+                                            color: Colors.white24,
+                                            borderRadius:
+                                                BorderRadius.circular(4),
+                                          ),
+                                        ),
+                                      );
+                                    }
+
+                                    return AppBarStatusSubtitle(
+                                      isTyping: isTyping,
+                                      isOnline: user?.isOnline == true,
+                                      accentColor: tabColor,
+                                    );
+                                  },
+                                ),
+                              ],
+                            ),
+                          ),
+                        ],
+                      ),
+                    );
+                  },
+                ),
+              ),
+            ],
+          ),
+        ),
+        actions: [
+          IconButton(
+            icon: const Icon(CupertinoIcons.photo),
+            padding: const EdgeInsets.symmetric(horizontal: 4),
+            constraints: const BoxConstraints(minWidth: 36, minHeight: 40),
+            tooltip: 'Change Background',
+            onPressed: () => selectImageForBackground(ref, context),
+          ),
+          Consumer(
+            builder: (context, ref, _) {
+              final displayImage = ref.watch(displayImageProvider);
+              return PopupMenuButton<String>(
+                icon: const Icon(Icons.more_vert),
+                padding: const EdgeInsets.only(left: 2, right: 8),
+                constraints: const BoxConstraints(minWidth: 36, minHeight: 40),
+                tooltip: 'More options',
+                color: const Color(0xFF161622),
+                elevation: 8,
+                offset: const Offset(0, 48),
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(14),
+                  side: BorderSide(
+                    color: Colors.white.withValues(alpha: 0.12),
+                    width: 0.8,
+                  ),
+                ),
+                onSelected: (value) {
+                  switch (value) {
+                    case 'view_profile':
+                    case 'media_links':
+                      _openUserInfo();
+                      break;
+                    case 'change_background':
+                      selectImageForBackground(ref, context);
+                      break;
+                    case 'toggle_background':
+                      showOrHideChatBackgroundImage();
+                      break;
+                  }
+                },
+                itemBuilder: (context) => [
+                  PopupMenuItem<String>(
+                    value: 'view_profile',
+                    height: 42,
+                    child: Row(
+                      children: [
+                        Icon(
+                          CupertinoIcons.person_crop_circle,
+                          size: 19,
+                          color: tabColor,
+                        ),
+                        const SizedBox(width: 12),
+                        const Text(
+                          'View Profile',
+                          style: TextStyle(
+                            fontSize: 13.5,
+                            color: Colors.white,
+                            fontWeight: FontWeight.w500,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  PopupMenuItem<String>(
+                    value: 'media_links',
+                    height: 42,
+                    child: Row(
+                      children: [
+                        const Icon(
+                          CupertinoIcons.square_stack_3d_up,
+                          size: 19,
+                          color: Colors.white70,
+                        ),
+                        const SizedBox(width: 12),
+                        const Text(
+                          'Media, Links & Docs',
+                          style: TextStyle(
+                            fontSize: 13.5,
+                            color: Colors.white,
+                            fontWeight: FontWeight.w500,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  PopupMenuItem<String>(
+                    value: 'change_background',
+                    height: 42,
+                    child: Row(
+                      children: [
+                        const Icon(
+                          CupertinoIcons.photo_on_rectangle,
+                          size: 19,
+                          color: Colors.white70,
+                        ),
+                        const SizedBox(width: 12),
+                        const Text(
+                          'Change Background',
+                          style: TextStyle(
+                            fontSize: 13.5,
+                            color: Colors.white,
+                            fontWeight: FontWeight.w500,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  PopupMenuItem<String>(
+                    value: 'toggle_background',
+                    height: 42,
+                    child: Row(
+                      children: [
+                        Icon(
+                          displayImage
+                              ? Icons.visibility_off_outlined
+                              : Icons.visibility_outlined,
+                          size: 19,
+                          color: Colors.white70,
+                        ),
+                        const SizedBox(width: 12),
+                        Text(
+                          displayImage
+                              ? 'Hide Background'
+                              : 'Show Background',
+                          style: const TextStyle(
+                            fontSize: 13.5,
+                            color: Colors.white,
+                            fontWeight: FontWeight.w500,
+                          ),
                         ),
                       ],
                     ),
                   ),
                 ],
-              ),
-            );
-          },
-        ),
-        actions: [
-          IconButton(
-            onPressed: () => selectImageForBackground(ref, context),
-            icon: const Icon(CupertinoIcons.photo),
-          ),
-          IconButton(
-            onPressed: showOrHideChatBackgroundImage,
-            icon: const Icon(Icons.hide_image),
+              );
+            },
           ),
         ],
       ),

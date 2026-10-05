@@ -79,8 +79,12 @@ class _UserInformationScreenState extends ConsumerState<UserInformationScreen> {
                   padding: const EdgeInsets.all(20),
                   child: TextField(
                     controller: nameController,
-                    decoration:
-                        const InputDecoration(hintText: 'Enter your name'),
+                    decoration: const InputDecoration(
+                      hintText: 'Enter your name',
+                      border: InputBorder.none,
+                      enabledBorder: InputBorder.none,
+                      focusedBorder: InputBorder.none,
+                    ),
                   ),
                 ),
                 IconButton(onPressed: storeUserData, icon: const Icon(Icons.done))

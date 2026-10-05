@@ -58,8 +58,11 @@ class _SubtasksPageState extends ConsumerState<SubtasksPage> {
               right: BorderSide(color: dividerColor, width: 1.5),
             ),
           ),
-          padding: const EdgeInsets.symmetric(horizontal: 22, vertical: 20),
-          child: Column(
+          child: SafeArea(
+            top: false,
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 22, vertical: 16),
+              child: Column(
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
@@ -259,7 +262,9 @@ class _SubtasksPageState extends ConsumerState<SubtasksPage> {
           ),
         ),
       ),
-    );
+    ),
+  ),
+);
   }
 
   void _showEditDialog(SubtaskModel subtask) {
@@ -284,11 +289,14 @@ class _SubtasksPageState extends ConsumerState<SubtasksPage> {
               right: BorderSide(color: dividerColor, width: 1.5),
             ),
           ),
-          padding: const EdgeInsets.symmetric(horizontal: 22, vertical: 20),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
+          child: SafeArea(
+            top: false,
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 22, vertical: 16),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
               Center(
                 child: Container(
                   width: 40,
@@ -474,7 +482,9 @@ class _SubtasksPageState extends ConsumerState<SubtasksPage> {
           ),
         ),
       ),
-    );
+    ),
+  ),
+);
   }
 
   Future<void> _confirmDeleteSubtask(SubtaskModel subtask) async {

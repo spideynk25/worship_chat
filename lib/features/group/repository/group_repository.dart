@@ -1,9 +1,9 @@
+import 'dart:async';
 import 'dart:developer';
 import 'dart:io';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
-import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:hive_flutter/hive_flutter.dart';
@@ -32,6 +32,7 @@ class GroupRepository {
   final FirebaseFirestore firestore;
   final FirebaseAuth auth;
   final ProviderRef ref;
+  final Map<String, List<void Function(List<GroupChatMessageModel>)>> _activeGroupChatListeners = {};
 
   GroupRepository({
     required this.firestore,
@@ -48,8 +49,14 @@ class GroupRepository {
     String selectedFamily,
     String selectedPosition,
     File? groupProfilePic,
-    String type,
-  ) async {
+    String type, {
+    String? livingPlace,
+    int? priority,
+    String? parentGroupId,
+    String? parentGroupName,
+    bool? isSubGroup,
+    String? subGroupType,
+  }) async {
     try {
       Map<String, dynamic> updateData = {
         'name': name,
@@ -57,6 +64,13 @@ class GroupRepository {
         'queendom': selectedQueendom,
         'family': selectedFamily,
         'position': selectedPosition,
+        'livingPlace': livingPlace ?? '',
+        'priority': priority,
+        'order': priority,
+        if (parentGroupId != null) 'parentGroupId': parentGroupId,
+        if (parentGroupName != null) 'parentGroupName': parentGroupName,
+        if (isSubGroup != null) 'isSubGroup': isSubGroup,
+        if (subGroupType != null) 'subGroupType': subGroupType,
       };
 
       if (groupProfilePic != null) {
@@ -77,6 +91,36 @@ class GroupRepository {
     }
   }
 
+  Future<List<int>> getTakenPriorities({
+    required String queendom,
+    required String position,
+    String? excludeGroupId,
+  }) async {
+    try {
+      final snapshot = await firestore
+          .collection('groups')
+          .where('queendom', isEqualTo: queendom)
+          .where('position', isEqualTo: position)
+          .get();
+
+      List<int> priorities = [];
+      for (var doc in snapshot.docs) {
+        if (excludeGroupId != null && doc.id == excludeGroupId) continue;
+        final data = doc.data();
+        final p = (data['priority'] as num?)?.toInt() ??
+            (data['order'] as num?)?.toInt();
+        if (p != null) {
+          priorities.add(p);
+        }
+      }
+      priorities.sort();
+      return priorities;
+    } catch (e) {
+      log('Error getting taken priorities: $e');
+      return [];
+    }
+  }
+
   void createGroup(
     BuildContext context,
     String name,
@@ -86,8 +130,14 @@ class GroupRepository {
     String selectedPosition,
     File groupProfilePic,
     List<ChatContact> selectedContact,
-    String type,
-  ) async {
+    String type, {
+    String? livingPlace,
+    int? priority,
+    String? parentGroupId,
+    String? parentGroupName,
+    bool isSubGroup = false,
+    String? subGroupType,
+  }) async {
     try {
       List<String> uids = [];
       List<String> fcmTokens = [];
@@ -161,6 +211,13 @@ class GroupRepository {
         family: selectedFamily,
         position: selectedPosition,
         wish: wish,
+        livingPlace: livingPlace,
+        priority: priority,
+        order: priority,
+        parentGroupId: parentGroupId,
+        parentGroupName: parentGroupName,
+        isSubGroup: isSubGroup,
+        subGroupType: subGroupType,
       );
 
       await firestore.collection('groups').doc(groupId).set(group.toMap());
@@ -169,6 +226,31 @@ class GroupRepository {
       log('❌ Error creating group: $e');
       showSnackBar(context: context, content: e.toString());
     }
+  }
+
+  /// Streams all sub groups under a given parent group ID
+  Stream<List<GroupModel>> getSubGroupsStream(String parentGroupId) {
+    final currentUser = auth.currentUser;
+    if (currentUser == null) return const Stream.empty();
+
+    return firestore
+        .collection('groups')
+        .where('parentGroupId', isEqualTo: parentGroupId)
+        .snapshots()
+        .map((snapshot) {
+      List<GroupModel> subGroups = [];
+      for (var doc in snapshot.docs) {
+        try {
+          final group = GroupModel.fromMap(doc.data());
+          if (group.membersUid.contains(currentUser.uid)) {
+            subGroups.add(group);
+          }
+        } catch (e) {
+          log('Error parsing sub-group: $e');
+        }
+      }
+      return subGroups;
+    });
   }
 
   Stream<Map<String, String>> getGroupTypingStatus(String groupId) {
@@ -253,9 +335,9 @@ class GroupRepository {
     }
   }
 
-  Stream<List<GroupChatMessageModel>> getGroupChatStream(
-      String groupId) async* {
+  Stream<List<GroupChatMessageModel>> getGroupChatStream(String groupId) {
     final localKey = groupId;
+    final controller = StreamController<List<GroupChatMessageModel>>();
 
     // 1. Immediately emit cached messages from Hive (0ms)
     try {
@@ -265,15 +347,23 @@ class GroupRepository {
         final cachedMessages = _safeCastGroupMessages(cachedData);
         if (cachedMessages.isNotEmpty) {
           log('⚡ [Instant Cache] Emitted ${cachedMessages.length} cached group messages for $groupId');
-          yield cachedMessages;
+          controller.add(cachedMessages);
         }
       }
     } catch (e) {
       log('❌ Error emitting cached group messages: $e');
     }
 
+    void emitGroupMessages(List<GroupChatMessageModel> msgs) {
+      if (!controller.isClosed) {
+        controller.add(msgs);
+      }
+    }
+
+    _activeGroupChatListeners.putIfAbsent(localKey, () => []).add(emitGroupMessages);
+
     // 2. Stream updates from Firestore and keep Hive in sync
-    yield* firestore
+    final firestoreSubscription = firestore
         .collection('groups')
         .doc(groupId)
         .collection('chats')
@@ -286,21 +376,27 @@ class GroupRepository {
             return <GroupChatMessageModel>[];
           }
         })
-        .distinct((prev, next) {
-          if (prev.length != next.length) return false;
-          for (int i = 0; i < prev.length; i++) {
-            if (prev[i].messageId != next[i].messageId ||
-                prev[i].isSeen != next[i].isSeen ||
-                prev[i].isDelivered != next[i].isDelivered ||
-                prev[i].isSending != next[i].isSending ||
-                prev[i].text != next[i].text ||
-                prev[i].fileMessageData != next[i].fileMessageData ||
-                !mapEquals(prev[i].reactions, next[i].reactions)) {
-              return false;
-            }
-          }
-          return true;
-        });
+        .listen(
+          (msgs) {
+            emitGroupMessages(msgs);
+          },
+          onError: (e) {
+            if (!controller.isClosed) controller.addError(e);
+          },
+          onDone: () {
+            if (!controller.isClosed) controller.close();
+          },
+        );
+
+    controller.onCancel = () {
+      _activeGroupChatListeners[localKey]?.remove(emitGroupMessages);
+      if (_activeGroupChatListeners[localKey]?.isEmpty ?? false) {
+        _activeGroupChatListeners.remove(localKey);
+      }
+      firestoreSubscription.cancel();
+    };
+
+    return controller.stream;
   }
 
   List<GroupChatMessageModel> _safeCastGroupMessages(dynamic cachedData) {
@@ -1179,6 +1275,14 @@ class GroupRepository {
       }
       await box.put(groupId, messages);
       log('🕒 Saved optimistic sending group message to Hive: ${message.messageId}');
+
+      final listeners = _activeGroupChatListeners[groupId];
+      if (listeners != null) {
+        final msgsCopy = List<GroupChatMessageModel>.from(messages);
+        for (final listener in List.from(listeners)) {
+          listener(msgsCopy);
+        }
+      }
     } catch (e) {
       log('❌ Error saving optimistic group message to Hive: $e');
     }
@@ -1193,6 +1297,14 @@ class GroupRepository {
           final messages = cachedData.cast<GroupChatMessageModel>().toList();
           messages.removeWhere((m) => m.isSending);
           await box.put(groupId, messages);
+
+          final listeners = _activeGroupChatListeners[groupId];
+          if (listeners != null) {
+            final msgsCopy = List<GroupChatMessageModel>.from(messages);
+            for (final listener in List.from(listeners)) {
+              listener(msgsCopy);
+            }
+          }
         }
       }
     } catch (_) {}

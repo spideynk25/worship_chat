@@ -7,10 +7,14 @@ import 'package:worship_chat/colors.dart';
 import 'package:worship_chat/common/widgets/loader.dart';
 import 'package:worship_chat/features/dashboard/repositories/event_repository.dart';
 import 'package:worship_chat/features/group/controller/group_controller.dart';
+import 'package:worship_chat/features/group/screens/create_sub_group_screen.dart';
 import 'package:worship_chat/features/group/screens/edit_group_screen.dart';
+import 'package:worship_chat/features/group/screens/group_chat_screen.dart';
 import 'package:worship_chat/models/event.dart';
 import 'package:worship_chat/models/group.dart';
 import 'package:worship_chat/models/group_chat_message_model.dart';
+import 'package:worship_chat/features/group/utils/queendom_emblem_helper.dart';
+import 'package:worship_chat/features/group/widgets/royal_avatar_decoration.dart';
 
 class GroupInfoScreen extends ConsumerStatefulWidget {
   final String groupId;
@@ -176,13 +180,15 @@ class _GroupInfoScreenState extends ConsumerState<GroupInfoScreen>
                     background: _GroupHeroHeader(
                       group: group,
                       groupPic: widget.groupPic,
-                      name: widget.name,
+                      name: group?.nameWithPosition ?? widget.name,
                       groupId: widget.groupId,
                       accentColor: _accentColor,
                     ),
                   ),
                 ),
                 SliverToBoxAdapter(child: _buildInfoCards(group)),
+                if (group != null && !group.isSubGroup)
+                  SliverToBoxAdapter(child: _buildSubGroupsCard(group)),
                 SliverPersistentHeader(
                   pinned: true,
                   delegate: _CustomTabBarDelegate(
@@ -223,6 +229,21 @@ class _GroupInfoScreenState extends ConsumerState<GroupInfoScreen>
         accentColor: _accentColor,
         child: Column(
           children: [
+            if (group?.isSubGroup == true &&
+                group?.parentGroupName != null &&
+                group!.parentGroupName!.isNotEmpty) ...[
+              _DetailRow(
+                icon: group.isFuckToySubGroup
+                    ? Icons.local_fire_department_rounded
+                    : Icons.favorite_rounded,
+                label: '${group.subGroupDisplayCategory} of',
+                value: group.parentGroupName!,
+                accentColor: group.isFuckToySubGroup
+                    ? Colors.purpleAccent
+                    : _accentColor,
+              ),
+              _Hairline(),
+            ],
             if (group?.queendom != null &&
                 group!.queendom!.isNotEmpty &&
                 group.queendom != 'None') ...[
@@ -242,6 +263,10 @@ class _GroupInfoScreenState extends ConsumerState<GroupInfoScreen>
                 label: 'Family',
                 value: '${group.family} Family',
                 accentColor: _accentColor,
+                trailing: QueendomFamilyEmblemWidget(
+                  family: group.family,
+                  size: 24,
+                ),
               ),
               _Hairline(),
             ],
@@ -253,7 +278,39 @@ class _GroupInfoScreenState extends ConsumerState<GroupInfoScreen>
                 label: 'Position',
                 value: group.position!,
                 accentColor: _accentColor,
+                trailing: QueendomEmblemWidget(
+                  position: group.position,
+                  size: 24,
+                ),
               ),
+              _Hairline(),
+            ],
+            if (group?.priority != null) ...[
+              _DetailRow(
+                icon: Icons.format_list_numbered_rounded,
+                label: 'Priority',
+                value: '#${group!.priority}',
+                accentColor: _accentColor,
+              ),
+              _Hairline(),
+            ],
+            if (group?.effectiveLivingPlace != null &&
+                group!.effectiveLivingPlace.isNotEmpty) ...[
+              _DetailRow(
+                icon: Icons.temple_buddhist_outlined,
+                label: 'Living Place',
+                value: group.effectiveLivingPlace,
+                accentColor: _accentColor,
+                trailing: QueendomEmblemHelper.getAssetFromLivingPlace(
+                            group.effectiveLivingPlace) ==
+                        null
+                    ? QueendomEmblemWidget(
+                        position: group.position,
+                        size: 24,
+                      )
+                    : null,
+              ),
+
               _Hairline(),
             ],
             if (widget.wish != null && widget.wish!.isNotEmpty) ...[
@@ -412,6 +469,298 @@ class _GroupInfoScreenState extends ConsumerState<GroupInfoScreen>
             ),
           ],
         ),
+      ),
+    );
+  }
+
+  Widget _buildSubGroupsCard(GroupModel group) {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+      child: _GlassCard(
+        accentColor: _accentColor,
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Icon(Icons.auto_awesome, color: _accentColor, size: 20),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    'Sub-Groups of ${group.nameWithPosition}',
+                    style: const TextStyle(
+                      fontSize: 15,
+                      fontWeight: FontWeight.bold,
+                      color: Colors.white,
+                    ),
+                  ),
+                ),
+                GestureDetector(
+                  onTap: () {
+                    Navigator.push(
+                      context,
+                      MaterialPageRoute(
+                        builder: (_) => CreateSubGroupScreen(
+                          parentGroup: group,
+                          initialSubGroupType: 'wife',
+                        ),
+                      ),
+                    );
+                  },
+                  child: Container(
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                    decoration: BoxDecoration(
+                      gradient: LinearGradient(
+                        colors: [
+                          _accentColor,
+                          _accentColor.withOpacity(0.8),
+                        ],
+                      ),
+                      borderRadius: BorderRadius.circular(10),
+                    ),
+                    child: const Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(Icons.add, size: 13, color: Colors.black),
+                        SizedBox(width: 2),
+                        Text(
+                          'Wife',
+                          style: TextStyle(
+                            fontSize: 11,
+                            fontWeight: FontWeight.bold,
+                            color: Colors.black,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 6),
+                GestureDetector(
+                  onTap: () {
+                    Navigator.push(
+                      context,
+                      MaterialPageRoute(
+                        builder: (_) => CreateSubGroupScreen(
+                          parentGroup: group,
+                          initialSubGroupType: 'fuckToy',
+                        ),
+                      ),
+                    );
+                  },
+                  child: Container(
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                    decoration: BoxDecoration(
+                      gradient: const LinearGradient(
+                        colors: [
+                          Colors.purpleAccent,
+                          Color(0xFFBA68C8),
+                        ],
+                      ),
+                      borderRadius: BorderRadius.circular(10),
+                    ),
+                    child: const Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(Icons.add, size: 13, color: Colors.black),
+                        SizedBox(width: 2),
+                        Text(
+                          'Fuck Toy',
+                          style: TextStyle(
+                            fontSize: 11,
+                            fontWeight: FontWeight.bold,
+                            color: Colors.black,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 12),
+            StreamBuilder<List<GroupModel>>(
+              stream: ref
+                  .watch(groupControllerProvider)
+                  .getSubGroupsStream(group.groupId),
+              builder: (context, snapshot) {
+                final allSubGroups = snapshot.data ?? [];
+
+                if (snapshot.connectionState == ConnectionState.waiting &&
+                    allSubGroups.isEmpty) {
+                  return const Padding(
+                    padding: EdgeInsets.symmetric(vertical: 12),
+                    child: Center(
+                        child: CircularProgressIndicator(strokeWidth: 2)),
+                  );
+                }
+
+                if (allSubGroups.isEmpty) {
+                  return Padding(
+                    padding: const EdgeInsets.symmetric(vertical: 8),
+                    child: Center(
+                      child: Text(
+                        'No sub-groups yet. Tap "+ Wife" or "+ Fuck Toy" to create one.',
+                        style: TextStyle(
+                          fontSize: 12.5,
+                          color: Colors.white.withOpacity(0.5),
+                        ),
+                      ),
+                    ),
+                  );
+                }
+
+                final wives = allSubGroups
+                    .where((g) => !g.isFuckToySubGroup)
+                    .toList();
+                final fuckToys = allSubGroups
+                    .where((g) => g.isFuckToySubGroup)
+                    .toList();
+
+                return Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    if (wives.isNotEmpty) ...[
+                      Padding(
+                        padding: const EdgeInsets.only(bottom: 6),
+                        child: Row(
+                          children: [
+                            Icon(Icons.favorite_rounded,
+                                size: 13, color: _accentColor),
+                            const SizedBox(width: 5),
+                            Text(
+                              'Wives (${wives.length})',
+                              style: TextStyle(
+                                fontSize: 12,
+                                fontWeight: FontWeight.bold,
+                                color: _accentColor,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                      ...wives.map((w) => _buildSubGroupTile(w, _accentColor)),
+                    ],
+                    if (fuckToys.isNotEmpty) ...[
+                      Padding(
+                        padding: EdgeInsets.only(
+                          top: wives.isNotEmpty ? 8 : 0,
+                          bottom: 6,
+                        ),
+                        child: const Row(
+                          children: [
+                            Icon(Icons.local_fire_department_rounded,
+                                size: 14, color: Color(0xFFE040FB)),
+                            SizedBox(width: 5),
+                            Text(
+                              'Fuck Toys',
+                              style: TextStyle(
+                                fontSize: 12,
+                                fontWeight: FontWeight.bold,
+                                color: Color(0xFFE040FB),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                      ...fuckToys.map((ft) =>
+                          _buildSubGroupTile(ft, Colors.purpleAccent)),
+                    ],
+                  ],
+                );
+              },
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildSubGroupTile(GroupModel subGroup, Color tileAccent) {
+    return Container(
+      margin: const EdgeInsets.only(bottom: 8),
+      decoration: BoxDecoration(
+        color: Colors.black26,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(
+          color: tileAccent.withOpacity(0.25),
+          width: 0.8,
+        ),
+      ),
+      child: ListTile(
+        contentPadding: const EdgeInsets.symmetric(
+          horizontal: 10,
+          vertical: 2,
+        ),
+        leading: Container(
+          decoration: BoxDecoration(
+            shape: BoxShape.circle,
+            border: Border.all(
+              color: tileAccent.withOpacity(0.6),
+              width: 1.5,
+            ),
+          ),
+          child: CircleAvatar(
+            radius: 20,
+            backgroundImage: subGroup.groupPic.isNotEmpty
+                ? NetworkImage(subGroup.groupPic)
+                : null,
+            backgroundColor: Colors.grey[850],
+            child: subGroup.groupPic.isEmpty
+                ? const Icon(Icons.person, color: Colors.white, size: 20)
+                : null,
+          ),
+        ),
+        title: QueendomEmblemHelper.buildRichTitle(
+          title: subGroup.nameWithPosition,
+          family: subGroup.family,
+          fallbackFamily: 'Main',
+          style: const TextStyle(
+            fontSize: 14,
+            fontWeight: FontWeight.w600,
+            color: Colors.white,
+          ),
+          emblemSize: 16,
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+        ),
+        subtitle: Text(
+          '${subGroup.membersUid.length} members',
+          style: TextStyle(
+            fontSize: 11.5,
+            color: Colors.white.withOpacity(0.6),
+          ),
+        ),
+        trailing: Icon(
+          Icons.chat_bubble_outline_rounded,
+          size: 18,
+          color: tileAccent,
+        ),
+        onTap: () {
+          Navigator.push(
+            context,
+            MaterialPageRoute(
+              builder: (_) => GroupChatScreen(
+                color: widget.color,
+                groupPic: subGroup.groupPic,
+                chatBackgroundUrl: subGroup.chatBackgroundUrl,
+                name: subGroup.nameWithPosition,
+                groupId: subGroup.groupId,
+                fcmToken: List<String>.from(subGroup.fcmTokens),
+                membersUid: List<String>.from(subGroup.membersUid),
+                wish: subGroup.wish,
+                queendom: subGroup.queendom,
+                type: widget.queendom == 'Queen Pooja'
+                    ? 'queenPooja'
+                    : widget.queendom == 'Queen Rashmika'
+                        ? 'queenRashmika'
+                        : 'others',
+              ),
+            ),
+          );
+        },
       ),
     );
   }
@@ -768,10 +1117,79 @@ class _GroupHeroHeader extends StatelessWidget {
     required this.accentColor,
   });
 
+  Widget _buildProfileEmblemBadge(BuildContext context) {
+    final familyBadge = QueendomFamilyEmblemHelper.buildFamilyEmblemBadge(
+      family: group?.family,
+      fallbackText: group?.effectiveLivingPlace,
+      accentColor: accentColor,
+      size: 26,
+    );
+    if (familyBadge != null) return familyBadge;
+
+    final position = group?.position;
+    final hasPosition =
+        position != null && position.isNotEmpty && position != 'None';
+    final livingPlaceAsset = group?.effectiveLivingPlace != null
+        ? QueendomEmblemHelper.getAssetFromLivingPlace(group!.effectiveLivingPlace)
+        : null;
+
+    if (hasPosition || livingPlaceAsset != null) {
+      return Container(
+        padding: const EdgeInsets.all(4),
+        decoration: BoxDecoration(
+          color: const Color(0xFF141322),
+          shape: BoxShape.circle,
+          border: Border.all(
+            color: accentColor.withOpacity(0.95),
+            width: 2.2,
+          ),
+          boxShadow: [
+            BoxShadow(
+              color: accentColor.withOpacity(0.55),
+              blurRadius: 10,
+              spreadRadius: 1.5,
+            ),
+            BoxShadow(
+              color: Colors.black.withOpacity(0.7),
+              blurRadius: 5,
+              offset: const Offset(0, 2),
+            ),
+          ],
+        ),
+        child: hasPosition
+            ? QueendomEmblemWidget(
+                position: position,
+                size: 26,
+              )
+            : Image.asset(
+                livingPlaceAsset!,
+                width: 26,
+                height: 26,
+                fit: BoxFit.contain,
+              ),
+      );
+    }
+
+    return Container(
+      padding: const EdgeInsets.all(5),
+      decoration: BoxDecoration(
+        color: accentColor,
+        shape: BoxShape.circle,
+        border: Border.all(color: backgroundColor, width: 2),
+      ),
+      child: const Icon(
+        Icons.zoom_in_rounded,
+        color: Colors.white,
+        size: 14,
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return Stack(
       fit: StackFit.expand,
+      clipBehavior: Clip.none,
       children: [
         if (groupPic.isNotEmpty)
           CachedNetworkImage(
@@ -830,112 +1248,131 @@ class _GroupHeroHeader extends StatelessWidget {
                     );
                   }
                 },
-                child: Stack(
-                  alignment: Alignment.center,
-                  children: [
+                child: RoyalAvatarDecoration(
+                  avatarRadius: 50,
+                  position: group?.position,
+                  livingPlace: group?.effectiveLivingPlace,
+                  accentColor: accentColor,
+                  perchOutside: true,
+                  badge: _buildProfileEmblemBadge(context),
+                  child: Hero(
+                    tag: 'group_$groupId',
+                    child: CircleAvatar(
+                      radius: 50,
+                      backgroundImage: groupPic.isNotEmpty
+                          ? NetworkImage(groupPic)
+                          : null,
+                      backgroundColor: Colors.grey[800],
+                      child: groupPic.isEmpty
+                          ? const Icon(
+                              Icons.group,
+                              color: Colors.white,
+                              size: 40,
+                            )
+                          : null,
+                    ),
+                  ),
+                ),
+              ),
+              const SizedBox(height: 12),
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 20),
+                child: QueendomEmblemHelper.buildRichTitle(
+                  title: name,
+                  family: group?.family,
+                  fallbackFamily: 'Main',
+                  textAlign: TextAlign.center,
+                  style: const TextStyle(
+                    fontSize: 20,
+                    fontWeight: FontWeight.w700,
+                    color: Colors.white,
+                    letterSpacing: 0.3,
+                    shadows: [
+                      Shadow(
+                        color: Colors.black54,
+                        blurRadius: 8,
+                        offset: Offset(0, 2),
+                      ),
+                    ],
+                  ),
+                  emblemSize: 24,
+                  maxLines: 3,
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ),
+              const SizedBox(height: 8),
+              Wrap(
+                alignment: WrapAlignment.center,
+                spacing: 8,
+                runSpacing: 4,
+                children: [
+                  if (group?.family != null &&
+                      group!.family!.isNotEmpty &&
+                      group!.family != 'None')
                     Container(
-                      width: 108,
-                      height: 108,
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 10,
+                        vertical: 5,
+                      ),
                       decoration: BoxDecoration(
-                        shape: BoxShape.circle,
+                        color: accentColor.withOpacity(0.18),
+                        borderRadius: BorderRadius.circular(20),
                         border: Border.all(
-                          color: accentColor.withOpacity(0.7),
-                          width: 2.5,
+                          color: accentColor.withOpacity(0.55),
+                          width: 0.8,
                         ),
-                        boxShadow: [
-                          BoxShadow(
-                            color: accentColor.withOpacity(0.3),
-                            blurRadius: 20,
-                            spreadRadius: 2,
+                      ),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          QueendomFamilyEmblemWidget(
+                            family: group!.family,
+                            size: 15,
+                          ),
+                          const SizedBox(width: 5),
+                          Text(
+                            '${group!.family} Family',
+                            style: TextStyle(
+                              fontSize: 12,
+                              fontWeight: FontWeight.w600,
+                              color: accentColor,
+                            ),
                           ),
                         ],
                       ),
                     ),
-                    Hero(
-                      tag: 'group_$groupId',
-                      child: CircleAvatar(
-                        radius: 50,
-                        backgroundImage: groupPic.isNotEmpty
-                            ? NetworkImage(groupPic)
-                            : null,
-                        backgroundColor: Colors.grey[800],
-                        child: groupPic.isEmpty
-                            ? const Icon(
-                                Icons.group,
-                                color: Colors.white,
-                                size: 40,
-                              )
-                            : null,
+                  Container(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 14,
+                      vertical: 5,
+                    ),
+                    decoration: BoxDecoration(
+                      color: accentColor.withOpacity(0.15),
+                      borderRadius: BorderRadius.circular(20),
+                      border: Border.all(
+                        color: accentColor.withOpacity(0.5),
+                        width: 0.8,
                       ),
                     ),
-                    Positioned(
-                      bottom: 4,
-                      right: 4,
-                      child: Container(
-                        padding: const EdgeInsets.all(5),
-                        decoration: BoxDecoration(
-                          color: accentColor,
-                          shape: BoxShape.circle,
-                          border: Border.all(color: backgroundColor, width: 2),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(Icons.group, color: accentColor, size: 14),
+                        const SizedBox(width: 6),
+                        Text(
+                          '${group?.membersUid.length ?? 0} members',
+                          style: TextStyle(
+                            fontSize: 12,
+                            fontWeight: FontWeight.w500,
+                            color: accentColor,
+                          ),
                         ),
-                        child: const Icon(
-                          Icons.zoom_in_rounded,
-                          color: Colors.white,
-                          size: 12,
-                        ),
-                      ),
+                      ],
                     ),
-                  ],
-                ),
-              ),
-              const SizedBox(height: 12),
-              Text(
-                name,
-                textAlign: TextAlign.center,
-                style: const TextStyle(
-                  fontSize: 22,
-                  fontWeight: FontWeight.w700,
-                  color: Colors.white,
-                  letterSpacing: 0.3,
-                  shadows: [
-                    Shadow(
-                      color: Colors.black54,
-                      blurRadius: 8,
-                      offset: Offset(0, 2),
-                    ),
-                  ],
-                ),
-              ),
-              const SizedBox(height: 8),
-              Container(
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 14,
-                  vertical: 5,
-                ),
-                decoration: BoxDecoration(
-                  color: accentColor.withOpacity(0.15),
-                  borderRadius: BorderRadius.circular(20),
-                  border: Border.all(
-                    color: accentColor.withOpacity(0.5),
-                    width: 0.8,
                   ),
-                ),
-                child: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Icon(Icons.group, color: accentColor, size: 14),
-                    const SizedBox(width: 6),
-                    Text(
-                      '${group?.membersUid.length ?? 0} members',
-                      style: TextStyle(
-                        fontSize: 12,
-                        fontWeight: FontWeight.w500,
-                        color: accentColor,
-                      ),
-                    ),
-                  ],
-                ),
+                ],
               ),
+
             ],
           ),
         ),
@@ -1027,13 +1464,14 @@ class _DetailRow extends StatelessWidget {
                   ),
                 ),
                 const SizedBox(height: 3),
-                Text(
-                  value,
+                QueendomEmblemHelper.buildRichTitle(
+                  title: value,
                   style: const TextStyle(
                     fontSize: 14,
                     color: Colors.white,
                     fontWeight: FontWeight.w500,
                   ),
+                  emblemSize: 18,
                 ),
               ],
             ),
@@ -1292,21 +1730,26 @@ class _MediaPageViewerState extends State<_MediaPageViewer> {
         bottomNavigationBar: widget.messages.length > 1
             ? Container(
                 color: Colors.black,
-                padding: const EdgeInsets.symmetric(vertical: 14),
-                child: Row(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: List.generate(
-                    widget.messages.length.clamp(0, 20),
-                    (i) => AnimatedContainer(
-                      duration: const Duration(milliseconds: 200),
-                      margin: const EdgeInsets.symmetric(horizontal: 3),
-                      width: _currentIndex == i ? 20 : 6,
-                      height: 6,
-                      decoration: BoxDecoration(
-                        borderRadius: BorderRadius.circular(3),
-                        color: _currentIndex == i
-                            ? widget.accentColor
-                            : Colors.grey[700],
+                child: SafeArea(
+                  top: false,
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(vertical: 14),
+                    child: Row(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: List.generate(
+                        widget.messages.length.clamp(0, 20),
+                        (i) => AnimatedContainer(
+                          duration: const Duration(milliseconds: 200),
+                          margin: const EdgeInsets.symmetric(horizontal: 3),
+                          width: _currentIndex == i ? 20 : 6,
+                          height: 6,
+                          decoration: BoxDecoration(
+                            borderRadius: BorderRadius.circular(3),
+                            color: _currentIndex == i
+                                ? widget.accentColor
+                                : Colors.grey[700],
+                          ),
+                        ),
                       ),
                     ),
                   ),

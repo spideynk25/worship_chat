@@ -15,7 +15,6 @@ import 'package:worship_chat/common/utils/utils.dart';
 import 'package:worship_chat/common/widgets/loader.dart';
 import 'package:worship_chat/features/auth/controller/auth_controller.dart';
 import 'package:worship_chat/features/bookmark/controller/bookmark_controller.dart';
-import 'package:worship_chat/features/chat/screens/ai_magic_studio_screen.dart';
 import 'package:worship_chat/features/group/controller/group_gallery_controller.dart';
 import 'package:worship_chat/features/group/screens/slide_show_screen.dart';
 import 'package:worship_chat/features/chat/widgets/forward_message_sheet.dart';
@@ -104,7 +103,7 @@ class _GroupGalleryScreenState extends ConsumerState<GroupGalleryScreen>
 
   Future<void> _pickImages() async {
     try {
-      final picked = await ImagePicker().pickMultiImage(imageQuality: 85);
+      final picked = await ImagePicker().pickMultiImage();
       if (picked.isEmpty) return;
       final files = picked.map((x) => File(x.path)).toList();
       _showUploadSheet(files);
@@ -250,17 +249,49 @@ class _GroupGalleryScreenState extends ConsumerState<GroupGalleryScreen>
       title: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text(
-            'Gallery',
-            style: TextStyle(
-              color: _accent,
-              fontWeight: FontWeight.bold,
-              fontSize: 18,
-            ),
+          Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text(
+                'Gallery',
+                style: TextStyle(
+                  color: _accent,
+                  fontWeight: FontWeight.bold,
+                  fontSize: 18,
+                ),
+              ),
+              if (images.isNotEmpty) ...[
+                const SizedBox(width: 8),
+                Container(
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 7, vertical: 1.5),
+                  decoration: BoxDecoration(
+                    color: _accent.withOpacity(0.18),
+                    borderRadius: BorderRadius.circular(10),
+                    border: Border.all(
+                      color: _accent.withOpacity(0.35),
+                      width: 1,
+                    ),
+                  ),
+                  child: Text(
+                    '${images.length}',
+                    style: TextStyle(
+                      color: _accent,
+                      fontSize: 11,
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                ),
+              ],
+            ],
           ),
           Text(
-            widget.groupName,
+            images.isEmpty
+                ? widget.groupName
+                : '${widget.groupName} • ${images.length} ${images.length == 1 ? 'photo' : 'photos'}',
             style: TextStyle(color: Colors.grey[400], fontSize: 12),
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
           ),
         ],
       ),
@@ -379,50 +410,44 @@ class _FullscreenViewerState extends ConsumerState<_FullscreenViewer> {
 
     try {
       final img = widget.images[_index];
+      final originalUrl = getOriginalHighQualityImageUrl(img.imageUrl);
+      final ext = getImageExtensionFromUrl(originalUrl);
       final dir = await getTemporaryDirectory();
-      final filePath = '${dir.path}/${img.imageId}.jpg';
+      final filePath =
+          '${dir.path}/${img.imageId}_${DateTime.now().millisecondsSinceEpoch}.$ext';
 
-      await Dio().download(img.imageUrl, filePath);
+      final dio = Dio();
+      await dio.download(
+        originalUrl,
+        filePath,
+        options: Options(
+          responseType: ResponseType.bytes,
+          followRedirects: true,
+        ),
+      );
       final saved = await GallerySaver.saveImage(
         filePath,
         albumName: 'Worship Chat', // ← custom album, not DCIM
         toDcim: false,
       );
-      await File(filePath).delete();
+      final tempFile = File(filePath);
+      if (await tempFile.exists()) {
+        await tempFile.delete();
+      }
 
       if (mounted) {
         _snack(
-          saved == true ? '✅ Saved to Worship Chat album' : '⚠️ Could not save',
+          saved == true
+              ? '✅ Saved in high quality to Worship Chat album'
+              : '⚠️ Could not save',
           saved == true ? Colors.green[700]! : Colors.redAccent,
         );
       }
-    } catch (_) {
-      if (mounted) _snack('⚠️ Download failed', Colors.redAccent);
+    } catch (e) {
+      log('Download error: $e');
+      if (mounted) _snack('⚠️ Download failed: $e', Colors.redAccent);
     } finally {
       if (mounted) setState(() => _isDownloading = false);
-    }
-  }
-
-  // ── AI Magic Studio ────────────────────────────────────────────────────────
-
-  Future<void> _openMagicStudio() async {
-    try {
-      final img = widget.images[_index];
-      final dir = await getTemporaryDirectory();
-      final filePath = '${dir.path}/magic_${img.imageId}.jpg';
-      final file = File(filePath);
-      if (!await file.exists()) {
-        await Dio().download(img.imageUrl, filePath);
-      }
-      if (!mounted) return;
-      await Navigator.push(
-        context,
-        MaterialPageRoute(
-          builder: (context) => AiMagicStudioScreen(initialImage: file),
-        ),
-      );
-    } catch (e) {
-      if (mounted) _snack('⚠️ Failed to open image in AI Studio: $e');
     }
   }
 
@@ -479,7 +504,7 @@ class _FullscreenViewerState extends ConsumerState<_FullscreenViewer> {
             backgroundDecoration: const BoxDecoration(color: Colors.black),
             builder: (context, i) => PhotoViewGalleryPageOptions(
               imageProvider: CachedNetworkImageProvider(
-                widget.images[i].imageUrl,
+                getOriginalHighQualityImageUrl(widget.images[i].imageUrl),
               ),
               minScale: PhotoViewComputedScale.contained,
               maxScale: PhotoViewComputedScale.covered * 4,
@@ -528,9 +553,9 @@ class _FullscreenViewerState extends ConsumerState<_FullscreenViewer> {
                           title: Column(
                             crossAxisAlignment: CrossAxisAlignment.start,
                             children: [
-                              const Text(
-                                'Gallery',
-                                style: TextStyle(
+                              Text(
+                                '${_index + 1} of ${widget.images.length}',
+                                style: const TextStyle(
                                   color: Colors.white,
                                   fontSize: 14,
                                   fontWeight: FontWeight.bold,
@@ -542,6 +567,8 @@ class _FullscreenViewerState extends ConsumerState<_FullscreenViewer> {
                                   color: Colors.white70,
                                   fontSize: 11,
                                 ),
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
                               ),
                             ],
                           ),
@@ -583,20 +610,10 @@ class _FullscreenViewerState extends ConsumerState<_FullscreenViewer> {
                                       Icons.download_rounded,
                                       color: Colors.white,
                                     ),
-                              tooltip: 'Save photo',
+                              tooltip: 'Save photo (HD)',
                               onPressed: _isDownloading
                                   ? null
                                   : _downloadCurrent,
-                            ),
-
-                            // ── AI Magic Studio ─────────────────────
-                            IconButton(
-                              icon: const Icon(
-                                Icons.auto_fix_high_rounded,
-                                color: Colors.white,
-                              ),
-                              tooltip: 'AI Magic Studio',
-                              onPressed: _openMagicStudio,
                             ),
 
                             // ── Forward ────────────────────────────
@@ -773,11 +790,38 @@ class _UploadSheet extends StatelessWidget {
                   Icon(Icons.photo_library_outlined, color: accentColor),
                   const SizedBox(width: 10),
                   Text(
-                    'Upload ${files.length} image${files.length == 1 ? '' : 's'}',
+                    'Upload ${files.length} photo${files.length == 1 ? '' : 's'}',
                     style: const TextStyle(
                       fontSize: 16,
                       fontWeight: FontWeight.bold,
                       color: Colors.white,
+                    ),
+                  ),
+                  const Spacer(),
+                  Container(
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                    decoration: BoxDecoration(
+                      color: accentColor.withValues(alpha: 0.18),
+                      borderRadius: BorderRadius.circular(6),
+                      border: Border.all(
+                        color: accentColor.withValues(alpha: 0.4),
+                      ),
+                    ),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(Icons.hd_outlined, size: 14, color: accentColor),
+                        const SizedBox(width: 4),
+                        Text(
+                          'Original HD',
+                          style: TextStyle(
+                            color: accentColor,
+                            fontSize: 11,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                      ],
                     ),
                   ),
                 ],
@@ -935,107 +979,146 @@ class _GalleryGrid extends StatelessWidget {
       return _EmptyGallery(accentColor: accentColor, onUpload: () {});
     }
 
-    return GridView.builder(
-      padding: const EdgeInsets.all(3),
-      gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-        crossAxisCount: 3,
-        crossAxisSpacing: 3,
-        mainAxisSpacing: 3,
+    return CustomScrollView(
+      physics: const BouncingScrollPhysics(
+        parent: AlwaysScrollableScrollPhysics(),
       ),
-      itemCount: images.length,
-      itemBuilder: (context, index) {
-        final img = images[index];
-        return GestureDetector(
-          onTap: () => Navigator.push(
-            context,
-            MaterialPageRoute(
-              builder: (_) => _FullscreenViewer(
-                images: images,
-                initialIndex: index,
-                accentColor: accentColor,
-                currentUserId: currentUserId,
-                groupName: groupName,
-                groupId: groupId,
-                onDelete: onDelete,
-              ),
-            ),
+      slivers: [
+        SliverPadding(
+          padding: EdgeInsets.fromLTRB(
+            3,
+            3,
+            3,
+            MediaQuery.paddingOf(context).bottom + 80,
           ),
-          onLongPress: () {
-            showModalBottomSheet(
-              context: context,
-              backgroundColor: const Color(0xFF1B1728),
-              shape: const RoundedRectangleBorder(
-                borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
-              ),
-              builder: (ctx) => SafeArea(
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Container(
-                      margin: const EdgeInsets.only(top: 8, bottom: 4),
-                      width: 36,
-                      height: 4,
-                      decoration: BoxDecoration(
-                        color: Colors.white24,
-                        borderRadius: BorderRadius.circular(2),
+          sliver: SliverGrid(
+            gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+              crossAxisCount: 3,
+              crossAxisSpacing: 3,
+              mainAxisSpacing: 3,
+            ),
+            delegate: SliverChildBuilderDelegate(
+              (context, index) {
+                final img = images[index];
+                return GestureDetector(
+                  onTap: () => Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                      builder: (_) => _FullscreenViewer(
+                        images: images,
+                        initialIndex: index,
+                        accentColor: accentColor,
+                        currentUserId: currentUserId,
+                        groupName: groupName,
+                        groupId: groupId,
+                        onDelete: onDelete,
                       ),
                     ),
-                    ListTile(
-                      leading: const Icon(Icons.forward_rounded, color: tabColor),
-                      title: const Text('Forward Photo',
-                          style: TextStyle(color: Colors.white)),
-                      subtitle: const Text(
-                          'Send to chat or another gallery',
-                          style: TextStyle(color: Colors.white54, fontSize: 12)),
-                      onTap: () {
-                        Navigator.pop(ctx);
-                        ForwardMessageSheet.show(
-                          context,
-                          ForwardMessagePayload(
-                            text: img.caption ?? '',
-                            messageType: 'image',
-                            fileMessageData: img.imageUrl,
-                            caption: img.caption,
-                            isFromGallery: true,
-                            sourceGroupId: groupId,
-                            sourceGroupName: groupName,
-                          ),
-                        );
-                      },
-                    ),
-                    ListTile(
-                      leading: Icon(Icons.slideshow_rounded, color: accentColor),
-                      title: const Text('Start Slideshow',
-                          style: TextStyle(color: Colors.white)),
-                      onTap: () {
-                        Navigator.pop(ctx);
-                        Navigator.push(
-                          context,
-                          MaterialPageRoute(
-                            builder: (_) => SlideshowScreen(
-                              images: images,
-                              initialIndex: index,
-                              accentColor: accentColor,
-                              groupName: groupName,
+                  ),
+                  onLongPress: () {
+                    showModalBottomSheet(
+                      context: context,
+                      backgroundColor: const Color(0xFF1B1728),
+                      shape: const RoundedRectangleBorder(
+                        borderRadius:
+                            BorderRadius.vertical(top: Radius.circular(20)),
+                      ),
+                      builder: (ctx) => SafeArea(
+                        child: Column(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Container(
+                              margin: const EdgeInsets.only(top: 8, bottom: 4),
+                              width: 36,
+                              height: 4,
+                              decoration: BoxDecoration(
+                                color: Colors.white24,
+                                borderRadius: BorderRadius.circular(2),
+                              ),
                             ),
-                          ),
-                        );
-                      },
+                            ListTile(
+                              leading: const Icon(Icons.forward_rounded,
+                                  color: tabColor),
+                              title: const Text('Forward Photo',
+                                  style: TextStyle(color: Colors.white)),
+                              subtitle: const Text(
+                                  'Send to chat or another gallery',
+                                  style: TextStyle(
+                                      color: Colors.white54, fontSize: 12)),
+                              onTap: () {
+                                Navigator.pop(ctx);
+                                ForwardMessageSheet.show(
+                                  context,
+                                  ForwardMessagePayload(
+                                    text: img.caption ?? '',
+                                    messageType: 'image',
+                                    fileMessageData: img.imageUrl,
+                                    caption: img.caption,
+                                    isFromGallery: true,
+                                    sourceGroupId: groupId,
+                                    sourceGroupName: groupName,
+                                  ),
+                                );
+                              },
+                            ),
+                            ListTile(
+                              leading:
+                                  Icon(Icons.slideshow_rounded, color: accentColor),
+                              title: const Text('Start Slideshow',
+                                  style: TextStyle(color: Colors.white)),
+                              onTap: () {
+                                Navigator.pop(ctx);
+                                Navigator.push(
+                                  context,
+                                  MaterialPageRoute(
+                                    builder: (_) => SlideshowScreen(
+                                      images: images,
+                                      initialIndex: index,
+                                      accentColor: accentColor,
+                                      groupName: groupName,
+                                    ),
+                                  ),
+                                );
+                              },
+                            ),
+                          ],
+                        ),
+                      ),
+                    );
+                  },
+                  child: Hero(
+                    tag: 'gallery_${img.imageId}',
+                    child: CachedNetworkImage(
+                      imageUrl: img.imageUrl,
+                      fit: BoxFit.cover,
                     ),
-                  ],
-                ),
-              ),
-            );
-          },
-          child: Hero(
-            tag: 'gallery_${img.imageId}',
-            child: CachedNetworkImage(
-              imageUrl: img.imageUrl,
-              fit: BoxFit.cover,
+                  ),
+                );
+              },
+              childCount: images.length,
             ),
           ),
-        );
-      },
+        ),
+        SliverToBoxAdapter(
+          child: Padding(
+            padding: const EdgeInsets.symmetric(vertical: 24.0),
+            child: Center(
+              child: Text(
+                '${images.length} ${images.length == 1 ? 'Photo' : 'Photos'}',
+                style: TextStyle(
+                  color: Colors.grey[500],
+                  fontSize: 13,
+                  fontWeight: FontWeight.w500,
+                  letterSpacing: 0.3,
+                ),
+              ),
+            ),
+          ),
+        ),
+        const SliverToBoxAdapter(
+          child: SizedBox(height: 70),
+        ),
+      ],
     );
   }
 }

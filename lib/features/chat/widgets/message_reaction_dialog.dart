@@ -655,9 +655,11 @@ class _ReactionDetailsSheetState extends State<_ReactionDetailsSheet> {
         color: Color(0xFF161424),
         borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
       ),
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
+      child: SafeArea(
+        top: false,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
           const SizedBox(height: 10),
           // Drag handle
           Center(
@@ -729,7 +731,8 @@ class _ReactionDetailsSheetState extends State<_ReactionDetailsSheet> {
           ),
         ],
       ),
-    );
+    ),
+  );
   }
 }
 

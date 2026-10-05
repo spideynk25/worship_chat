@@ -9,7 +9,6 @@ import 'package:worship_chat/colors.dart';
 import 'package:worship_chat/common/providers/message_reply_provider.dart';
 import 'package:worship_chat/common/utils/utils.dart';
 import 'package:worship_chat/common/widgets/camera_screen.dart';
-import 'package:worship_chat/features/chat/screens/ai_magic_studio_screen.dart';
 import 'package:worship_chat/features/chat/widgets/camera_permission_handler.dart';
 import 'package:worship_chat/features/chat/widgets/message_reply_preview.dart';
 import 'package:worship_chat/features/group/controller/group_controller.dart';
@@ -257,10 +256,13 @@ class _BottomChatFieldState extends ConsumerState<GroupBottomChatFieldWidget> {
             width: 1,
           ),
         ),
-        padding: const EdgeInsets.fromLTRB(20, 12, 20, 28),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
+        child: SafeArea(
+          top: false,
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(20, 12, 20, 24),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
             // Drag handle pill
             Container(
               width: 38,
@@ -353,7 +355,9 @@ class _BottomChatFieldState extends ConsumerState<GroupBottomChatFieldWidget> {
           ],
         ),
       ),
-    );
+    ),
+  ),
+);
   }
 
   Widget _buildMediaOptionItem({
@@ -509,61 +513,6 @@ class _BottomChatFieldState extends ConsumerState<GroupBottomChatFieldWidget> {
               ],
             ),
           ),
-          if (messageType == 'image' && imageFile is File) ...[
-            Material(
-              color: Colors.transparent,
-              child: InkWell(
-                onTap: () async {
-                  final edited = await Navigator.push<File>(
-                    context,
-                    MaterialPageRoute(
-                      builder: (context) => AiMagicStudioScreen(
-                        initialImage: imageFile as File,
-                      ),
-                    ),
-                  );
-                  if (edited != null && mounted) {
-                    setState(() {
-                      imageFile = edited;
-                    });
-                  }
-                },
-                borderRadius: BorderRadius.circular(16),
-                child: Container(
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 10,
-                    vertical: 6,
-                  ),
-                  decoration: BoxDecoration(
-                    gradient: const LinearGradient(
-                      colors: [Color(0xFF6C5CE7), Color(0xFFA29BFE)],
-                    ),
-                    borderRadius: BorderRadius.circular(16),
-                  ),
-                  child: const Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Icon(
-                        Icons.auto_fix_high_rounded,
-                        size: 14,
-                        color: Colors.white,
-                      ),
-                      SizedBox(width: 4),
-                      Text(
-                        'AI Edit',
-                        style: TextStyle(
-                          color: Colors.white,
-                          fontSize: 12,
-                          fontWeight: FontWeight.bold,
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-              ),
-            ),
-            const SizedBox(width: 8),
-          ],
           Material(
             color: Colors.transparent,
             child: InkWell(
@@ -701,6 +650,8 @@ class _BottomChatFieldState extends ConsumerState<GroupBottomChatFieldWidget> {
     final isShowMessageReply = messageReply != null;
 
     return SafeArea(
+      top: false,
+      bottom: true,
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
@@ -769,6 +720,11 @@ class _BottomChatFieldState extends ConsumerState<GroupBottomChatFieldWidget> {
                                 fontSize: 15,
                               ),
                               border: InputBorder.none,
+                              enabledBorder: InputBorder.none,
+                              focusedBorder: InputBorder.none,
+                              disabledBorder: InputBorder.none,
+                              errorBorder: InputBorder.none,
+                              focusedErrorBorder: InputBorder.none,
                               isCollapsed: true,
                               contentPadding: const EdgeInsets.only(
                                 left: 14,

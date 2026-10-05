@@ -346,6 +346,7 @@ class _HeroHeader extends StatelessWidget {
 
     return Stack(
       fit: StackFit.expand,
+      clipBehavior: Clip.none,
       children: [
         if (profilePic.isNotEmpty)
           CachedNetworkImage(
@@ -406,6 +407,7 @@ class _HeroHeader extends StatelessWidget {
                 },
                 child: Stack(
                   alignment: Alignment.center,
+                  clipBehavior: Clip.none,
                   children: [
                     Container(
                       width: 108,
@@ -437,8 +439,8 @@ class _HeroHeader extends StatelessWidget {
                       ),
                     ),
                     Positioned(
-                      bottom: 4,
-                      right: 4,
+                      bottom: 2,
+                      right: 2,
                       child: Container(
                         padding: const EdgeInsets.all(5),
                         decoration: BoxDecoration(
@@ -851,19 +853,24 @@ class _MediaPageViewerState extends State<_MediaPageViewer> {
         bottomNavigationBar: widget.messages.length > 1
             ? Container(
                 color: Colors.black,
-                padding: const EdgeInsets.symmetric(vertical: 14),
-                child: Row(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: List.generate(
-                    widget.messages.length.clamp(0, 20),
-                    (i) => AnimatedContainer(
-                      duration: const Duration(milliseconds: 200),
-                      margin: const EdgeInsets.symmetric(horizontal: 3),
-                      width: _currentIndex == i ? 20 : 6,
-                      height: 6,
-                      decoration: BoxDecoration(
-                        borderRadius: BorderRadius.circular(3),
-                        color: _currentIndex == i ? tabColor : Colors.grey[700],
+                child: SafeArea(
+                  top: false,
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(vertical: 14),
+                    child: Row(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: List.generate(
+                        widget.messages.length.clamp(0, 20),
+                        (i) => AnimatedContainer(
+                          duration: const Duration(milliseconds: 200),
+                          margin: const EdgeInsets.symmetric(horizontal: 3),
+                          width: _currentIndex == i ? 20 : 6,
+                          height: 6,
+                          decoration: BoxDecoration(
+                            borderRadius: BorderRadius.circular(3),
+                            color: _currentIndex == i ? tabColor : Colors.grey[700],
+                          ),
+                        ),
                       ),
                     ),
                   ),

@@ -38,31 +38,51 @@ class MessageStatusIcon extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    Widget icon;
     switch (status) {
       case MessageDeliveryStatus.sending:
-        return Icon(
+        icon = Icon(
           Icons.access_time_rounded,
+          key: const ValueKey('status_sending'),
           size: size - 2,
           color: color ?? Colors.white60,
         );
+        break;
       case MessageDeliveryStatus.sent:
-        return Icon(
+        icon = Icon(
           Icons.done_rounded,
+          key: const ValueKey('status_sent'),
           size: size,
           color: color ?? Colors.white70,
         );
+        break;
       case MessageDeliveryStatus.delivered:
-        return Icon(
+        icon = Icon(
           Icons.done_all_rounded,
+          key: const ValueKey('status_delivered'),
           size: size + 1,
           color: color ?? Colors.white70,
         );
+        break;
       case MessageDeliveryStatus.seen:
-        return Icon(
+        icon = Icon(
           Icons.done_all_rounded,
+          key: const ValueKey('status_seen'),
           size: size + 1,
           color: const Color(0xFF38B6FF), // Iconic WhatsApp Cyan-Blue
         );
+        break;
     }
+
+    return AnimatedSwitcher(
+      duration: const Duration(milliseconds: 220),
+      switchInCurve: Curves.easeOutBack,
+      switchOutCurve: Curves.easeIn,
+      transitionBuilder: (child, animation) => ScaleTransition(
+        scale: animation,
+        child: FadeTransition(opacity: animation, child: child),
+      ),
+      child: icon,
+    );
   }
 }

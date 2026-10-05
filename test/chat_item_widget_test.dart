@@ -20,6 +20,7 @@ import 'package:worship_chat/models/chat_contact.dart';
 import 'package:worship_chat/models/user_model.dart';
 import 'package:worship_chat/features/chat/widgets/document_message_widget.dart';
 import 'package:worship_chat/features/chat/widgets/location_message_widget.dart';
+import 'package:worship_chat/features/chat/widgets/display_messages.dart';
 
 void main() {
   group('MessageDeliveryStatus tests', () {
@@ -692,6 +693,330 @@ void main() {
       expect(areListsEqual(listBefore, listBefore), isTrue);
     });
   });
+
+  group('Message Bubble Sending Animation tests', () {
+    testWidgets('MyMessageCard with isSending: true renders sending status icon and entrance animation',
+        (tester) async {
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: MyMessageCard(
+              message: 'Hello animated',
+              date: '10:00 AM',
+              messageType: 'text',
+              onLeftSwipe: () {},
+              repliedText: '',
+              username: 'User',
+              repliedMessageType: 'text',
+              isSeen: false,
+              isDelivered: false,
+              isSending: true,
+            ),
+          ),
+        ),
+      );
+
+      // Verify clock icon is rendered for sending state
+      expect(find.byKey(const ValueKey('status_sending')), findsOneWidget);
+
+      // Advance animation through entrance (280ms)
+      await tester.pump(const Duration(milliseconds: 140));
+      expect(find.text('Hello animated'), findsOneWidget);
+
+      await tester.pump(const Duration(milliseconds: 150));
+      expect(find.text('Hello animated'), findsOneWidget);
+    });
+
+    testWidgets('MyMessageCard transition from isSending: true to isSending: false triggers settle transition and updates status icon',
+        (tester) async {
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: MyMessageCard(
+              message: 'Sending then sent',
+              date: '10:00 AM',
+              messageType: 'text',
+              onLeftSwipe: () {},
+              repliedText: '',
+              username: 'User',
+              repliedMessageType: 'text',
+              isSeen: false,
+              isDelivered: false,
+              isSending: true,
+            ),
+          ),
+        ),
+      );
+
+      await tester.pump(const Duration(milliseconds: 280));
+      expect(find.byKey(const ValueKey('status_sending')), findsOneWidget);
+
+      // Update widget to isSending: false (sent)
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: MyMessageCard(
+              message: 'Sending then sent',
+              date: '10:00 AM',
+              messageType: 'text',
+              onLeftSwipe: () {},
+              repliedText: '',
+              username: 'User',
+              repliedMessageType: 'text',
+              isSeen: false,
+              isDelivered: false,
+              isSending: false,
+            ),
+          ),
+        ),
+      );
+
+      // Settle pop and icon transition (220ms)
+      await tester.pump(const Duration(milliseconds: 250));
+      expect(find.byKey(const ValueKey('status_sent')), findsOneWidget);
+    });
+
+    testWidgets('MyMessageCard with isSending: false renders immediately at full scale',
+        (tester) async {
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: MyMessageCard(
+              message: 'Old message',
+              date: '09:00 AM',
+              messageType: 'text',
+              onLeftSwipe: () {},
+              repliedText: '',
+              username: 'User',
+              repliedMessageType: 'text',
+              isSeen: true,
+              isDelivered: true,
+              isSending: false,
+            ),
+          ),
+        ),
+      );
+
+      await tester.pump();
+      expect(find.text('Old message'), findsOneWidget);
+      expect(find.byKey(const ValueKey('status_seen')), findsOneWidget);
+    });
+
+    testWidgets('DisplayMessages honors fixed mediaWidth and mediaHeight',
+        (tester) async {
+      await tester.pumpWidget(
+        const MaterialApp(
+          home: Scaffold(
+            body: DisplayMessages(
+              message: '',
+              messageType: 'image',
+              fileMessageData: 'https://example.com/test_image.jpg',
+              mediaWidth: 240.0,
+              mediaHeight: 220.0,
+            ),
+          ),
+        ),
+      );
+
+      await tester.pump();
+      final sizedBoxFinder = find.byWidgetPredicate(
+        (widget) =>
+            widget is SizedBox &&
+            widget.width == 240.0 &&
+            widget.height == 220.0,
+      );
+      expect(sizedBoxFinder, findsWidgets);
+    });
+
+    testWidgets('MyMessageCard renders captioned media with fixed width and caption text',
+        (tester) async {
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: MyMessageCard(
+              message: 'Check out this sunset!',
+              date: '06:30 PM',
+              messageType: 'image',
+              fileMessageData: 'https://example.com/sunset.jpg',
+              onLeftSwipe: () {},
+              repliedText: '',
+              username: 'User',
+              repliedMessageType: 'text',
+              isSeen: false,
+              isDelivered: true,
+              isSending: false,
+            ),
+          ),
+        ),
+      );
+
+      await tester.pump();
+      expect(find.text('Check out this sunset!'), findsOneWidget);
+      expect(find.text('06:30 PM'), findsOneWidget);
+    });
+
+    testWidgets('SenderMessageCard renders captioned media with fixed width and caption text',
+        (tester) async {
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: SenderMessageCard(
+              message: 'Watch this celebration!',
+              date: '07:15 PM',
+              messageType: 'video',
+              fileMessageData: 'https://example.com/video.mp4',
+              onRightSwipe: () {},
+              repliedText: '',
+              username: 'Friend',
+              repliedMessageType: 'text',
+            ),
+          ),
+        ),
+      );
+
+      await tester.pump();
+      expect(find.text('Watch this celebration!'), findsOneWidget);
+      expect(find.text('07:15 PM'), findsOneWidget);
+    });
+
+    testWidgets('MediaPreviewWidget builds successfully for fullscreen preview',
+        (tester) async {
+      await tester.pumpWidget(
+        const MaterialApp(
+          home: Scaffold(
+            body: MediaPreviewWidget(
+              mediaType: 'image',
+              mediaUrl: 'https://example.com/highres.jpg',
+              showAppBar: true,
+            ),
+          ),
+        ),
+      );
+
+      // Pump initial frame to verify widget tree construction
+      await tester.pump(const Duration(milliseconds: 50));
+      expect(find.byType(MediaPreviewWidget), findsOneWidget);
+    });
+
+    testWidgets('SenderMessageCard with isNewlyReceived: true plays entrance animation smoothly',
+        (tester) async {
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: SenderMessageCard(
+              message: 'Incoming message!',
+              date: '10:05 AM',
+              messageType: 'text',
+              onRightSwipe: () {},
+              repliedText: '',
+              username: 'Sender',
+              repliedMessageType: 'text',
+              isNewlyReceived: true,
+            ),
+          ),
+        ),
+      );
+
+      // Verify text is present during animation
+      await tester.pump(const Duration(milliseconds: 140));
+      expect(find.text('Incoming message!'), findsOneWidget);
+
+      // Complete 280ms entrance animation
+      await tester.pump(const Duration(milliseconds: 150));
+      expect(find.text('Incoming message!'), findsOneWidget);
+    });
+
+    testWidgets('SenderMessageCard with isNewlyReceived: false renders immediately',
+        (tester) async {
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: SenderMessageCard(
+              message: 'Old received message',
+              date: '08:00 AM',
+              messageType: 'text',
+              onRightSwipe: () {},
+              repliedText: '',
+              username: 'Sender',
+              repliedMessageType: 'text',
+              isNewlyReceived: false,
+            ),
+          ),
+        ),
+      );
+
+      await tester.pump();
+      expect(find.text('Old received message'), findsOneWidget);
+    });
+
+    testWidgets('MyMessageCard pure media (image without caption) locks width to mediaWidth',
+        (tester) async {
+      await tester.pumpWidget(
+        MaterialApp(
+          home: MediaQuery(
+            data: const MediaQueryData(size: Size(360, 780)),
+            child: Scaffold(
+              body: MyMessageCard(
+                message: '',
+                date: '06:46 PM',
+                messageType: 'image',
+                fileMessageData: 'https://example.com/portrait.jpg',
+                onLeftSwipe: () {},
+                repliedText: '',
+                username: 'User',
+                repliedMessageType: 'text',
+                isSeen: true,
+                isDelivered: true,
+                isSending: false,
+              ),
+            ),
+          ),
+        ),
+      );
+
+      await tester.pump();
+
+      // Screen width 360: (360 * 0.70).clamp(220.0, 275.0) -> ~252.0
+      final sizedBoxFinder = find.byWidgetPredicate(
+        (w) => w is SizedBox && w.width != null && (w.width! - 252.0).abs() < 0.1,
+      );
+      expect(sizedBoxFinder, findsWidgets);
+      expect(find.text('06:46 PM'), findsOneWidget);
+    });
+
+    testWidgets('SenderMessageCard pure media (image without caption) locks width to mediaWidth',
+        (tester) async {
+      await tester.pumpWidget(
+        MaterialApp(
+          home: MediaQuery(
+            data: const MediaQueryData(size: Size(360, 780)),
+            child: Scaffold(
+              body: SenderMessageCard(
+                message: '',
+                date: '06:46 PM',
+                messageType: 'image',
+                fileMessageData: 'https://example.com/portrait.jpg',
+                onRightSwipe: () {},
+                repliedText: '',
+                username: 'Friend',
+                repliedMessageType: 'text',
+              ),
+            ),
+          ),
+        ),
+      );
+
+      await tester.pump();
+
+      // Screen width 360: (360 * 0.70).clamp(220.0, 275.0) -> ~252.0
+      final sizedBoxFinder = find.byWidgetPredicate(
+        (w) => w is SizedBox && w.width != null && (w.width! - 252.0).abs() < 0.1,
+      );
+      expect(sizedBoxFinder, findsWidgets);
+      expect(find.text('06:46 PM'), findsOneWidget);
+    });
+  });
 }
+
 
 

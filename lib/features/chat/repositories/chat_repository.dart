@@ -39,6 +39,7 @@ final currentUserProvider = FutureProvider<User?>((ref) async {
 class ChatRepository {
   final FirebaseFirestore fireStore;
   final FirebaseAuth auth;
+  final Map<String, List<void Function(List<OneToOneMessageModel>)>> _activeChatListeners = {};
 
   ChatRepository({required this.fireStore, required this.auth});
 
@@ -393,7 +394,14 @@ class ChatRepository {
           },
         );
 
+    // Register listener for instantaneous optimistic message dispatch
+    _activeChatListeners.putIfAbsent(localKey, () => []).add(emitIfChanged);
+
     controller.onCancel = () {
+      _activeChatListeners[localKey]?.remove(emitIfChanged);
+      if (_activeChatListeners[localKey]?.isEmpty ?? false) {
+        _activeChatListeners.remove(localKey);
+      }
       firestoreSubscription.cancel();
     };
 
@@ -1105,6 +1113,15 @@ class ChatRepository {
       }
       await box.put(localKey, messages);
       log('🕒 Saved optimistic sending message to Hive: ${message.messageId}');
+
+      // Immediately notify active chat listeners so the bubble appears in 0ms!
+      final listeners = _activeChatListeners[localKey];
+      if (listeners != null) {
+        final msgsCopy = List<OneToOneMessageModel>.from(messages);
+        for (final listener in List.from(listeners)) {
+          listener(msgsCopy);
+        }
+      }
     } catch (e) {
       log('❌ Error saving optimistic message to Hive: $e');
     }
@@ -1122,6 +1139,14 @@ class ChatRepository {
         final messages = _safeCastMessages(cachedData);
         messages.removeWhere((m) => m.isSending);
         await box.put(localKey, messages);
+
+        final listeners = _activeChatListeners[localKey];
+        if (listeners != null) {
+          final msgsCopy = List<OneToOneMessageModel>.from(messages);
+          for (final listener in List.from(listeners)) {
+            listener(msgsCopy);
+          }
+        }
       }
     } catch (_) {}
   }

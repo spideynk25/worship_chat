@@ -8,6 +8,12 @@ class AllUserScreen extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    return Scaffold(appBar: AppBar(), body: ContactList(isAllChats: true));
+    return Scaffold(
+      appBar: AppBar(),
+      body: const SafeArea(
+        top: false,
+        child: ContactList(isAllChats: true),
+      ),
+    );
   }
 }

@@ -49,11 +49,14 @@ class _TodoPageState extends ConsumerState<TodoPage> {
               right: BorderSide(color: dividerColor, width: 1.5),
             ),
           ),
-          padding: const EdgeInsets.symmetric(horizontal: 22, vertical: 20),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
+          child: SafeArea(
+            top: false,
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 22, vertical: 16),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
               Center(
                 child: Container(
                   width: 40,
@@ -249,7 +252,9 @@ class _TodoPageState extends ConsumerState<TodoPage> {
           ),
         ),
       ),
-    );
+    ),
+  ),
+);
   }
 
   Future<void> _confirmDeleteTodo(TodoModel todo) async {

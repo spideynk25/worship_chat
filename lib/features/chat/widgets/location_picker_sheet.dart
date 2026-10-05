@@ -94,11 +94,14 @@ class _LocationPickerSheetState extends State<LocationPickerSheet> {
           width: 1,
         ),
       ),
-      padding: const EdgeInsets.fromLTRB(20, 12, 20, 32),
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
+      child: SafeArea(
+        top: false,
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(20, 12, 20, 20),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
           // Drag handle pill
           Center(
             child: Container(
@@ -286,7 +289,9 @@ class _LocationPickerSheetState extends State<LocationPickerSheet> {
           ],
         ],
       ),
-    );
+    ),
+  ),
+);
   }
 
   Widget _buildOptionTile({

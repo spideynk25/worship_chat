@@ -33,8 +33,14 @@ class GroupController {
     String selectedFamily,
     String selectedPosition,
     File? groupProfilePic,
-    String type
-  ) async {
+    String type, {
+    String? livingPlace,
+    int? priority,
+    String? parentGroupId,
+    String? parentGroupName,
+    bool? isSubGroup,
+    String? subGroupType,
+  }) async {
     groupRepository.updateGroup(
       context,
       groupId,
@@ -44,7 +50,13 @@ class GroupController {
       selectedFamily,
       selectedPosition,
       groupProfilePic,
-      type
+      type,
+      livingPlace: livingPlace,
+      priority: priority,
+      parentGroupId: parentGroupId,
+      parentGroupName: parentGroupName,
+      isSubGroup: isSubGroup,
+      subGroupType: subGroupType,
     );
   }
 
@@ -57,8 +69,14 @@ class GroupController {
     String selectedPosition,
     File groupProfilePic,
     List<ChatContact> selectedContact,
-    String type
-  ) {
+    String type, {
+    String? livingPlace,
+    int? priority,
+    String? parentGroupId,
+    String? parentGroupName,
+    bool isSubGroup = false,
+    String? subGroupType,
+  }) {
     groupRepository.createGroup(
       context,
       name,
@@ -68,7 +86,29 @@ class GroupController {
       selectedPosition,
       groupProfilePic,
       selectedContact,
-      type
+      type,
+      livingPlace: livingPlace,
+      priority: priority,
+      parentGroupId: parentGroupId,
+      parentGroupName: parentGroupName,
+      isSubGroup: isSubGroup,
+      subGroupType: subGroupType,
+    );
+  }
+
+  Stream<List<GroupModel>> getSubGroupsStream(String parentGroupId) {
+    return groupRepository.getSubGroupsStream(parentGroupId);
+  }
+
+  Future<List<int>> getTakenPriorities({
+    required String queendom,
+    required String position,
+    String? excludeGroupId,
+  }) {
+    return groupRepository.getTakenPriorities(
+      queendom: queendom,
+      position: position,
+      excludeGroupId: excludeGroupId,
     );
   }
 

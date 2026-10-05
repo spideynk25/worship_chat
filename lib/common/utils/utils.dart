@@ -226,3 +226,57 @@ Future<File?> pickDocumentFile(BuildContext context) async {
   return null;
 }
 
+/// Ensures the given image URL points to the pristine, uncompressed, highest-quality original.
+/// If it's a Cloudinary URL that contains transformation parameters (e.g. `f_auto`, `q_auto`,
+/// `w_1080`, `c_scale`), those transforms are stripped so the original full-resolution asset
+/// is fetched.
+String getOriginalHighQualityImageUrl(String url) {
+  if (url.trim().isEmpty) return url;
+  var cleaned = url.trim().replaceFirst('http://', 'https://');
+
+  // Cloudinary URL cleaning
+  const uploadToken = '/upload/';
+  final uploadIdx = cleaned.indexOf(uploadToken);
+  if (uploadIdx != -1) {
+    final afterUpload = cleaned.substring(uploadIdx + uploadToken.length);
+
+    // If there is a version prefix (v1234567/...), everything before it is transformation parameters
+    final versionRegex = RegExp(r'^(?:[^\/]+\/)*(v\d+\/.+)$');
+    final match = versionRegex.firstMatch(afterUpload);
+    if (match != null) {
+      cleaned = cleaned.substring(0, uploadIdx + uploadToken.length) + match.group(1)!;
+    } else {
+      // If there is no version prefix, check if the first path segment is a transformation segment
+      final slashIdx = afterUpload.indexOf('/');
+      if (slashIdx != -1) {
+        final firstSegment = afterUpload.substring(0, slashIdx);
+        // Typical Cloudinary transforms contain commas or underscore tags (w_, h_, q_, f_, c_, etc.)
+        if (firstSegment.contains(',') ||
+            RegExp(r'^(?:[a-z]{1,3}_[a-zA-Z0-9_:\.-]+)+$').hasMatch(firstSegment)) {
+          cleaned = cleaned.substring(0, uploadIdx + uploadToken.length) +
+              afterUpload.substring(slashIdx + 1);
+        }
+      }
+    }
+  }
+
+  return cleaned;
+}
+
+/// Extracts a clean file extension from a media URL (e.g. 'jpg', 'png', 'webp', 'gif').
+/// Defaults to [defaultExt] (e.g. 'jpg') if none can be identified.
+String getImageExtensionFromUrl(String url, {String defaultExt = 'jpg'}) {
+  try {
+    final uri = Uri.parse(url);
+    final path = uri.path;
+    final lastDot = path.lastIndexOf('.');
+    if (lastDot != -1 && lastDot < path.length - 1) {
+      final ext = path.substring(lastDot + 1).toLowerCase();
+      if (['jpg', 'jpeg', 'png', 'webp', 'heic', 'gif', 'bmp'].contains(ext)) {
+        return ext;
+      }
+    }
+  } catch (_) {}
+  return defaultExt;
+}
+

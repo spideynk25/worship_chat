@@ -42,7 +42,7 @@ class _ForgetPasswordScreenState extends ConsumerState<ForgetPasswordScreen> {
               child: Container(
                 padding: const EdgeInsets.all(25),
                 decoration: BoxDecoration(
-                  color: Colors.black.withOpacity(0.3),
+                  color: Colors.black.withValues(alpha: 0.3),
                   borderRadius: BorderRadius.circular(35),
                   border: Border.all(color: tabColor, width: 2),
                 ),
@@ -70,8 +70,16 @@ class _ForgetPasswordScreenState extends ConsumerState<ForgetPasswordScreen> {
                           labelStyle: const TextStyle(color: textColor),
                           prefixIcon: const Icon(Icons.email, color: tabColor),
                           filled: true,
-                          fillColor: Colors.white.withOpacity(0.2),
+                          fillColor: Colors.white.withValues(alpha: 0.2),
                           border: OutlineInputBorder(
+                            borderRadius: BorderRadius.circular(18),
+                            borderSide: BorderSide.none,
+                          ),
+                          enabledBorder: OutlineInputBorder(
+                            borderRadius: BorderRadius.circular(18),
+                            borderSide: BorderSide.none,
+                          ),
+                          focusedBorder: OutlineInputBorder(
                             borderRadius: BorderRadius.circular(18),
                             borderSide: BorderSide.none,
                           ),

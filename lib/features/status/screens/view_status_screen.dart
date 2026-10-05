@@ -1065,6 +1065,8 @@ class _ViewStatusesScreenState extends ConsumerState<ViewStatusesScreen>
                             fontSize: 14,
                           ),
                           border: InputBorder.none,
+                          enabledBorder: InputBorder.none,
+                          focusedBorder: InputBorder.none,
                           isDense: true,
                           contentPadding: const EdgeInsets.symmetric(
                             vertical: 6,
@@ -1178,7 +1180,9 @@ class _ViewersSheet extends ConsumerWidget {
               ),
               border: Border.all(color: Colors.white.withOpacity(0.07)),
             ),
-            child: StreamBuilder<List<Map<String, dynamic>>>(
+            child: SafeArea(
+              top: false,
+              child: StreamBuilder<List<Map<String, dynamic>>>(
               stream: ref
                   .read(statusControllerProvider)
                   .getStatusViewers(statusId),
@@ -1355,6 +1359,7 @@ class _ViewersSheet extends ConsumerWidget {
           ),
         ),
       ),
-    );
+    ),
+  );
   }
 }

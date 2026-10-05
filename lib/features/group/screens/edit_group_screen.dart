@@ -13,6 +13,8 @@ import 'package:worship_chat/common/utils/utils.dart';
 import 'package:worship_chat/features/dashboard/controller/event_controller.dart';
 import 'package:worship_chat/features/dashboard/repositories/event_repository.dart';
 import 'package:worship_chat/features/group/controller/group_controller.dart';
+import 'package:worship_chat/features/group/utils/group_template_helper.dart';
+import 'package:worship_chat/features/group/utils/queendom_emblem_helper.dart';
 import 'package:worship_chat/models/event.dart';
 import 'package:worship_chat/models/group.dart';
 
@@ -46,8 +48,10 @@ class _EditGroupScreenState extends ConsumerState<EditGroupScreen> {
     'Erotica',
     'Elegant',
     'Elora',
-    'Zyra'
+    'Zyra',
+    'Velisse',
   ];
+
   final List<String> positions = [
     'None',
     'Aura Elixiria',
@@ -65,8 +69,20 @@ class _EditGroupScreenState extends ConsumerState<EditGroupScreen> {
     'Third Born Princess',
   ];
 
-  late TextEditingController groupNameController;
+  late TextEditingController nameController;
+  late TextEditingController livingPlaceController;
   late TextEditingController wishController;
+  late TextEditingController priorityController;
+
+  List<int> _takenPriorities = [];
+  bool _isLoadingPriorities = false;
+
+  bool get _requiresPriority =>
+      selectedPosition != 'None' &&
+      !GroupTemplateHelper.categoryHasOtherFamilies(selectedPosition);
+
+  bool get _hasOtherFamilies =>
+      GroupTemplateHelper.categoryHasOtherFamilies(selectedPosition);
 
   // Birthday connection state
   late TextEditingController birthdayTitleController;
@@ -85,14 +101,87 @@ class _EditGroupScreenState extends ConsumerState<EditGroupScreen> {
   void initState() {
     super.initState();
     // Initialize with existing group data
-    groupNameController = TextEditingController(text: widget.group.name);
+    final existingLivingPlace = widget.group.livingPlace?.trim() ?? '';
+    final existingName = widget.group.name.trim();
+
+    if (existingLivingPlace.isNotEmpty) {
+      nameController = TextEditingController(text: existingName);
+      livingPlaceController = TextEditingController(text: existingLivingPlace);
+    } else {
+      livingPlaceController = TextEditingController(text: widget.group.effectiveLivingPlace);
+      nameController = TextEditingController(text: existingName);
+    }
+
     wishController = TextEditingController(text: widget.group.wish ?? '');
+    priorityController = TextEditingController(
+      text: (widget.group.priority ?? widget.group.order)?.toString() ?? '',
+    );
     selectedQueendom = widget.group.queendom ?? 'None';
     selectedFamily = widget.group.family ?? 'None';
     selectedPosition = widget.group.position ?? 'None';
 
     birthdayTitleController = TextEditingController();
     _loadConnectedBirthday();
+
+    if (_requiresPriority) {
+      _fetchTakenPriorities();
+    }
+  }
+
+  void _onCategoryOrQueendomChanged() {
+    if (_requiresPriority) {
+      selectedFamily = 'None';
+      _fetchTakenPriorities();
+    } else {
+      _takenPriorities = [];
+    }
+  }
+
+  Future<void> _fetchTakenPriorities() async {
+    if (selectedQueendom == 'None' || selectedPosition == 'None') {
+      if (mounted) setState(() => _takenPriorities = []);
+      return;
+    }
+    if (mounted) setState(() => _isLoadingPriorities = true);
+    final taken = await ref.read(groupControllerProvider).getTakenPriorities(
+          queendom: selectedQueendom,
+          position: selectedPosition,
+          excludeGroupId: widget.group.groupId,
+        );
+    if (mounted) {
+      setState(() {
+        _takenPriorities = taken;
+        _isLoadingPriorities = false;
+        if (priorityController.text.trim().isEmpty) {
+          int next = 1;
+          while (_takenPriorities.contains(next)) {
+            next++;
+          }
+          priorityController.text = next.toString();
+        }
+      });
+    }
+  }
+
+  void _autoFillTemplates() {
+    final result = GroupTemplateHelper.generateTemplate(
+      position: selectedPosition,
+      name: nameController.text.trim(),
+      family: selectedFamily,
+    );
+    if (result.livingPlace.isNotEmpty) {
+      livingPlaceController.text = result.livingPlace;
+    }
+    if (result.wish.isNotEmpty) {
+      wishController.text = result.wish;
+    }
+    setState(() {});
+  }
+
+  bool _isEnteredPriorityTaken() {
+    final val = int.tryParse(priorityController.text.trim());
+    if (val == null) return false;
+    return _takenPriorities.contains(val);
   }
 
   Future<void> _loadConnectedBirthday() async {
@@ -156,102 +245,140 @@ class _EditGroupScreenState extends ConsumerState<EditGroupScreen> {
   }
 
   void updateGroup() async {
-    if (groupNameController.text.trim().isNotEmpty) {
-      if (selectedQueendom != 'None' && wishController.text.trim().isEmpty) {
-        AppSnackBar.warning(context, 'Please enter a wish');
+    final name = nameController.text.trim();
+    final livingPlace = livingPlaceController.text.trim();
+    final wish = wishController.text.trim();
+
+    if (name.isEmpty) {
+      AppSnackBar.warning(context, 'Please enter deity or member name');
+      return;
+    }
+
+    if (selectedQueendom != 'None' && wish.isEmpty) {
+      AppSnackBar.warning(context, 'Please enter a wish');
+      return;
+    }
+
+    int? priority;
+    if (_requiresPriority) {
+      final pVal = int.tryParse(priorityController.text.trim());
+      if (pVal == null || pVal <= 0) {
+        AppSnackBar.warning(
+          context,
+          'Please enter a valid priority number for $selectedPosition (1, 2, ...)',
+        );
         return;
       }
 
-      await ref
-          .read(groupControllerProvider)
-          .updateGroup(
-            context,
-            widget.group.groupId,
-            groupNameController.text.trim(),
-            wishController.text.trim().isEmpty
-                ? null
-                : wishController.text.trim(),
-            selectedQueendom,
-            selectedFamily,
-            selectedPosition,
-            imageChanged ? image : null,
-            widget.type,
+      // Check taken priorities excluding this group
+      final taken = await ref.read(groupControllerProvider).getTakenPriorities(
+            queendom: selectedQueendom,
+            position: selectedPosition,
+            excludeGroupId: widget.group.groupId,
           );
+      if (taken.contains(pVal)) {
+        AppSnackBar.warning(
+          context,
+          'Priority $pVal is already taken for $selectedPosition in $selectedQueendom. Taken: ${taken.join(', ')}',
+        );
+        return;
+      }
+      priority = pVal;
+    }
 
-      // Persist Birthday / Event changes
-      try {
-        if (isBirthdayDisconnected) {
-          if (originalConnectedEvent != null) {
+    await ref
+        .read(groupControllerProvider)
+        .updateGroup(
+          context,
+          widget.group.groupId,
+          name,
+          wish.isEmpty ? null : wish,
+          selectedQueendom,
+          selectedFamily,
+          selectedPosition,
+          imageChanged ? image : null,
+          widget.type,
+          livingPlace: livingPlace.isNotEmpty ? livingPlace : null,
+          priority: priority,
+          parentGroupId: widget.group.parentGroupId,
+          parentGroupName: widget.group.parentGroupName,
+          isSubGroup: widget.group.isSubGroup,
+          subGroupType: widget.group.subGroupType,
+        );
+
+    // Persist Birthday / Event changes
+    try {
+      if (isBirthdayDisconnected) {
+        if (originalConnectedEvent != null) {
+          final cleared = originalConnectedEvent!.copyWith(
+            clearConnectedGroup: true,
+          );
+          await ref.read(eventRepositoryProvider).updateEvent(cleared);
+          log('✅ Birthday disconnected from group ${widget.group.groupId}');
+        }
+      } else if (selectedBirthdayEvent != null) {
+        final cleanTitle = birthdayTitleController.text.trim().isNotEmpty
+            ? birthdayTitleController.text.trim()
+            : selectedBirthdayEvent!.title;
+        final cleanDate = birthdayDate ?? selectedBirthdayEvent!.date;
+
+        final queendomVal = selectedQueendom != 'None' ? selectedQueendom : null;
+        final displayName = livingPlace.isNotEmpty ? livingPlace : name;
+
+        if (selectedBirthdayEvent!.id.isNotEmpty) {
+          // Existing event updated/connected
+          final updated = selectedBirthdayEvent!.copyWith(
+            title: cleanTitle,
+            date: cleanDate,
+            isRecurring: isRecurringBirthday,
+            connectedGroupId: widget.group.groupId,
+            connectedGroupName: displayName,
+            connectedGroupPic: widget.group.groupPic,
+            connectedQueendom: queendomVal,
+          );
+          await ref.read(eventRepositoryProvider).updateEvent(updated);
+
+          // If user swapped from another event, unlink the old one
+          if (originalConnectedEvent != null &&
+              originalConnectedEvent!.id != selectedBirthdayEvent!.id) {
             final cleared = originalConnectedEvent!.copyWith(
               clearConnectedGroup: true,
             );
             await ref.read(eventRepositoryProvider).updateEvent(cleared);
-            log('✅ Birthday disconnected from group ${widget.group.groupId}');
           }
-        } else if (selectedBirthdayEvent != null) {
-          final cleanTitle = birthdayTitleController.text.trim().isNotEmpty
-              ? birthdayTitleController.text.trim()
-              : selectedBirthdayEvent!.title;
-          final cleanDate = birthdayDate ?? selectedBirthdayEvent!.date;
-
-          final queendomVal = selectedQueendom != 'None' ? selectedQueendom : null;
-
-          if (selectedBirthdayEvent!.id.isNotEmpty) {
-            // Existing event updated/connected
-            final updated = selectedBirthdayEvent!.copyWith(
-              title: cleanTitle,
-              date: cleanDate,
-              isRecurring: isRecurringBirthday,
-              connectedGroupId: widget.group.groupId,
-              connectedGroupName: groupNameController.text.trim(),
-              connectedGroupPic: widget.group.groupPic,
-              connectedQueendom: queendomVal,
-            );
-            await ref.read(eventRepositoryProvider).updateEvent(updated);
-
-            // If user swapped from another event, unlink the old one
-            if (originalConnectedEvent != null &&
-                originalConnectedEvent!.id != selectedBirthdayEvent!.id) {
-              final cleared = originalConnectedEvent!.copyWith(
-                clearConnectedGroup: true,
+          log('✅ Connected birthday updated: $cleanTitle');
+        } else {
+          // Create a brand new event connected to this group
+          await ref.read(eventControllerProvider.notifier).createEvent(
+                title: cleanTitle,
+                description: 'Celebration for $displayName',
+                date: cleanDate,
+                time: const TimeOfDay(hour: 0, minute: 0),
+                isRecurring: isRecurringBirthday,
+                connectedGroupId: widget.group.groupId,
+                connectedGroupName: displayName,
+                connectedGroupPic: widget.group.groupPic,
+                connectedQueendom: queendomVal,
               );
-              await ref.read(eventRepositoryProvider).updateEvent(cleared);
-            }
-            log('✅ Connected birthday updated: $cleanTitle');
-          } else {
-            // Create a brand new event connected to this group
-            await ref.read(eventControllerProvider.notifier).createEvent(
-                  title: cleanTitle,
-                  description:
-                      'Celebration for ${groupNameController.text.trim()}',
-                  date: cleanDate,
-                  time: const TimeOfDay(hour: 0, minute: 0),
-                  isRecurring: isRecurringBirthday,
-                  connectedGroupId: widget.group.groupId,
-                  connectedGroupName: groupNameController.text.trim(),
-                  connectedGroupPic: widget.group.groupPic,
-                  connectedQueendom: queendomVal,
-                );
-            log('✅ New connected birthday created: $cleanTitle');
-          }
+          log('✅ New connected birthday created: $cleanTitle');
         }
-      } catch (e) {
-        log('❌ Error updating connected birthday: $e');
       }
+    } catch (e) {
+      log('❌ Error updating connected birthday: $e');
+    }
 
-      if (mounted) {
-        Navigator.pop(context);
-        AppSnackBar.success(context, 'Group updated successfully');
-      }
-    } else {
-      AppSnackBar.warning(context, 'Please enter a group name');
+    if (mounted) {
+      Navigator.pop(context);
+      AppSnackBar.success(context, 'Group updated successfully');
     }
   }
 
   @override
   void dispose() {
-    groupNameController.dispose();
+    nameController.dispose();
+    livingPlaceController.dispose();
     wishController.dispose();
+    priorityController.dispose();
     birthdayTitleController.dispose();
     super.dispose();
   }
@@ -311,87 +438,237 @@ class _EditGroupScreenState extends ConsumerState<EditGroupScreen> {
               ),
             ),
             const SizedBox(height: 24),
+
+            // 1. Deity / Member Name
             TextField(
-              controller: groupNameController,
+              controller: nameController,
               decoration: const InputDecoration(
-                labelText: 'Group name',
+                labelText: 'Deity / Member Name',
                 border: OutlineInputBorder(),
-                prefixIcon: Icon(Icons.group),
+                prefixIcon: Icon(Icons.person_outline),
               ),
             ),
             const SizedBox(height: 16),
-            DropdownButtonFormField<String>(
-              value: selectedQueendom,
-              decoration: const InputDecoration(
-                labelText: 'Queendom',
-                border: OutlineInputBorder(),
-                prefixIcon: Icon(Icons.castle),
+
+            if (widget.group.isSubGroup) ...[
+              Container(
+                padding: const EdgeInsets.all(14),
+                decoration: BoxDecoration(
+                  color: Colors.grey[900],
+                  borderRadius: BorderRadius.circular(14),
+                  border: Border.all(
+                    color: widget.group.isFuckToySubGroup
+                        ? Colors.purpleAccent.withOpacity(0.5)
+                        : Colors.pinkAccent.withOpacity(0.5),
+                    width: 1.2,
+                  ),
+                ),
+                child: Row(
+                  children: [
+                    Icon(
+                      widget.group.isFuckToySubGroup
+                          ? Icons.local_fire_department_rounded
+                          : Icons.favorite,
+                      color: widget.group.isFuckToySubGroup
+                          ? Colors.purpleAccent
+                          : Colors.pinkAccent,
+                      size: 24,
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            '${widget.group.subGroupDisplayCategory} Sub-Group of ${widget.group.parentGroupName ?? "Deity"}',
+                            style: const TextStyle(
+                              fontWeight: FontWeight.bold,
+                              color: Colors.white,
+                              fontSize: 14,
+                            ),
+                          ),
+                          const SizedBox(height: 4),
+                          Text(
+                            'Lives in ${widget.group.parentGroupName ?? "deity"}\'s sanctum (${widget.group.effectiveLivingPlace}). Wish and living place are inherited.',
+                            style: TextStyle(
+                              fontSize: 11.5,
+                              color: Colors.white.withOpacity(0.65),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
               ),
-              items: queendom
-                  .map(
-                    (type) => DropdownMenuItem(value: type, child: Text(type)),
-                  )
-                  .toList(),
-              onChanged: (value) {
-                setState(() {
-                  selectedQueendom = value ?? "None";
-                  if (selectedQueendom == 'None') {
-                    selectedFamily = 'None';
-                    selectedPosition = 'None';
-                  }
-                });
-              },
-            ),
-            const SizedBox(height: 16),
-            DropdownButtonFormField<String>(
-              value: selectedFamily,
-              decoration: const InputDecoration(
-                labelText: 'Family',
-                border: OutlineInputBorder(),
-                prefixIcon: Icon(Icons.people),
+              const SizedBox(height: 16),
+            ] else ...[
+              // 2. Queendom dropdown
+              DropdownButtonFormField<String>(
+                value: selectedQueendom,
+                decoration: const InputDecoration(
+                  labelText: 'Queendom',
+                  border: OutlineInputBorder(),
+                  prefixIcon: Icon(Icons.castle_outlined),
+                ),
+                items: queendom
+                    .map(
+                      (type) => DropdownMenuItem(value: type, child: Text(type)),
+                    )
+                    .toList(),
+                onChanged: (value) {
+                  setState(() {
+                    selectedQueendom = value ?? "None";
+                    if (selectedQueendom == 'None') {
+                      selectedFamily = 'None';
+                      selectedPosition = 'None';
+                    }
+                    _onCategoryOrQueendomChanged();
+                  });
+                },
               ),
-              items: families
-                  .map((fam) => DropdownMenuItem(value: fam, child: Text(fam)))
-                  .toList(),
-              onChanged: selectedQueendom == 'None'
-                  ? null
-                  : (value) {
-                      setState(() {
-                        selectedFamily = value ?? "None";
-                      });
-                    },
-            ),
-            const SizedBox(height: 16),
-            DropdownButtonFormField<String>(
-              value: selectedPosition,
-              decoration: const InputDecoration(
-                labelText: 'Position',
-                border: OutlineInputBorder(),
-                prefixIcon: Icon(Icons.star),
+              const SizedBox(height: 16),
+
+              // 3. Position dropdown
+              DropdownButtonFormField<String>(
+                value: selectedPosition,
+                decoration: const InputDecoration(
+                  labelText: 'Position / Category',
+                  border: OutlineInputBorder(),
+                  prefixIcon: Icon(Icons.star_outline),
+                ),
+                items: positions
+                    .map(
+                      (pos) => DropdownMenuItem(
+                        value: pos,
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            if (pos != 'None') ...[
+                              QueendomEmblemWidget(position: pos, size: 18),
+                              const SizedBox(width: 8),
+                            ],
+                            Flexible(
+                              child: Text(
+                                pos,
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    )
+                    .toList(),
+                onChanged: selectedQueendom == 'None'
+                    ? null
+                    : (value) {
+                        setState(() {
+                          selectedPosition = value ?? "None";
+                          _onCategoryOrQueendomChanged();
+                        });
+                      },
               ),
-              items: positions
-                  .map((pos) => DropdownMenuItem(value: pos, child: Text(pos)))
-                  .toList(),
-              onChanged: selectedQueendom == 'None'
-                  ? null
-                  : (value) {
-                      setState(() {
-                        selectedPosition = value ?? "None";
-                      });
-                    },
-            ),
-            const SizedBox(height: 16),
-            TextField(
-              controller: wishController,
-              decoration: const InputDecoration(
-                labelText: 'Wish',
-                border: OutlineInputBorder(),
-                prefixIcon: Icon(Icons.favorite),
+
+              // 4. Family dropdown (only visible when category has other families)
+              if (_hasOtherFamilies) ...[
+                const SizedBox(height: 16),
+                DropdownButtonFormField<String>(
+                  value: selectedFamily,
+                  decoration: const InputDecoration(
+                    labelText: 'Family',
+                    border: OutlineInputBorder(),
+                    prefixIcon: Icon(Icons.diversity_3_outlined),
+                  ),
+                  items: families
+                      .map(
+                        (fam) => DropdownMenuItem(
+                          value: fam,
+                          child: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              if (fam != 'None') ...[
+                                QueendomFamilyEmblemWidget(
+                                  family: fam,
+                                  size: 18,
+                                ),
+                                const SizedBox(width: 8),
+                              ],
+                              Text(fam),
+                            ],
+                          ),
+                        ),
+                      )
+                      .toList(),
+                  onChanged: selectedQueendom == 'None'
+                      ? null
+                      : (value) {
+                          setState(() {
+                            selectedFamily = value ?? "None";
+                          });
+                        },
+                ),
+              ],
+
+
+              // 5. Priority field (only for categories that don't have other families)
+              if (_requiresPriority) ...[
+                const SizedBox(height: 16),
+                TextField(
+                  controller: priorityController,
+                  keyboardType: TextInputType.number,
+                  onChanged: (_) => setState(() {}),
+                  decoration: InputDecoration(
+                    labelText: 'Priority (Ordering in Category)',
+                    hintText: 'e.g. 1, 2, 3...',
+                    border: const OutlineInputBorder(),
+                    prefixIcon: const Icon(Icons.format_list_numbered_rounded),
+                    helperText: _isLoadingPriorities
+                        ? 'Checking taken priorities...'
+                        : (_takenPriorities.isNotEmpty
+                            ? 'Taken in category: [${_takenPriorities.join(', ')}]'
+                            : 'No conflicting priorities in this category'),
+                    errorText: _isEnteredPriorityTaken()
+                        ? 'Priority is already taken in this category!'
+                        : null,
+                  ),
+                ),
+              ],
+
+              // 6. Living Place field
+              const SizedBox(height: 16),
+              TextField(
+                controller: livingPlaceController,
+                decoration: InputDecoration(
+                  labelText: 'Living Place',
+                  border: const OutlineInputBorder(),
+                  prefixIcon: const Icon(Icons.temple_buddhist_outlined),
+                  suffixIcon: IconButton(
+                    icon: const Icon(Icons.refresh),
+                    tooltip: 'Regenerate from template',
+                    onPressed: _autoFillTemplates,
+                  ),
+                ),
               ),
-              maxLines: 3,
-              enabled: selectedQueendom != 'None',
-            ),
-            if (selectedQueendom != 'None') ...[
+
+              // 7. Wish field
+              const SizedBox(height: 16),
+              TextField(
+                controller: wishController,
+                decoration: InputDecoration(
+                  labelText: 'Wish',
+                  border: const OutlineInputBorder(),
+                  prefixIcon: const Icon(Icons.favorite_outline),
+                  suffixIcon: IconButton(
+                    icon: const Icon(Icons.refresh),
+                    tooltip: 'Regenerate from template',
+                    onPressed: _autoFillTemplates,
+                  ),
+                ),
+                maxLines: 3,
+                enabled: selectedQueendom != 'None',
+              ),
+            ],
+            if (!widget.group.isSubGroup && selectedQueendom != 'None') ...[
               const SizedBox(height: 20),
               _buildBirthdaySection(),
             ],
@@ -739,52 +1016,55 @@ class _EditGroupScreenState extends ConsumerState<EditGroupScreen> {
             }).toList();
 
             if (filtered.isEmpty) {
-              return Padding(
-                padding: const EdgeInsets.all(24.0),
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Icon(Icons.cake_outlined,
-                        size: 40, color: accentColor.withValues(alpha: 0.5)),
-                    const SizedBox(height: 12),
-                    const Text(
-                      'No existing birthday events found',
-                      style: TextStyle(color: Colors.white70, fontSize: 14),
-                    ),
-                    const SizedBox(height: 16),
-                    ElevatedButton(
-                      style: ElevatedButton.styleFrom(
-                        backgroundColor: accentColor,
-                        foregroundColor: Colors.black,
+              return SafeArea(
+                top: false,
+                child: Padding(
+                  padding: const EdgeInsets.all(24.0),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(Icons.cake_outlined,
+                          size: 40, color: accentColor.withValues(alpha: 0.5)),
+                      const SizedBox(height: 12),
+                      const Text(
+                        'No existing birthday events found',
+                        style: TextStyle(color: Colors.white70, fontSize: 14),
                       ),
-                      onPressed: () {
-                        Navigator.pop(ctx);
-                        setState(() {
-                          isBirthdayDisconnected = false;
-                          isNewBirthday = true;
-                          birthdayDate = DateTime.now();
-                          birthdayTitleController.text = isPooja
-                              ? "Queen Pooja's Birthday"
-                              : "Queen Rashmika's Birthday";
-                          selectedBirthdayEvent = Event(
-                            id: '',
-                            title: birthdayTitleController.text,
-                            description: '',
-                            date: birthdayDate!,
-                            time: const TimeOfDay(hour: 0, minute: 0),
-                            createdBy: 'Admin',
-                            userId: '',
-                            isRecurring: true,
-                            connectedGroupId: widget.group.groupId,
-                            connectedGroupName: widget.group.name,
-                            connectedGroupPic: widget.group.groupPic,
-                            connectedQueendom: selectedQueendom,
-                          );
-                        });
-                      },
-                      child: const Text('Create New Birthday'),
-                    ),
-                  ],
+                      const SizedBox(height: 16),
+                      ElevatedButton(
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: accentColor,
+                          foregroundColor: Colors.black,
+                        ),
+                        onPressed: () {
+                          Navigator.pop(ctx);
+                          setState(() {
+                            isBirthdayDisconnected = false;
+                            isNewBirthday = true;
+                            birthdayDate = DateTime.now();
+                            birthdayTitleController.text = isPooja
+                                ? "Queen Pooja's Birthday"
+                                : "Queen Rashmika's Birthday";
+                            selectedBirthdayEvent = Event(
+                              id: '',
+                              title: birthdayTitleController.text,
+                              description: '',
+                              date: birthdayDate!,
+                              time: const TimeOfDay(hour: 0, minute: 0),
+                              createdBy: 'Admin',
+                              userId: '',
+                              isRecurring: true,
+                              connectedGroupId: widget.group.groupId,
+                              connectedGroupName: widget.group.name,
+                              connectedGroupPic: widget.group.groupPic,
+                              connectedQueendom: selectedQueendom,
+                            );
+                          });
+                        },
+                        child: const Text('Create New Birthday'),
+                      ),
+                    ],
+                  ),
                 ),
               );
             }

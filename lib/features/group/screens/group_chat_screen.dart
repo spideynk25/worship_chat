@@ -23,6 +23,9 @@ import 'package:worship_chat/features/group/widgets/group_bottom_chat_field_widg
 import 'package:worship_chat/features/group/widgets/group_chat_list_widget.dart';
 import 'package:worship_chat/models/event.dart';
 import 'package:worship_chat/models/group.dart';
+import 'package:worship_chat/features/group/utils/group_template_helper.dart';
+import 'package:worship_chat/features/group/utils/queendom_emblem_helper.dart';
+import 'package:worship_chat/features/group/widgets/royal_avatar_decoration.dart';
 
 class GroupChatScreen extends ConsumerStatefulWidget {
   final String name;
@@ -58,6 +61,7 @@ class _GroupChatScreenState extends ConsumerState<GroupChatScreen>
     with WidgetsBindingObserver {
   late List<String> receiverIds;
   final Set<String> _dismissedBannerEventIds = {};
+  late final Stream<GroupModel> _groupStream;
 
   Color get _accentColor {
     if (widget.color != null) {
@@ -79,6 +83,11 @@ class _GroupChatScreenState extends ConsumerState<GroupChatScreen>
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+    _groupStream = FirebaseFirestore.instance
+        .collection('groups')
+        .doc(widget.groupId)
+        .snapshots()
+        .map((doc) => GroupModel.fromMap(doc.data()!));
     ActiveChatNotifier.instance.enter(widget.groupId, chatName: widget.name);
     FirebaseNotificationService.cancelNotificationsForChat(
       widget.groupId,
@@ -297,7 +306,7 @@ class _GroupChatScreenState extends ConsumerState<GroupChatScreen>
     return Scaffold(
       appBar: AppBar(
         titleSpacing: 0,
-        toolbarHeight: 105,
+        toolbarHeight: 114,
         backgroundColor: widget.color != null
             ? widget.color!.withAlpha(90)
             : appBarColor,
@@ -305,7 +314,7 @@ class _GroupChatScreenState extends ConsumerState<GroupChatScreen>
         leadingWidth: 0,
         automaticallyImplyLeading: false,
         title: Padding(
-          padding: const EdgeInsets.only(left: 4, right: 4),
+          padding: const EdgeInsets.only(left: 4, right: 4, top: 12),
           child: Row(
             children: [
               IconButton(
@@ -321,87 +330,163 @@ class _GroupChatScreenState extends ConsumerState<GroupChatScreen>
                   behavior: HitTestBehavior.opaque,
                   child: Row(
                     children: [
-                      Container(
-                        decoration: BoxDecoration(
-                          borderRadius: BorderRadius.circular(10),
-                          border: Border.all(
-                            color: widget.color != null
-                                ? widget.color!
-                                : Colors.white.withOpacity(0.3),
-                            width: 2,
-                          ),
-                        ),
-                        child:
-                            widget.groupPic != null &&
-                                widget.groupPic!.isNotEmpty
-                            ? ClipRRect(
-                                borderRadius: BorderRadius.circular(8),
-                                child: Image.network(
-                                  widget.groupPic!,
-                                  width: 70,
-                                  height: 70,
-                                  fit: BoxFit.cover,
-                                  errorBuilder: (_, __, ___) => CircleAvatar(
-                                    radius: 35,
-                                    backgroundColor: Theme.of(
-                                      context,
-                                    ).colorScheme.primaryContainer,
-                                    child: Icon(
+                      StreamBuilder<GroupModel>(
+                        stream: _groupStream,
+                        builder: (context, snapshot) {
+                          final group = snapshot.data;
+                          final pic = (group?.groupPic.isNotEmpty ?? false)
+                              ? group!.groupPic
+                              : (widget.groupPic ?? '');
+                          return RoyalAvatarDecoration(
+                            avatarRadius: 28,
+                            position: group?.position,
+                            livingPlace:
+                                group?.effectiveLivingPlace ?? widget.name,
+                            accentColor: _accentColor,
+                            badge:
+                                QueendomFamilyEmblemHelper.buildFamilyEmblemBadge(
+                              family: group?.family,
+                              fallbackText:
+                                  group?.effectiveLivingPlace ?? widget.name,
+                              accentColor: _accentColor,
+                              size: 16.0,
+                            ),
+                            badgeBottomOffset: 0,
+                            badgeRightOffset: 0,
+                            child: CircleAvatar(
+                              radius: 28,
+                              backgroundImage:
+                                  pic.isNotEmpty ? NetworkImage(pic) : null,
+                              backgroundColor: Colors.grey[850],
+                              child: pic.isEmpty
+                                  ? const Icon(
                                       Icons.group,
-                                      color: Theme.of(
-                                        context,
-                                      ).colorScheme.onPrimaryContainer,
-                                    ),
-                                  ),
-                                ),
-                              )
-                            : CircleAvatar(
-                                radius: 35,
-                                backgroundColor: Theme.of(
-                                  context,
-                                ).colorScheme.primaryContainer,
-                                child: Icon(
-                                  Icons.group,
-                                  color: Theme.of(
-                                    context,
-                                  ).colorScheme.onPrimaryContainer,
-                                ),
-                              ),
+                                      color: Colors.white,
+                                      size: 26,
+                                    )
+                                  : null,
+                            ),
+                          );
+                        },
                       ),
-                      const SizedBox(width: 10),
+                      const SizedBox(width: 8),
                       Expanded(
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           mainAxisAlignment: MainAxisAlignment.center,
                           mainAxisSize: MainAxisSize.min,
                           children: [
-                            Text(
-                              widget.name,
-                              style: const TextStyle(
-                                fontSize: 15.5,
-                                fontWeight: FontWeight.w600,
-                                letterSpacing: 0.1,
-                                height: 1.15,
-                              ),
-                              softWrap: true,
-                              maxLines: null,
-                              overflow: TextOverflow.visible,
-                            ),
-                            const SizedBox(height: 2),
-                            // Typing & members indicator
-                            StreamBuilder<Map<String, String>>(
-                              stream: ref
-                                  .watch(groupControllerProvider)
-                                  .getGroupTypingStatus(widget.groupId),
-                              builder: (context, typingSnapshot) {
-                                final typingUsers = typingSnapshot.data ?? {};
-                                return GroupAppBarStatusSubtitle(
-                                  typingUsers: typingUsers,
-                                  memberCount: widget.membersUid.length,
-                                  accentColor: _accentColor,
+                            StreamBuilder<GroupModel>(
+                              stream: _groupStream,
+                              builder: (context, snapshot) {
+                                final group = snapshot.data;
+                                final title = group?.nameWithPosition ??
+                                    GroupTemplateHelper.getNameWithPosition(
+                                      name: widget.name,
+                                      position: group?.position,
+                                      family: group?.family,
+                                    );
+                                final position = group?.position;
+                                final hasLivingPlaceEmblem =
+                                    QueendomEmblemHelper.getAssetFromLivingPlace(
+                                            title) !=
+                                        null;
+
+                                return QueendomEmblemHelper.buildRichTitle(
+                                  title: title,
+                                  family: group?.family,
+                                  fallbackFamily: 'Main',
+                                  leadingPosition: (!hasLivingPlaceEmblem &&
+                                          position != null &&
+                                          position.isNotEmpty &&
+                                          position != 'None')
+                                      ? position
+                                      : null,
+                                  style: const TextStyle(
+                                    fontSize: 13.5,
+                                    fontWeight: FontWeight.w600,
+                                    letterSpacing: 0.1,
+                                    height: 1.15,
+                                  ),
+                                  emblemSize: 16.5,
+                                  maxLines: 3,
+                                  overflow: TextOverflow.ellipsis,
                                 );
                               },
                             ),
+                            const SizedBox(height: 2),
+                            // Family Crest Badge & Typing/Members indicator
+                            StreamBuilder<GroupModel>(
+                              stream: _groupStream,
+                              builder: (context, groupSnapshot) {
+                                final family = groupSnapshot.data?.family;
+                                final hasFamily = family != null &&
+                                    family.isNotEmpty &&
+                                    family != 'None';
+
+                                return Row(
+                                  children: [
+                                    if (hasFamily) ...[
+                                      Container(
+                                        padding: const EdgeInsets.symmetric(
+                                          horizontal: 4.5,
+                                          vertical: 1,
+                                        ),
+                                        margin: const EdgeInsets.only(right: 5),
+                                        decoration: BoxDecoration(
+                                          color: _accentColor
+                                              .withOpacity(0.2),
+                                          borderRadius:
+                                              BorderRadius.circular(4),
+                                          border: Border.all(
+                                            color: _accentColor
+                                                .withOpacity(0.5),
+                                            width: 0.6,
+                                          ),
+                                        ),
+
+                                        child: Row(
+                                          mainAxisSize: MainAxisSize.min,
+                                          children: [
+                                            QueendomFamilyEmblemWidget(
+                                              family: family,
+                                              size: 11,
+                                            ),
+                                            const SizedBox(width: 3),
+                                            Text(
+                                              '$family Family',
+                                              style: TextStyle(
+                                                fontSize: 9.5,
+                                                color: Colors.white
+                                                    .withOpacity(0.9),
+                                                fontWeight: FontWeight.w600,
+                                              ),
+                                            ),
+                                          ],
+                                        ),
+                                      ),
+                                    ],
+                                    Expanded(
+                                      child: StreamBuilder<Map<String, String>>(
+                                        stream: ref
+                                            .watch(groupControllerProvider)
+                                            .getGroupTypingStatus(widget.groupId),
+                                        builder: (context, typingSnapshot) {
+                                          final typingUsers =
+                                              typingSnapshot.data ?? {};
+                                          return GroupAppBarStatusSubtitle(
+                                            typingUsers: typingUsers,
+                                            memberCount: widget.membersUid.length,
+                                            accentColor: _accentColor,
+                                          );
+                                        },
+                                      ),
+                                    ),
+                                  ],
+                                );
+                              },
+                            ),
+
                           ],
                         ),
                       ),
@@ -416,8 +501,8 @@ class _GroupChatScreenState extends ConsumerState<GroupChatScreen>
         actions: [
           IconButton(
             icon: const Icon(Icons.photo_library_outlined),
-            padding: const EdgeInsets.symmetric(horizontal: 4),
-            constraints: const BoxConstraints(minWidth: 36, minHeight: 40),
+            padding: const EdgeInsets.symmetric(horizontal: 2),
+            constraints: const BoxConstraints(minWidth: 32, minHeight: 40),
             onPressed: () => Navigator.push(
               context,
               MaterialPageRoute(
@@ -430,16 +515,12 @@ class _GroupChatScreenState extends ConsumerState<GroupChatScreen>
             ),
           ),
           StreamBuilder<GroupModel>(
-            stream: FirebaseFirestore.instance
-                .collection('groups')
-                .doc(widget.groupId)
-                .snapshots()
-                .map((doc) => GroupModel.fromMap(doc.data()!)),
+            stream: _groupStream,
             builder: (context, snapshot) {
               return PopupMenuButton<String>(
                 icon: const Icon(Icons.more_vert),
-                padding: const EdgeInsets.only(left: 2, right: 8),
-                constraints: const BoxConstraints(minWidth: 36, minHeight: 40),
+                padding: const EdgeInsets.only(left: 0, right: 6),
+                constraints: const BoxConstraints(minWidth: 32, minHeight: 40),
                 tooltip: 'More options',
                 shape: RoundedRectangleBorder(
                   borderRadius: BorderRadius.circular(12),
@@ -557,7 +638,9 @@ class _GroupChatScreenState extends ConsumerState<GroupChatScreen>
           Column(
             children: [
               _buildGroupBirthdayMention(),
+              _buildRoyalSanctuaryBanner(),
               Expanded(child: GroupChatListWidget(groupId: widget.groupId)),
+
               // Floating in-chat typing bubble for groups
               StreamBuilder<Map<String, String>>(
                 stream: ref
@@ -731,4 +814,135 @@ class _GroupChatScreenState extends ConsumerState<GroupChatScreen>
       },
     );
   }
+
+  bool _isSanctuaryBannerDismissed = false;
+
+
+  Widget _buildRoyalSanctuaryBanner() {
+    if (_isSanctuaryBannerDismissed) return const SizedBox.shrink();
+
+    return StreamBuilder<GroupModel>(
+      stream: _groupStream,
+      builder: (context, snapshot) {
+        final group = snapshot.data;
+        if (group == null) return const SizedBox.shrink();
+
+        final position = group.position;
+        final family = group.family;
+        final wish = group.wish ?? widget.wish;
+        final livingPlace = group.effectiveLivingPlace;
+
+        final hasPosition =
+            position != null && position.isNotEmpty && position != 'None';
+        final hasFamily =
+            family != null && family.isNotEmpty && family != 'None';
+        final hasWish = wish != null && wish.isNotEmpty;
+
+        if (!hasPosition && !hasFamily && !hasWish) {
+          return const SizedBox.shrink();
+        }
+
+        final bannerColor = _accentColor;
+
+        return Center(
+          child: Container(
+            margin: const EdgeInsets.fromLTRB(14, 2, 14, 6),
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+            decoration: BoxDecoration(
+              color: const Color(0xFF141322).withOpacity(0.85),
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(
+                color: bannerColor.withOpacity(0.4),
+                width: 0.8,
+              ),
+              boxShadow: [
+                BoxShadow(
+                  color: bannerColor.withOpacity(0.12),
+                  blurRadius: 10,
+                  spreadRadius: 1,
+                ),
+              ],
+            ),
+            child: Row(
+              children: [
+                if (hasPosition) ...[
+                  QueendomEmblemWidget(
+                    position: position,
+                    size: 26,
+                  ),
+                  const SizedBox(width: 8),
+                ],
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      if (livingPlace.isNotEmpty)
+                        QueendomEmblemHelper.buildRichTitle(
+                          title: livingPlace,
+                          family: family,
+                          fallbackFamily: 'Main',
+                          style: TextStyle(
+                            fontSize: 11,
+                            fontWeight: FontWeight.w700,
+                            color: bannerColor,
+                            letterSpacing: 0.2,
+                          ),
+                          emblemSize: 13,
+                        ),
+                      if (hasWish)
+                        Padding(
+                          padding: const EdgeInsets.only(top: 1.5),
+                          child: Text(
+                            wish,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: TextStyle(
+                              fontSize: 10,
+                              color: Colors.white.withOpacity(0.85),
+                              fontStyle: FontStyle.italic,
+                            ),
+                          ),
+                        ),
+                    ],
+                  ),
+                ),
+                if (hasFamily) ...[
+                  const SizedBox(width: 6),
+                  Tooltip(
+                    message: '$family Family',
+                    child: QueendomFamilyEmblemWidget(
+                      family: family,
+                      size: 22,
+                    ),
+                  ),
+                ],
+                const SizedBox(width: 6),
+                GestureDetector(
+                  onTap: () {
+                    setState(() {
+                      _isSanctuaryBannerDismissed = true;
+                    });
+                  },
+                  child: Container(
+                    padding: const EdgeInsets.all(2),
+                    decoration: BoxDecoration(
+                      color: Colors.white.withOpacity(0.08),
+                      shape: BoxShape.circle,
+                    ),
+                    child: const Icon(
+                      Icons.close_rounded,
+                      size: 12,
+                      color: Colors.white60,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
 }
+

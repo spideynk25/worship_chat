@@ -11,6 +11,8 @@ import 'package:image/image.dart' as img;
 import 'package:worship_chat/colors.dart';
 import 'package:worship_chat/common/utils/utils.dart';
 import 'package:worship_chat/features/group/controller/group_controller.dart';
+import 'package:worship_chat/features/group/utils/group_template_helper.dart';
+import 'package:worship_chat/features/group/utils/queendom_emblem_helper.dart';
 import 'package:worship_chat/features/group/widgets/select_contacts_group.dart';
 
 class CreateGroupScreen extends ConsumerStatefulWidget {
@@ -42,7 +44,9 @@ class _CreateGroupScreenState extends ConsumerState<CreateGroupScreen> {
     'Elegant',
     'Elora',
     'Zyra',
+    'Velisse',
   ];
+
   final List<String> positions = [
     'None',
     'Aura Elixiria',
@@ -60,10 +64,22 @@ class _CreateGroupScreenState extends ConsumerState<CreateGroupScreen> {
     'Third Born Princess',
   ];
 
-  final TextEditingController groupNameController = TextEditingController();
+  final TextEditingController nameController = TextEditingController();
+  final TextEditingController livingPlaceController = TextEditingController();
   final TextEditingController wishController = TextEditingController();
+  final TextEditingController priorityController = TextEditingController();
+
+  List<int> _takenPriorities = [];
+  bool _isLoadingPriorities = false;
 
   File? image;
+
+  bool get _requiresPriority =>
+      selectedPosition != 'None' &&
+      !GroupTemplateHelper.categoryHasOtherFamilies(selectedPosition);
+
+  bool get _hasOtherFamilies =>
+      GroupTemplateHelper.categoryHasOtherFamilies(selectedPosition);
 
   /// Pick image then crop it before setting
   void selectImage() async {
@@ -85,32 +101,133 @@ class _CreateGroupScreenState extends ConsumerState<CreateGroupScreen> {
     );
   }
 
-  void createGroup() {
-    if (groupNameController.text.trim().isNotEmpty && image != null) {
-      ref
-          .read(groupControllerProvider)
-          .createGroup(
-            context,
-            groupNameController.text.trim(),
-            wishController.text.trim().isEmpty
-                ? null
-                : wishController.text.trim(),
-            selectedQueendom,
-            selectedFamily,
-            selectedPosition,
-            image!,
-            ref.read(selectedGroupContacts),
-            "others",
-          );
-      ref.read(selectedGroupContacts.state).update((state) => []);
-      Navigator.pop(context);
+  void _onCategoryOrQueendomChanged() {
+    if (_requiresPriority) {
+      selectedFamily = 'None';
+      _fetchTakenPriorities();
+    } else {
+      _takenPriorities = [];
     }
+    _autoFillTemplates();
+  }
+
+  Future<void> _fetchTakenPriorities() async {
+    if (selectedQueendom == 'None' || selectedPosition == 'None') {
+      if (mounted) setState(() => _takenPriorities = []);
+      return;
+    }
+    if (mounted) setState(() => _isLoadingPriorities = true);
+    final taken = await ref.read(groupControllerProvider).getTakenPriorities(
+          queendom: selectedQueendom,
+          position: selectedPosition,
+        );
+    if (mounted) {
+      setState(() {
+        _takenPriorities = taken;
+        _isLoadingPriorities = false;
+        // Suggest the next lowest unused positive integer
+        if (priorityController.text.trim().isEmpty) {
+          int next = 1;
+          while (_takenPriorities.contains(next)) {
+            next++;
+          }
+          priorityController.text = next.toString();
+        }
+      });
+    }
+  }
+
+  void _autoFillTemplates() {
+    final result = GroupTemplateHelper.generateTemplate(
+      position: selectedPosition,
+      name: nameController.text.trim(),
+      family: selectedFamily,
+    );
+
+    if (result.livingPlace.isNotEmpty) {
+      livingPlaceController.text = result.livingPlace;
+    }
+    if (result.wish.isNotEmpty) {
+      wishController.text = result.wish;
+    }
+    setState(() {});
+  }
+
+  bool _isEnteredPriorityTaken() {
+    final val = int.tryParse(priorityController.text.trim());
+    if (val == null) return false;
+    return _takenPriorities.contains(val);
+  }
+
+  void createGroup() async {
+    final name = nameController.text.trim();
+    final livingPlace = livingPlaceController.text.trim();
+    final wish = wishController.text.trim();
+
+    if (name.isEmpty) {
+      AppSnackBar.warning(context, 'Please enter deity or group member name');
+      return;
+    }
+
+    if (image == null) {
+      AppSnackBar.warning(context, 'Please select a group profile picture');
+      return;
+    }
+
+    int? priority;
+    if (_requiresPriority) {
+      final pVal = int.tryParse(priorityController.text.trim());
+      if (pVal == null || pVal <= 0) {
+        AppSnackBar.warning(
+          context,
+          'Please enter a valid priority number for $selectedPosition (1, 2, ...)',
+        );
+        return;
+      }
+
+      // Re-verify uniqueness with latest Firestore data
+      final taken = await ref.read(groupControllerProvider).getTakenPriorities(
+            queendom: selectedQueendom,
+            position: selectedPosition,
+          );
+      if (taken.contains(pVal)) {
+        AppSnackBar.warning(
+          context,
+          'Priority $pVal is already taken for $selectedPosition in $selectedQueendom. Taken: ${taken.join(', ')}',
+        );
+        return;
+      }
+      priority = pVal;
+    }
+
+    ref.read(groupControllerProvider).createGroup(
+          context,
+          name,
+          wish.isEmpty ? null : wish,
+          selectedQueendom,
+          selectedFamily,
+          selectedPosition,
+          image!,
+          ref.read(selectedGroupContacts),
+          selectedQueendom == 'Queen Pooja'
+              ? 'queenPooja'
+              : selectedQueendom == 'Queen Rashmika'
+                  ? 'queenRashmika'
+                  : 'others',
+          livingPlace: livingPlace.isNotEmpty ? livingPlace : null,
+          priority: priority,
+        );
+
+    ref.read(selectedGroupContacts.notifier).state = [];
+    Navigator.pop(context);
   }
 
   @override
   void dispose() {
-    groupNameController.dispose();
+    nameController.dispose();
+    livingPlaceController.dispose();
     wishController.dispose();
+    priorityController.dispose();
     super.dispose();
   }
 
@@ -154,22 +271,33 @@ class _CreateGroupScreenState extends ConsumerState<CreateGroupScreen> {
                 ],
               ),
             ),
+            const SizedBox(height: 12),
+
+            // 1. Deity / Character Name
             Padding(
-              padding: const EdgeInsets.all(10),
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
               child: TextField(
-                controller: groupNameController,
+                controller: nameController,
+                onChanged: (_) => _autoFillTemplates(),
                 decoration: const InputDecoration(
-                  hintText: 'Enter group name',
+                  labelText: 'Deity / Member Name',
+                  hintText: 'e.g. Pooja, Rashmika, Anu',
                   border: OutlineInputBorder(),
+                  prefixIcon: Icon(Icons.person_outline),
                 ),
               ),
             ),
-            // Dropdowns for Queendom Type, Family, and Position
+
+            // 2. Queendom dropdown
             Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
               child: DropdownButtonFormField<String>(
                 value: selectedQueendom,
-                decoration: const InputDecoration(labelText: 'Queendom'),
+                decoration: const InputDecoration(
+                  labelText: 'Queendom',
+                  border: OutlineInputBorder(),
+                  prefixIcon: Icon(Icons.castle_outlined),
+                ),
                 items: queendom
                     .map(
                       (type) =>
@@ -179,39 +307,42 @@ class _CreateGroupScreenState extends ConsumerState<CreateGroupScreen> {
                 onChanged: (value) {
                   setState(() {
                     selectedQueendom = value ?? "None";
-                    selectedFamily = 'None';
-                    selectedPosition = 'None';
+                    _onCategoryOrQueendomChanged();
                   });
                 },
               ),
             ),
+
+            // 3. Position dropdown
             Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
-              child: DropdownButtonFormField<String>(
-                value: selectedFamily,
-                decoration: const InputDecoration(labelText: 'Family'),
-                items: families
-                    .map(
-                      (fam) => DropdownMenuItem(value: fam, child: Text(fam)),
-                    )
-                    .toList(),
-                onChanged: selectedQueendom == 'None'
-                    ? null
-                    : (value) {
-                        setState(() {
-                          selectedFamily = value ?? "None";
-                        });
-                      },
-              ),
-            ),
-            Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
               child: DropdownButtonFormField<String>(
                 value: selectedPosition,
-                decoration: const InputDecoration(labelText: 'Position'),
+                decoration: const InputDecoration(
+                  labelText: 'Position / Category',
+                  border: OutlineInputBorder(),
+                  prefixIcon: Icon(Icons.star_outline),
+                ),
                 items: positions
                     .map(
-                      (pos) => DropdownMenuItem(value: pos, child: Text(pos)),
+                      (pos) => DropdownMenuItem(
+                        value: pos,
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            if (pos != 'None') ...[
+                              QueendomEmblemWidget(position: pos, size: 18),
+                              const SizedBox(width: 8),
+                            ],
+                            Flexible(
+                              child: Text(
+                                pos,
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
                     )
                     .toList(),
                 onChanged: selectedQueendom == 'None'
@@ -219,37 +350,134 @@ class _CreateGroupScreenState extends ConsumerState<CreateGroupScreen> {
                     : (value) {
                         setState(() {
                           selectedPosition = value ?? "None";
+                          _onCategoryOrQueendomChanged();
                         });
                       },
               ),
             ),
+
+            // 4. Family dropdown (only visible when position has other families)
+            if (_hasOtherFamilies)
+              Padding(
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
+                child: DropdownButtonFormField<String>(
+                  value: selectedFamily,
+                  decoration: const InputDecoration(
+                    labelText: 'Family',
+                    border: OutlineInputBorder(),
+                    prefixIcon: Icon(Icons.diversity_3_outlined),
+                  ),
+                  items: families
+                      .map(
+                        (fam) => DropdownMenuItem(
+                          value: fam,
+                          child: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              if (fam != 'None') ...[
+                                QueendomFamilyEmblemWidget(
+                                  family: fam,
+                                  size: 18,
+                                ),
+                                const SizedBox(width: 8),
+                              ],
+                              Text(fam),
+                            ],
+                          ),
+                        ),
+                      )
+                      .toList(),
+                  onChanged: (value) {
+                    setState(() {
+                      selectedFamily = value ?? "None";
+                      _autoFillTemplates();
+                    });
+                  },
+                ),
+              ),
+
+
+            // 5. Priority field (for categories that don't have other families)
+            if (_requiresPriority)
+              Padding(
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
+                child: TextField(
+                  controller: priorityController,
+                  keyboardType: TextInputType.number,
+                  onChanged: (_) => setState(() {}),
+                  decoration: InputDecoration(
+                    labelText: 'Priority (Ordering in Category)',
+                    hintText: 'e.g. 1, 2, 3...',
+                    border: const OutlineInputBorder(),
+                    prefixIcon:
+                        const Icon(Icons.format_list_numbered_rounded),
+                    helperText: _isLoadingPriorities
+                        ? 'Checking taken priorities...'
+                        : (_takenPriorities.isNotEmpty
+                            ? 'Taken priorities in this category: [${_takenPriorities.join(', ')}]'
+                            : 'No existing groups in this category yet. (Suggested: 1)'),
+                    errorText: _isEnteredPriorityTaken()
+                        ? 'Priority is already taken in this category!'
+                        : null,
+                  ),
+                ),
+              ),
+
+            // 6. Living Place field (auto-populated by template)
             Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
+              child: TextField(
+                controller: livingPlaceController,
+                decoration: InputDecoration(
+                  labelText: 'Living Place',
+                  hintText: 'Auto-generated or custom living place',
+                  border: const OutlineInputBorder(),
+                  prefixIcon: const Icon(Icons.temple_buddhist_outlined),
+                  suffixIcon: IconButton(
+                    icon: const Icon(Icons.refresh),
+                    tooltip: 'Regenerate from template',
+                    onPressed: _autoFillTemplates,
+                  ),
+                ),
+              ),
+            ),
+
+            // 7. Wish field (auto-populated by template)
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
               child: TextField(
                 controller: wishController,
-                decoration: const InputDecoration(
-                  hintText: 'Wish',
-                  border: OutlineInputBorder(),
-                  contentPadding: EdgeInsets.symmetric(
-                    horizontal: 16,
-                    vertical: 12,
+                maxLines: 2,
+                decoration: InputDecoration(
+                  labelText: 'Wish',
+                  hintText: 'Auto-generated or custom wish',
+                  border: const OutlineInputBorder(),
+                  prefixIcon: const Icon(Icons.favorite_outline),
+                  suffixIcon: IconButton(
+                    icon: const Icon(Icons.refresh),
+                    tooltip: 'Regenerate from template',
+                    onPressed: _autoFillTemplates,
                   ),
                 ),
                 enabled: selectedQueendom != 'None',
               ),
             ),
+
+            const SizedBox(height: 10),
             Container(
               alignment: Alignment.topLeft,
-              padding: const EdgeInsets.all(8),
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
               child: const Text(
-                'Select Contact',
+                'Select Contacts',
                 style: TextStyle(fontSize: 18, fontWeight: FontWeight.w600),
               ),
             ),
 
-            /// ✅ Fixed: Give SelectContactsGroup a proper height
+            /// Fixed: Give SelectContactsGroup a proper height
             SizedBox(
-              height: height * 0.5, // half screen height for contacts
+              height: height * 0.45,
               child: const SelectContactsGroup(),
             ),
           ],

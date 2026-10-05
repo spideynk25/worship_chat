@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:worship_chat/features/chat/widgets/forward_message_sheet.dart';
+import 'package:worship_chat/models/bookmark_model.dart';
 import 'package:worship_chat/models/chat_contact.dart';
 
 void main() {
@@ -37,6 +38,55 @@ void main() {
       expect(galleryPayload.sourceGroupId, equals('group-123'));
       expect(galleryPayload.sourceGroupName, equals('Devotees'));
       expect(galleryPayload.effectiveMediaUrl, equals('https://example.com/flower.png'));
+
+      final bookmark = BookmarkModel(
+        bookmarkId: 'bm-1',
+        userId: 'u1',
+        userName: 'Priya',
+        userProfilePic: '',
+        imageUrl: 'https://example.com/bm_pic.jpg',
+        groupId: 'g1',
+        groupName: 'Temple Worship',
+        bookmarkedAt: DateTime.now(),
+      );
+      final bookmarkPayload = ForwardMessagePayload(
+        text: '',
+        messageType: 'image',
+        fileMessageData: bookmark.imageUrl,
+        isFromGallery: true,
+        sourceGroupId: bookmark.groupId,
+        sourceGroupName: bookmark.groupName.isNotEmpty
+            ? bookmark.groupName
+            : 'Bookmarks',
+      );
+      expect(bookmarkPayload.isImage, isTrue);
+      expect(bookmarkPayload.isFromGallery, isTrue);
+      expect(bookmarkPayload.effectiveMediaUrl,
+          equals('https://example.com/bm_pic.jpg'));
+      expect(bookmarkPayload.sourceGroupId, equals('g1'));
+      expect(bookmarkPayload.sourceGroupName, equals('Temple Worship'));
+
+      final bookmarkNoGroup = BookmarkModel(
+        bookmarkId: 'bm-2',
+        userId: 'u1',
+        userName: 'Priya',
+        userProfilePic: '',
+        imageUrl: 'https://example.com/bm2.jpg',
+        groupId: '',
+        groupName: '',
+        bookmarkedAt: DateTime.now(),
+      );
+      final bookmarkPayload2 = ForwardMessagePayload(
+        text: '',
+        messageType: 'image',
+        fileMessageData: bookmarkNoGroup.imageUrl,
+        isFromGallery: true,
+        sourceGroupId: bookmarkNoGroup.groupId,
+        sourceGroupName: bookmarkNoGroup.groupName.isNotEmpty
+            ? bookmarkNoGroup.groupName
+            : 'Bookmarks',
+      );
+      expect(bookmarkPayload2.sourceGroupName, equals('Bookmarks'));
     });
 
     test('ForwardTarget equality and hashcode compare id and type correctly', () {
