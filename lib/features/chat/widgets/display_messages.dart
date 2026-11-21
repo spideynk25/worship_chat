@@ -7,6 +7,8 @@ import 'package:cached_network_image/cached_network_image.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:video_player/video_player.dart';
 import 'package:visibility_detector/visibility_detector.dart';
+import 'package:worship_chat/common/utils/background_task_service.dart';
+import 'package:worship_chat/common/utils/google_lens_service.dart';
 import 'package:worship_chat/common/utils/media_cache_service.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:permission_handler/permission_handler.dart';
@@ -14,6 +16,7 @@ import 'package:photo_view/photo_view.dart';
 import 'dart:developer';
 import 'package:worship_chat/colors.dart';
 import 'package:worship_chat/common/utils/utils.dart';
+import 'package:worship_chat/features/settings/providers/chat_bubble_settings_provider.dart';
 import 'document_message_widget.dart';
 import 'location_message_widget.dart';
 import 'forward_message_sheet.dart';
@@ -54,40 +57,77 @@ class _MediaPreviewWidgetState extends State<MediaPreviewWidget> {
 
   Future<void> _loadMedia() async {
     try {
-      final localPath = await MediaCacheService().getMediaPath(widget.mediaUrl);
-
-      if (localPath != null && File(localPath).existsSync()) {
-        setState(() {
-          _localMediaPath = localPath;
-          _isLoading = false;
-        });
-      } else {
-        // Fallback for network media when local download hasn't finished yet
-        setState(() {
-          _isLoading = false;
-        });
+      // Synchronously check if local file is already available
+      final syncLocal = MediaCacheService().getCachedSync(widget.mediaUrl);
+      if (syncLocal != null && File(syncLocal).existsSync()) {
+        _localMediaPath = syncLocal;
+      } else if (!widget.mediaUrl.startsWith('http://') &&
+          !widget.mediaUrl.startsWith('https://')) {
+        final clean = widget.mediaUrl.replaceFirst('file://', '');
+        if (File(clean).existsSync()) {
+          _localMediaPath = clean;
+        }
       }
 
       if (widget.mediaType == 'video') {
+        VideoPlayerController? controller;
         if (_localMediaPath != null && File(_localMediaPath!).existsSync()) {
-          _videoController = VideoPlayerController.file(File(_localMediaPath!));
+          controller = VideoPlayerController.file(File(_localMediaPath!));
         } else if (widget.mediaUrl.startsWith('http://') ||
             widget.mediaUrl.startsWith('https://')) {
-          _videoController =
-              VideoPlayerController.networkUrl(Uri.parse(widget.mediaUrl));
+          controller = VideoPlayerController.networkUrl(
+            Uri.parse(widget.mediaUrl),
+          );
+          _prefetchLocalMedia();
         } else {
           final clean = widget.mediaUrl.replaceFirst('file://', '');
           if (File(clean).existsSync()) {
-            _videoController = VideoPlayerController.file(File(clean));
+            _localMediaPath = clean;
+            controller = VideoPlayerController.file(File(clean));
+          } else if (Uri.tryParse(widget.mediaUrl)?.isAbsolute ?? false) {
+            controller = VideoPlayerController.networkUrl(
+              Uri.parse(widget.mediaUrl),
+            );
           }
         }
 
-        if (_videoController != null) {
-          _videoController!
-            ..initialize().then((_) {
-              if (mounted) {
+        if (controller != null) {
+          try {
+            await controller.initialize();
+            if (!mounted) {
+              controller.dispose();
+              return;
+            }
+            setState(() {
+              _videoController = controller;
+              _isVideoInitialized = true;
+              _isLoading = false;
+              _isMuted = false;
+              _videoController!.setVolume(1.0);
+              _videoController!.play();
+            });
+            Future.delayed(const Duration(seconds: 3), () {
+              if (mounted) setState(() => _showControls = false);
+            });
+          } catch (error) {
+            // If file playback failed and URL is remote, try networkUrl
+            if (_localMediaPath != null &&
+                (widget.mediaUrl.startsWith('http://') ||
+                    widget.mediaUrl.startsWith('https://'))) {
+              try {
+                controller.dispose();
+                final netController = VideoPlayerController.networkUrl(
+                  Uri.parse(widget.mediaUrl),
+                );
+                await netController.initialize();
+                if (!mounted) {
+                  netController.dispose();
+                  return;
+                }
                 setState(() {
+                  _videoController = netController;
                   _isVideoInitialized = true;
+                  _isLoading = false;
                   _isMuted = false;
                   _videoController!.setVolume(1.0);
                   _videoController!.play();
@@ -95,22 +135,28 @@ class _MediaPreviewWidgetState extends State<MediaPreviewWidget> {
                 Future.delayed(const Duration(seconds: 3), () {
                   if (mounted) setState(() => _showControls = false);
                 });
-              }
-            }).catchError((error) {
-              if (mounted) {
-                setState(() {
-                  _errorMessage = 'Failed to load video: $error';
-                });
-                log('Video error: $error');
-              }
-            });
+                return;
+              } catch (_) {}
+            }
+            if (mounted) {
+              setState(() {
+                _errorMessage = 'Failed to load video: $error';
+                _isLoading = false;
+              });
+            }
+          }
         } else {
           if (mounted) {
             setState(() {
               _errorMessage = 'Video file unavailable';
+              _isLoading = false;
             });
           }
         }
+      } else {
+        // Image or GIF
+        setState(() => _isLoading = false);
+        _prefetchLocalMedia();
       }
     } catch (e) {
       log('Error loading media: $e');
@@ -123,6 +169,18 @@ class _MediaPreviewWidgetState extends State<MediaPreviewWidget> {
     }
   }
 
+  void _prefetchLocalMedia() {
+    if (_localMediaPath != null) return;
+    MediaCacheService()
+        .getMediaPath(widget.mediaUrl)
+        .then((path) {
+          if (mounted && path != null && File(path).existsSync()) {
+            setState(() => _localMediaPath = path);
+          }
+        })
+        .catchError((_) {});
+  }
+
   @override
   void dispose() {
     _videoController?.dispose();
@@ -131,98 +189,119 @@ class _MediaPreviewWidgetState extends State<MediaPreviewWidget> {
   }
 
   Future<void> _downloadMedia() async {
-    if (_localMediaPath == null) return;
-
     setState(() => _isDownloading = true);
 
     try {
-      // Request storage permission for Android
-      if (Platform.isAndroid) {
-        var status = await Permission.storage.request();
+      await BackgroundTaskService.instance.runWithBackgroundTask(
+        title: 'Downloading ${widget.mediaType}',
+        initialMessage: 'Saving media to device...',
+        successMessage: 'Saved to Downloads',
+        task: (_) async {
+          String? localPath = _localMediaPath;
+          if (localPath == null || !File(localPath).existsSync()) {
+            localPath = await MediaCacheService().getMediaPath(widget.mediaUrl);
+            if (localPath != null && mounted) {
+              setState(() => _localMediaPath = localPath);
+            }
+          }
 
-        // For Android 11+ (API 30+), try photos permission
-        if (!status.isGranted) {
-          if (widget.mediaType == 'image' || widget.mediaType == 'gif') {
-            status = await Permission.photos.request();
+          if (localPath == null || !File(localPath).existsSync()) {
+            if (mounted) {
+              AppSnackBar.error(context, 'Media unavailable for download');
+            }
+            return;
+          }
+
+          // Request storage permission for Android
+          if (Platform.isAndroid) {
+            var status = await Permission.storage.request();
+
+            // For Android 11+ (API 30+), try photos permission
+            if (!status.isGranted) {
+              if (widget.mediaType == 'image' || widget.mediaType == 'gif') {
+                status = await Permission.photos.request();
+              } else {
+                status = await Permission.videos.request();
+              }
+            }
+
+            // For Android 11+ (API 30+), request manage external storage
+            if (!status.isGranted) {
+              status = await Permission.manageExternalStorage.request();
+            }
+
+            if (!status.isGranted) {
+              if (mounted) {
+                AppSnackBar.warning(context, 'Storage permission denied');
+              }
+              return;
+            }
+          }
+
+          // Get appropriate directory based on platform
+          Directory? directory;
+          String displayPath;
+
+          if (Platform.isAndroid) {
+            // Try to get external storage directory
+            final externalDir = await getExternalStorageDirectory();
+            if (externalDir != null) {
+              // Navigate to public Downloads folder
+              final downloadPath = '/storage/emulated/0/Download/WorshipChat';
+              directory = Directory(downloadPath);
+              displayPath = 'Downloads/WorshipChat';
+            } else {
+              // Fallback to app directory
+              directory = await getApplicationDocumentsDirectory();
+              displayPath = directory.path;
+            }
+          } else if (Platform.isIOS) {
+            // For iOS, save to app documents directory
+            directory = await getApplicationDocumentsDirectory();
+            displayPath = 'App Documents';
           } else {
-            status = await Permission.videos.request();
+            // For other platforms
+            directory =
+                await getDownloadsDirectory() ??
+                await getApplicationDocumentsDirectory();
+            displayPath = directory.path;
           }
-        }
 
-        // For Android 11+ (API 30+), request manage external storage
-        if (!status.isGranted) {
-          status = await Permission.manageExternalStorage.request();
-        }
-
-        if (!status.isGranted) {
-          if (mounted) {
-            AppSnackBar.warning(context, 'Storage permission denied');
+          // Create directory if it doesn't exist
+          if (!await directory.exists()) {
+            await directory.create(recursive: true);
           }
-          setState(() => _isDownloading = false);
-          return;
-        }
-      }
 
-      // Get appropriate directory based on platform
-      Directory? directory;
-      String displayPath;
-
-      if (Platform.isAndroid) {
-        // Try to get external storage directory
-        final externalDir = await getExternalStorageDirectory();
-        if (externalDir != null) {
-          // Navigate to public Downloads folder
-          final downloadPath = '/storage/emulated/0/Download/WorshipChat';
-          directory = Directory(downloadPath);
-          displayPath = 'Downloads/WorshipChat';
-        } else {
-          // Fallback to app directory
-          directory = await getApplicationDocumentsDirectory();
-          displayPath = directory.path;
-        }
-      } else if (Platform.isIOS) {
-        // For iOS, save to app documents directory
-        directory = await getApplicationDocumentsDirectory();
-        displayPath = 'App Documents';
-      } else {
-        // For other platforms
-        directory =
-            await getDownloadsDirectory() ??
-            await getApplicationDocumentsDirectory();
-        displayPath = directory.path;
-      }
-
-      // Create directory if it doesn't exist
-      if (!await directory.exists()) {
-        await directory.create(recursive: true);
-      }
-
-      // Create unique filename with proper extension
-      final timestamp = DateTime.now().millisecondsSinceEpoch;
-      final extension = widget.mediaType == 'video'
-          ? 'mp4'
-          : widget.mediaType == 'gif'
+          // Create unique filename with proper extension
+          final timestamp = DateTime.now().millisecondsSinceEpoch;
+          final extension = widget.mediaType == 'video'
+              ? 'mp4'
+              : widget.mediaType == 'gif'
               ? 'gif'
               : 'jpg';
-      final fileName = 'WorshipChat_$timestamp.$extension';
-      final filePath = '${directory.path}/$fileName';
+          final fileName = 'WorshipChat_$timestamp.$extension';
+          final filePath = '${directory.path}/$fileName';
 
-      // Copy file to destination
-      final sourceFile = File(_localMediaPath!);
-      await sourceFile.copy(filePath);
+          // Copy file to destination
+          final sourceFile = File(localPath);
+          await sourceFile.copy(filePath);
 
-      log('Media saved to: $filePath');
+          log('Media saved to: $filePath');
 
-      if (mounted) {
-        AppSnackBar.success(context, 'Saved to $displayPath');
-      }
+          if (mounted) {
+            AppSnackBar.success(context, 'Saved to $displayPath');
+          }
+        },
+      );
     } catch (e) {
       log('Download error: $e');
       if (mounted) {
         AppSnackBar.error(context, 'Download failed: $e');
       }
     } finally {
-      setState(() => _isDownloading = false);
+      if (mounted) {
+        setState(() => _isDownloading = false);
+      }
     }
   }
 
@@ -237,15 +316,30 @@ class _MediaPreviewWidgetState extends State<MediaPreviewWidget> {
   }
 
   void _togglePlayPause() {
-    if (_videoController != null) {
+    if (_videoController != null && _videoController!.value.isInitialized) {
+      final val = _videoController!.value;
+      if (val.position >= val.duration && val.duration.inMilliseconds > 0) {
+        _videoController!.seekTo(Duration.zero).then((_) {
+          _videoController!.play();
+          if (mounted) setState(() => _showControls = true);
+        });
+        return;
+      }
       setState(() {
-        if (_videoController!.value.isPlaying) {
+        if (val.isPlaying) {
           _videoController!.pause();
         } else {
           _videoController!.play();
         }
         _showControls = true;
       });
+      if (_videoController!.value.isPlaying) {
+        Future.delayed(const Duration(seconds: 3), () {
+          if (mounted && _videoController?.value.isPlaying == true) {
+            setState(() => _showControls = false);
+          }
+        });
+      }
     }
   }
 
@@ -272,10 +366,18 @@ class _MediaPreviewWidgetState extends State<MediaPreviewWidget> {
 
   Future<void> _enterFullscreen() async {
     await SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky);
-    await SystemChrome.setPreferredOrientations([
-      DeviceOrientation.landscapeLeft,
-      DeviceOrientation.landscapeRight,
-    ]);
+    final aspectRatio = _videoController?.value.aspectRatio ?? 1.0;
+    if (aspectRatio > 1.1) {
+      await SystemChrome.setPreferredOrientations([
+        DeviceOrientation.landscapeLeft,
+        DeviceOrientation.landscapeRight,
+      ]);
+    } else {
+      await SystemChrome.setPreferredOrientations([
+        DeviceOrientation.portraitUp,
+        DeviceOrientation.portraitDown,
+      ]);
+    }
     setState(() => _isFullscreen = true);
   }
 
@@ -320,13 +422,26 @@ class _MediaPreviewWidgetState extends State<MediaPreviewWidget> {
                     ),
                   )
                 else ...[
+                  if (widget.mediaType == 'image')
+                    IconButton(
+                      icon: const GoogleLensIcon(size: 22),
+                      tooltip: 'Search with Google Lens',
+                      onPressed: () => GoogleLensService.search(
+                        context: context,
+                        imageUrl: widget.mediaUrl,
+                        localPath: _localMediaPath,
+                      ),
+                    ),
                   IconButton(
                     icon: const Icon(Icons.download, color: Colors.white),
                     onPressed: _downloadMedia,
                     tooltip: 'Download',
                   ),
                   IconButton(
-                    icon: const Icon(Icons.forward_rounded, color: Colors.white),
+                    icon: const Icon(
+                      Icons.forward_rounded,
+                      color: Colors.white,
+                    ),
                     onPressed: () {
                       ForwardMessageSheet.show(
                         context,
@@ -359,45 +474,44 @@ class _MediaPreviewWidgetState extends State<MediaPreviewWidget> {
                 ],
               )
             : (widget.mediaType == 'image' || widget.mediaType == 'gif')
-                ? PhotoView(
-                    imageProvider: (_localMediaPath != null &&
-                            File(_localMediaPath!).existsSync())
-                        ? FileImage(File(_localMediaPath!))
-                        : (widget.mediaUrl.startsWith('http://') ||
-                                widget.mediaUrl.startsWith('https://'))
-                            ? CachedNetworkImageProvider(widget.mediaUrl)
-                            : FileImage(
-                                File(
-                                  widget.mediaUrl.replaceFirst('file://', ''),
-                                ),
-                              ) as ImageProvider,
-                    minScale: PhotoViewComputedScale.contained,
-                    maxScale: PhotoViewComputedScale.covered * 4,
-                    initialScale: PhotoViewComputedScale.contained,
-                    basePosition: Alignment.center,
-                    loadingBuilder: (context, event) => const Center(
-                      child: CircularProgressIndicator(color: Colors.white),
+            ? PhotoView(
+                imageProvider:
+                    (_localMediaPath != null &&
+                        File(_localMediaPath!).existsSync())
+                    ? FileImage(File(_localMediaPath!))
+                    : (widget.mediaUrl.startsWith('http://') ||
+                          widget.mediaUrl.startsWith('https://'))
+                    ? CachedNetworkImageProvider(widget.mediaUrl)
+                    : FileImage(
+                            File(widget.mediaUrl.replaceFirst('file://', '')),
+                          )
+                          as ImageProvider,
+                minScale: PhotoViewComputedScale.contained,
+                maxScale: PhotoViewComputedScale.covered * 4,
+                initialScale: PhotoViewComputedScale.contained,
+                basePosition: Alignment.center,
+                loadingBuilder: (context, event) => const Center(
+                  child: CircularProgressIndicator(color: Colors.white),
+                ),
+                errorBuilder: (context, error, stackTrace) => Column(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    const Icon(
+                      Icons.broken_image_rounded,
+                      color: Colors.white60,
+                      size: 54,
                     ),
-                    errorBuilder: (context, error, stackTrace) => Column(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      children: [
-                        const Icon(
-                          Icons.broken_image_rounded,
-                          color: Colors.white60,
-                          size: 54,
-                        ),
-                        const SizedBox(height: 12),
-                        Text(
-                          'Failed to display full image',
-                          style: TextStyle(
-                            color: Colors.white.withOpacity(0.8),
-                          ),
-                        ),
-                      ],
+                    const SizedBox(height: 12),
+                    Text(
+                      'Failed to display full image',
+                      style: TextStyle(
+                        color: Colors.white.withValues(alpha: 0.8),
+                      ),
                     ),
-                    backgroundDecoration:
-                        const BoxDecoration(color: Colors.black),
-                  )
+                  ],
+                ),
+                backgroundDecoration: const BoxDecoration(color: Colors.black),
+              )
             : _isVideoInitialized && _videoController != null
             ? GestureDetector(
                 onTap: _toggleControls,
@@ -406,7 +520,9 @@ class _MediaPreviewWidgetState extends State<MediaPreviewWidget> {
                     Center(
                       child: AspectRatio(
                         aspectRatio: _videoController!.value.aspectRatio,
-                        child: VideoPlayer(_videoController!),
+                        child: RepaintBoundary(
+                          child: VideoPlayer(_videoController!),
+                        ),
                       ),
                     ),
                     // Play/Pause button
@@ -462,7 +578,7 @@ class _MediaPreviewWidgetState extends State<MediaPreviewWidget> {
                               begin: Alignment.bottomCenter,
                               end: Alignment.topCenter,
                               colors: [
-                                Colors.black.withOpacity(0.8),
+                                Colors.black.withValues(alpha: 0.8),
                                 Colors.transparent,
                               ],
                             ),
@@ -475,83 +591,86 @@ class _MediaPreviewWidgetState extends State<MediaPreviewWidget> {
                                 vertical: isSmallScreen ? 4 : 6,
                               ),
                               child: Row(
-                            children: [
-                              IconButton(
-                                icon: Icon(
-                                  _isMuted
-                                      ? Icons.volume_off_rounded
-                                      : Icons.volume_up_rounded,
-                                  color: Colors.white,
-                                  size: isSmallScreen ? 24 : 28,
-                                ),
-                                onPressed: _toggleMute,
-                              ),
-                              Expanded(
-                                child: SliderTheme(
-                                  data: SliderTheme.of(context).copyWith(
-                                    trackHeight: 2,
-                                    thumbShape: const RoundSliderThumbShape(
-                                      enabledThumbRadius: 6,
+                                children: [
+                                  IconButton(
+                                    icon: Icon(
+                                      _isMuted
+                                          ? Icons.volume_off_rounded
+                                          : Icons.volume_up_rounded,
+                                      color: Colors.white,
+                                      size: isSmallScreen ? 24 : 28,
                                     ),
-                                    overlayShape: const RoundSliderOverlayShape(
-                                      overlayRadius: 12,
+                                    onPressed: _toggleMute,
+                                  ),
+                                  Expanded(
+                                    child: SliderTheme(
+                                      data: SliderTheme.of(context).copyWith(
+                                        trackHeight: 2,
+                                        thumbShape: const RoundSliderThumbShape(
+                                          enabledThumbRadius: 6,
+                                        ),
+                                        overlayShape:
+                                            const RoundSliderOverlayShape(
+                                              overlayRadius: 12,
+                                            ),
+                                        activeTrackColor: tabColor,
+                                        inactiveTrackColor: Colors.white30,
+                                        thumbColor: Colors.white,
+                                        overlayColor: tabColor.withValues(
+                                          alpha: 0.2,
+                                        ),
+                                      ),
+                                      child: Slider(
+                                        value: _videoController!
+                                            .value
+                                            .position
+                                            .inSeconds
+                                            .toDouble(),
+                                        max: _videoController!
+                                            .value
+                                            .duration
+                                            .inSeconds
+                                            .toDouble(),
+                                        onChanged: (value) {
+                                          setState(() {
+                                            _videoController!.seekTo(
+                                              Duration(seconds: value.toInt()),
+                                            );
+                                            _showControls = true;
+                                          });
+                                        },
+                                      ),
                                     ),
-                                    activeTrackColor: tabColor,
-                                    inactiveTrackColor: Colors.white30,
-                                    thumbColor: Colors.white,
-                                    overlayColor: tabColor.withOpacity(0.2),
                                   ),
-                                  child: Slider(
-                                    value: _videoController!
-                                        .value
-                                        .position
-                                        .inSeconds
-                                        .toDouble(),
-                                    max: _videoController!
-                                        .value
-                                        .duration
-                                        .inSeconds
-                                        .toDouble(),
-                                    onChanged: (value) {
-                                      setState(() {
-                                        _videoController!.seekTo(
-                                          Duration(seconds: value.toInt()),
-                                        );
-                                        _showControls = true;
-                                      });
-                                    },
+                                  Padding(
+                                    padding: const EdgeInsets.symmetric(
+                                      horizontal: 8,
+                                    ),
+                                    child: Text(
+                                      '${_formatDuration(_videoController!.value.position)} / ${_formatDuration(_videoController!.value.duration)}',
+                                      style: TextStyle(
+                                        color: Colors.white,
+                                        fontSize: isSmallScreen ? 10 : 12,
+                                      ),
+                                    ),
                                   ),
-                                ),
-                              ),
-                              Padding(
-                                padding: const EdgeInsets.symmetric(
-                                  horizontal: 8,
-                                ),
-                                child: Text(
-                                  '${_formatDuration(_videoController!.value.position)} / ${_formatDuration(_videoController!.value.duration)}',
-                                  style: TextStyle(
-                                    color: Colors.white,
-                                    fontSize: isSmallScreen ? 10 : 12,
+                                  IconButton(
+                                    icon: Icon(
+                                      _isFullscreen
+                                          ? Icons.fullscreen_exit
+                                          : Icons.fullscreen,
+                                      color: Colors.white,
+                                      size: isSmallScreen ? 24 : 28,
+                                    ),
+                                    onPressed: _toggleFullscreen,
                                   ),
-                                ),
+                                ],
                               ),
-                              IconButton(
-                                icon: Icon(
-                                  _isFullscreen
-                                      ? Icons.fullscreen_exit
-                                      : Icons.fullscreen,
-                                  color: Colors.white,
-                                  size: isSmallScreen ? 24 : 28,
-                                ),
-                                onPressed: _toggleFullscreen,
-                              ),
-                            ],
+                            ),
+                          ),
                         ),
                       ),
                     ),
-                  ),
-                ),
-              ),
                   ],
                 ),
               )
@@ -584,6 +703,7 @@ class DisplayMessages extends StatefulWidget {
   final double? mediaWidth;
   final double? mediaHeight;
   final BorderRadius? mediaBorderRadius;
+  final Color? textColor;
 
   const DisplayMessages({
     super.key,
@@ -603,13 +723,376 @@ class DisplayMessages extends StatefulWidget {
     this.mediaWidth,
     this.mediaHeight,
     this.mediaBorderRadius,
+    this.textColor,
   });
 
   @override
   State<DisplayMessages> createState() => _DisplayMessagesState();
 }
 
-class _DisplayMessagesState extends State<DisplayMessages> {
+// -----------------------------------------------------------------------------
+// ChatLinkPreviewWidget: High-performance link preview with in-memory caching
+// and zero-layout-shift design to eliminate flickering on message list updates.
+// -----------------------------------------------------------------------------
+class ChatLinkPreviewWidget extends StatefulWidget {
+  final String url;
+  final bool isSmallScreen;
+  final VoidCallback? onTap;
+
+  const ChatLinkPreviewWidget({
+    super.key,
+    required this.url,
+    this.isSmallScreen = false,
+    this.onTap,
+  });
+
+  // Global static cache persists metadata across widget rebuilds and ListView scroll cycles
+  static final Map<String, Metadata> _metadataCache = {};
+  static final Set<String> _failedUrls = {};
+  static final Map<String, Future<Metadata?>> _inFlightRequests = {};
+
+  static String normalizeUrl(String rawUrl) {
+    String clean = rawUrl.trim();
+    if (!clean.startsWith('http://') && !clean.startsWith('https://')) {
+      clean = 'https://$clean';
+    }
+    return clean;
+  }
+
+  static void prefetch(String rawUrl) {
+    final url = normalizeUrl(rawUrl);
+    if (_metadataCache.containsKey(url) ||
+        _failedUrls.contains(url) ||
+        _inFlightRequests.containsKey(url)) {
+      return;
+    }
+    _inFlightRequests[url] =
+        AnyLinkPreview.getMetadata(link: url, cache: const Duration(days: 7))
+            .then((metadata) {
+              if (metadata != null && metadata.hasData) {
+                _metadataCache[url] = metadata;
+              } else {
+                _failedUrls.add(url);
+              }
+              _inFlightRequests.remove(url);
+              return metadata;
+            })
+            .catchError((_) {
+              _failedUrls.add(url);
+              _inFlightRequests.remove(url);
+              return null;
+            });
+  }
+
+  @override
+  State<ChatLinkPreviewWidget> createState() => _ChatLinkPreviewWidgetState();
+}
+
+class _ChatLinkPreviewWidgetState extends State<ChatLinkPreviewWidget>
+    with AutomaticKeepAliveClientMixin {
+  Metadata? _metadata;
+  bool _isLoading = false;
+  bool _isFailed = false;
+
+  @override
+  bool get wantKeepAlive => true;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadMetadata();
+  }
+
+  @override
+  void didUpdateWidget(covariant ChatLinkPreviewWidget oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.url != widget.url) {
+      _loadMetadata();
+    }
+  }
+
+  void _loadMetadata() {
+    final url = ChatLinkPreviewWidget.normalizeUrl(widget.url);
+
+    // 1. Instant cache hit: render immediately with zero latency and no flash!
+    if (ChatLinkPreviewWidget._metadataCache.containsKey(url)) {
+      _metadata = ChatLinkPreviewWidget._metadataCache[url];
+      _isLoading = false;
+      _isFailed = false;
+      return;
+    }
+
+    // 2. Previously failed
+    if (ChatLinkPreviewWidget._failedUrls.contains(url)) {
+      _metadata = null;
+      _isLoading = false;
+      _isFailed = true;
+      return;
+    }
+
+    // 3. Needs network fetch
+    _isLoading = true;
+    _isFailed = false;
+
+    final future = ChatLinkPreviewWidget._inFlightRequests[url] ??=
+        AnyLinkPreview.getMetadata(link: url, cache: const Duration(days: 7))
+            .then((metadata) {
+              if (metadata != null && metadata.hasData) {
+                ChatLinkPreviewWidget._metadataCache[url] = metadata;
+              } else {
+                ChatLinkPreviewWidget._failedUrls.add(url);
+              }
+              ChatLinkPreviewWidget._inFlightRequests.remove(url);
+              return metadata;
+            })
+            .catchError((_) {
+              ChatLinkPreviewWidget._failedUrls.add(url);
+              ChatLinkPreviewWidget._inFlightRequests.remove(url);
+              return null;
+            });
+
+    future.then((meta) {
+      if (!mounted) return;
+      setState(() {
+        _isLoading = false;
+        if (meta != null && meta.hasData) {
+          _metadata = meta;
+          _isFailed = false;
+        } else {
+          _metadata = null;
+          _isFailed = true;
+        }
+      });
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    super.build(context);
+
+    if (_metadata != null && _metadata!.hasData) {
+      return _buildRichPreviewCard(context, _metadata!);
+    }
+
+    return _buildCompactLinkTile(context);
+  }
+
+  Widget _buildRichPreviewCard(BuildContext context, Metadata meta) {
+    final theme = Theme.of(context);
+    final isDark = theme.brightness == Brightness.dark;
+    final title = (meta.title ?? '').trim();
+    final desc = (meta.desc ?? '').trim();
+    final rawImage = meta.image?.trim();
+    final hasValidImage =
+        rawImage != null &&
+        rawImage.isNotEmpty &&
+        !rawImage.contains('via.placeholder') &&
+        (rawImage.startsWith('http://') || rawImage.startsWith('https://'));
+
+    final host =
+        Uri.tryParse(ChatLinkPreviewWidget.normalizeUrl(widget.url))?.host ??
+        '';
+    final siteName = (meta.siteName ?? '').trim();
+    final displaySource = siteName.isNotEmpty
+        ? siteName
+        : (host.isNotEmpty ? host.replaceFirst(RegExp(r'^www\.'), '') : '');
+
+    return RepaintBoundary(
+      child: Material(
+        color: Colors.transparent,
+        child: InkWell(
+          onTap: widget.onTap,
+          borderRadius: BorderRadius.circular(10),
+          child: Container(
+            clipBehavior: Clip.antiAlias,
+            decoration: BoxDecoration(
+              color: isDark
+                  ? theme.colorScheme.surfaceContainerHighest.withValues(
+                      alpha: 0.6,
+                    )
+                  : theme.colorScheme.surfaceContainerLow,
+              borderRadius: BorderRadius.circular(10),
+              border: Border.all(
+                color: theme.colorScheme.outline.withValues(
+                  alpha: isDark ? 0.25 : 0.15,
+                ),
+                width: 1,
+              ),
+              boxShadow: [
+                BoxShadow(
+                  color: Colors.black.withValues(alpha: 0.08),
+                  blurRadius: 4,
+                  offset: const Offset(0, 2),
+                ),
+              ],
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                if (hasValidImage)
+                  CachedNetworkImage(
+                    imageUrl: rawImage,
+                    height: 140,
+                    width: double.infinity,
+                    fit: BoxFit.cover,
+                    fadeInDuration: Duration.zero,
+                    fadeOutDuration: Duration.zero,
+                    placeholder: (context, _) => Container(
+                      height: 140,
+                      color: theme.colorScheme.surfaceContainerHighest
+                          .withValues(alpha: 0.4),
+                    ),
+                    errorWidget: (context, _, __) => const SizedBox.shrink(),
+                  ),
+                Padding(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 10,
+                    vertical: 8,
+                  ),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      if (displaySource.isNotEmpty)
+                        Padding(
+                          padding: const EdgeInsets.only(bottom: 3),
+                          child: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Icon(
+                                Icons.link_rounded,
+                                size: 13,
+                                color: theme.colorScheme.primary.withValues(
+                                  alpha: 0.8,
+                                ),
+                              ),
+                              const SizedBox(width: 4),
+                              Flexible(
+                                child: Text(
+                                  displaySource,
+                                  style: TextStyle(
+                                    fontSize: 11,
+                                    fontWeight: FontWeight.w600,
+                                    color: theme.colorScheme.primary.withValues(
+                                      alpha: 0.85,
+                                    ),
+                                  ),
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      if (title.isNotEmpty)
+                        Text(
+                          title,
+                          style: TextStyle(
+                            fontWeight: FontWeight.bold,
+                            fontSize: widget.isSmallScreen ? 13 : 14,
+                            color: theme.colorScheme.onSurface,
+                            height: 1.25,
+                          ),
+                          maxLines: 2,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      if (desc.isNotEmpty) ...[
+                        const SizedBox(height: 3),
+                        Text(
+                          desc,
+                          style: TextStyle(
+                            fontSize: widget.isSmallScreen ? 11 : 12,
+                            color: theme.colorScheme.onSurfaceVariant,
+                            height: 1.2,
+                          ),
+                          maxLines: 2,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ],
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildCompactLinkTile(BuildContext context) {
+    final theme = Theme.of(context);
+    final isDark = theme.brightness == Brightness.dark;
+
+    return RepaintBoundary(
+      child: Material(
+        color: Colors.transparent,
+        child: InkWell(
+          onTap: widget.onTap,
+          borderRadius: BorderRadius.circular(8),
+          child: Container(
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+            decoration: BoxDecoration(
+              color: isDark
+                  ? theme.colorScheme.surfaceContainerHighest.withValues(
+                      alpha: 0.5,
+                    )
+                  : theme.colorScheme.surfaceContainerLow,
+              borderRadius: BorderRadius.circular(8),
+              border: Border.all(
+                color: theme.colorScheme.outline.withValues(
+                  alpha: isDark ? 0.25 : 0.15,
+                ),
+              ),
+            ),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(
+                  _isFailed ? Icons.link_off_rounded : Icons.link_rounded,
+                  color: _isFailed
+                      ? theme.colorScheme.onSurfaceVariant
+                      : theme.colorScheme.primary,
+                  size: 18,
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    widget.url,
+                    style: TextStyle(
+                      color: theme.colorScheme.primary,
+                      fontSize: widget.isSmallScreen ? 12 : 13,
+                      decoration: TextDecoration.underline,
+                    ),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ),
+                if (_isLoading) ...[
+                  const SizedBox(width: 8),
+                  SizedBox(
+                    width: 12,
+                    height: 12,
+                    child: CircularProgressIndicator(
+                      strokeWidth: 1.5,
+                      valueColor: AlwaysStoppedAnimation<Color>(
+                        theme.colorScheme.primary.withValues(alpha: 0.7),
+                      ),
+                    ),
+                  ),
+                ],
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _DisplayMessagesState extends State<DisplayMessages>
+    with AutomaticKeepAliveClientMixin {
   VideoPlayerController? _videoController;
   bool _isVideoInitialized = false;
   bool _isMuted = true;
@@ -619,6 +1102,11 @@ class _DisplayMessagesState extends State<DisplayMessages> {
   bool _isLoadingMedia = false;
   List<String> _extractedUrls = [];
   bool _isDownloading = false;
+
+  @override
+  bool get wantKeepAlive =>
+      widget.messageType == 'video' ||
+      (widget.messageType == 'text' && _extractedUrls.isNotEmpty);
 
   @override
   void initState() {
@@ -633,17 +1121,34 @@ class _DisplayMessagesState extends State<DisplayMessages> {
       _initializeNetworkVideo();
     }
 
-    // Extract URLs from message for link preview
+    // Extract URLs from message for link preview and prefetch
     if (widget.messageType == 'text' && widget.showLinkPreview) {
       _extractedUrls = _extractUrls(widget.message);
+      for (final url in _extractedUrls) {
+        ChatLinkPreviewWidget.prefetch(url);
+      }
     }
   }
 
   @override
   void didUpdateWidget(covariant DisplayMessages oldWidget) {
     super.didUpdateWidget(oldWidget);
+
+    if (widget.messageType == 'text' &&
+        widget.showLinkPreview &&
+        oldWidget.message != widget.message) {
+      _extractedUrls = _extractUrls(widget.message);
+      for (final url in _extractedUrls) {
+        ChatLinkPreviewWidget.prefetch(url);
+      }
+    }
+
     if (widget.messageType == 'video') {
       if (_videoController != null && _isVideoInitialized) {
+        if (widget.messageId != null &&
+            oldWidget.messageId == widget.messageId) {
+          return;
+        }
         final oldCached = oldWidget.fileMessageData != null
             ? MediaCacheService().getCachedSync(oldWidget.fileMessageData!)
             : null;
@@ -681,12 +1186,19 @@ class _DisplayMessagesState extends State<DisplayMessages> {
   }
 
   Future<void> _loadAndInitializeVideo() async {
-    setState(() => _isLoadingMedia = true);
+    if (!_isVideoInitialized) {
+      setState(() => _isLoadingMedia = true);
+    }
 
     try {
-      final localPath = await MediaCacheService().getMediaPath(
+      final syncPath = MediaCacheService().getCachedSync(
         widget.fileMessageData!,
       );
+      final localPath =
+          syncPath ??
+          await MediaCacheService().getMediaPath(widget.fileMessageData!);
+
+      if (!mounted) return;
 
       if (localPath == null) {
         setState(() {
@@ -696,78 +1208,111 @@ class _DisplayMessagesState extends State<DisplayMessages> {
         return;
       }
 
+      if (_localMediaPath == localPath &&
+          _videoController != null &&
+          _isVideoInitialized) {
+        return;
+      }
+
       setState(() => _localMediaPath = localPath);
 
-      _videoController = VideoPlayerController.file(File(localPath))
-        ..initialize()
-            .then((_) {
-              if (mounted) {
-                setState(() {
-                  _isVideoInitialized = true;
-                  _isLoadingMedia = false;
-                  _isMuted = true;
-                  _videoController!.setVolume(0.0);
-                  _videoController!.play();
-                  _videoController!.setLooping(true);
-                });
-                Future.delayed(const Duration(seconds: 3), () {
-                  if (mounted) setState(() => _showControls = false);
-                });
-              }
-            })
-            .catchError((error) {
-              if (mounted) {
-                setState(() {
-                  _errorMessage = 'Failed to load video: $error';
-                  _isLoadingMedia = false;
-                });
-                log('Video error: $error');
-              }
-            });
+      final oldController = _videoController;
+      oldController?.removeListener(_onVideoUpdate);
+      final newController = VideoPlayerController.file(File(localPath));
+
+      await newController.initialize();
+      if (!mounted) {
+        newController.dispose();
+        return;
+      }
+
+      newController.addListener(_onVideoUpdate);
+
+      setState(() {
+        _videoController = newController;
+        _isVideoInitialized = true;
+        _isLoadingMedia = false;
+        _isMuted = false;
+        _videoController!.setVolume(1.0);
+        _videoController!.pause();
+        _videoController!.setLooping(false);
+        _showControls = true;
+      });
+
+      oldController?.dispose();
     } catch (e) {
       log('Error loading cached video: $e');
-      setState(() {
-        _errorMessage = 'Error: $e';
-        _isLoadingMedia = false;
-      });
+      if (mounted) {
+        setState(() {
+          _errorMessage = 'Error: $e';
+          _isLoadingMedia = false;
+        });
+      }
     }
   }
 
   void _initializeNetworkVideo() {
     if (Uri.tryParse(widget.fileMessageData!)?.isAbsolute ?? false) {
-      _videoController = VideoPlayerController.network(widget.fileMessageData!)
-        ..initialize()
-            .then((_) {
-              if (mounted) {
-                setState(() {
-                  _isVideoInitialized = true;
-                  _isMuted = true;
-                  _videoController!.setVolume(0.0);
-                  _videoController!.play();
-                  _videoController!.setLooping(true);
-                });
-                Future.delayed(const Duration(seconds: 3), () {
-                  if (mounted) setState(() => _showControls = false);
-                });
-              }
-            })
-            .catchError((error) {
-              if (mounted) {
-                setState(() {
-                  _errorMessage = 'Failed to load video: $error';
-                });
-                log('Video error: $error');
-              }
-            });
+      final oldController = _videoController;
+      oldController?.removeListener(_onVideoUpdate);
+      final newController = VideoPlayerController.networkUrl(
+        Uri.parse(widget.fileMessageData!),
+      );
+
+      newController
+          .initialize()
+          .then((_) {
+            if (mounted) {
+              newController.addListener(_onVideoUpdate);
+              setState(() {
+                _videoController = newController;
+                _isVideoInitialized = true;
+                _isLoadingMedia = false;
+                _isMuted = false;
+                _videoController!.setVolume(1.0);
+                _videoController!.pause();
+                _videoController!.setLooping(false);
+                _showControls = true;
+              });
+              oldController?.dispose();
+            } else {
+              newController.dispose();
+            }
+          })
+          .catchError((error) {
+            if (mounted) {
+              setState(() {
+                _errorMessage = 'Failed to load video: $error';
+                _isLoadingMedia = false;
+              });
+              log('Video error: $error');
+            }
+          });
     } else {
       setState(() {
         _errorMessage = 'Invalid video URL';
+        _isLoadingMedia = false;
       });
+    }
+  }
+
+  void _onVideoUpdate() {
+    if (mounted && _videoController != null) {
+      if (_videoController!.value.isInitialized &&
+          _videoController!.value.position >=
+              _videoController!.value.duration &&
+          !_videoController!.value.isPlaying) {
+        if (!_showControls) {
+          setState(() => _showControls = true);
+        }
+      }
+      setState(() {});
     }
   }
 
   @override
   void dispose() {
+    _videoController?.removeListener(_onVideoUpdate);
     _videoController?.dispose();
     super.dispose();
   }
@@ -794,11 +1339,7 @@ class _DisplayMessagesState extends State<DisplayMessages> {
           mediaUrl: widget.fileMessageData!,
         ),
       ),
-    ).then((_) {
-      if (_videoController != null && _isVideoInitialized) {
-        _videoController!.play();
-      }
-    });
+    );
   }
 
   void _toggleMute() {
@@ -812,29 +1353,30 @@ class _DisplayMessagesState extends State<DisplayMessages> {
   }
 
   void _togglePlayPause() {
-    if (_videoController != null) {
+    if (_videoController != null && _videoController!.value.isInitialized) {
       setState(() {
         if (_videoController!.value.isPlaying) {
           _videoController!.pause();
+          _showControls = true;
         } else {
+          if (_videoController!.value.position >=
+              _videoController!.value.duration) {
+            _videoController!.seekTo(Duration.zero);
+          }
           _videoController!.play();
+          _showControls = true;
         }
-        _showControls = true;
       });
-    }
-  }
-
-  void _toggleControls() {
-    setState(() {
-      _showControls = !_showControls;
-      if (_showControls) {
-        Future.delayed(const Duration(seconds: 3), () {
-          if (mounted && _videoController?.value.isPlaying == true) {
+      if (_videoController!.value.isPlaying) {
+        Future.delayed(const Duration(milliseconds: 2500), () {
+          if (mounted &&
+              _videoController != null &&
+              _videoController!.value.isPlaying) {
             setState(() => _showControls = false);
           }
         });
       }
-    });
+    }
   }
 
   Future<void> _launchURL(String url) async {
@@ -898,6 +1440,21 @@ class _DisplayMessagesState extends State<DisplayMessages> {
     BuildContext context,
     bool isSmallScreen,
   ) {
+    final contrast = widget.textColor != null
+        ? (widget.textColor!.computeLuminance() < 0.45
+              ? ChatBubbleSettings.contrastForBackground(
+                  const Color(0xFFF0F0F0),
+                )
+              : ChatBubbleSettings.contrastForBackground(
+                  const Color(0xFF15141F),
+                ))
+        : ChatBubbleSettings.contrastForBackground(const Color(0xFF15141F));
+
+    final effectiveTextColor = widget.textColor ?? contrast.primaryTextColor;
+    final isDarkText = effectiveTextColor.computeLuminance() < 0.45;
+    final linkColor = isDarkText ? contrast.linkColor : tabColor;
+    final textShadows = contrast.textShadows;
+
     final urlPattern = RegExp(
       r'(?:(?:https?|ftp):\/\/)?(?:www\.)?[-a-zA-Z0-9@:%._\+~#=]{1,256}\.[a-zA-Z0-9()]{1,6}\b(?:[-a-zA-Z0-9()@:%_\+.~#?&\/=]*)',
       caseSensitive: false,
@@ -910,7 +1467,8 @@ class _DisplayMessagesState extends State<DisplayMessages> {
         text,
         style: TextStyle(
           fontSize: isSmallScreen ? 14 : 16,
-          color: Theme.of(context).colorScheme.onSurface,
+          color: effectiveTextColor,
+          shadows: textShadows,
         ),
       );
     }
@@ -925,7 +1483,8 @@ class _DisplayMessagesState extends State<DisplayMessages> {
             text: text.substring(currentPosition, match.start),
             style: TextStyle(
               fontSize: isSmallScreen ? 14 : 16,
-              color: Theme.of(context).colorScheme.onSurface,
+              color: effectiveTextColor,
+              shadows: textShadows,
             ),
           ),
         );
@@ -937,8 +1496,9 @@ class _DisplayMessagesState extends State<DisplayMessages> {
           text: url,
           style: TextStyle(
             fontSize: isSmallScreen ? 14 : 16,
-            color: tabColor,
+            color: linkColor,
             decoration: TextDecoration.underline,
+            shadows: textShadows,
           ),
           recognizer: TapGestureRecognizer()
             ..onTap = () {
@@ -957,7 +1517,8 @@ class _DisplayMessagesState extends State<DisplayMessages> {
           text: text.substring(currentPosition),
           style: TextStyle(
             fontSize: isSmallScreen ? 14 : 16,
-            color: Theme.of(context).colorScheme.onSurface,
+            color: effectiveTextColor,
+            shadows: textShadows,
           ),
         ),
       );
@@ -972,77 +1533,86 @@ class _DisplayMessagesState extends State<DisplayMessages> {
     setState(() => _isDownloading = true);
 
     try {
-      if (Platform.isAndroid) {
-        var status = await Permission.storage.request();
+      await BackgroundTaskService.instance.runWithBackgroundTask(
+        title: 'Downloading Video',
+        initialMessage: 'Saving video to device...',
+        successMessage: 'Saved to Downloads',
+        task: (_) async {
+          if (Platform.isAndroid) {
+            var status = await Permission.storage.request();
 
-        if (!status.isGranted) {
-          status = await Permission.videos.request();
-        }
+            if (!status.isGranted) {
+              status = await Permission.videos.request();
+            }
 
-        if (!status.isGranted) {
-          status = await Permission.manageExternalStorage.request();
-        }
+            if (!status.isGranted) {
+              status = await Permission.manageExternalStorage.request();
+            }
 
-        if (!status.isGranted) {
-          if (mounted) {
-            AppSnackBar.warning(context, 'Storage permission denied');
+            if (!status.isGranted) {
+              if (mounted) {
+                AppSnackBar.warning(context, 'Storage permission denied');
+              }
+              return;
+            }
           }
-          setState(() => _isDownloading = false);
-          return;
-        }
-      }
 
-      Directory? directory;
-      String displayPath;
+          Directory? directory;
+          String displayPath;
 
-      if (Platform.isAndroid) {
-        final externalDir = await getExternalStorageDirectory();
-        if (externalDir != null) {
-          final downloadPath = '/storage/emulated/0/Download/WorshipChat';
-          directory = Directory(downloadPath);
-          displayPath = 'Downloads/WorshipChat';
-        } else {
-          directory = await getApplicationDocumentsDirectory();
-          displayPath = directory.path;
-        }
-      } else if (Platform.isIOS) {
-        directory = await getApplicationDocumentsDirectory();
-        displayPath = 'App Documents';
-      } else {
-        directory =
-            await getDownloadsDirectory() ??
-            await getApplicationDocumentsDirectory();
-        displayPath = directory.path;
-      }
+          if (Platform.isAndroid) {
+            final externalDir = await getExternalStorageDirectory();
+            if (externalDir != null) {
+              final downloadPath = '/storage/emulated/0/Download/WorshipChat';
+              directory = Directory(downloadPath);
+              displayPath = 'Downloads/WorshipChat';
+            } else {
+              directory = await getApplicationDocumentsDirectory();
+              displayPath = directory.path;
+            }
+          } else if (Platform.isIOS) {
+            directory = await getApplicationDocumentsDirectory();
+            displayPath = 'App Documents';
+          } else {
+            directory =
+                await getDownloadsDirectory() ??
+                await getApplicationDocumentsDirectory();
+            displayPath = directory.path;
+          }
 
-      if (!await directory.exists()) {
-        await directory.create(recursive: true);
-      }
+          if (!await directory.exists()) {
+            await directory.create(recursive: true);
+          }
 
-      final timestamp = DateTime.now().millisecondsSinceEpoch;
-      final fileName = 'WorshipChat_$timestamp.mp4';
-      final filePath = '${directory.path}/$fileName';
+          final timestamp = DateTime.now().millisecondsSinceEpoch;
+          final fileName = 'WorshipChat_$timestamp.mp4';
+          final filePath = '${directory.path}/$fileName';
 
-      final sourceFile = File(_localMediaPath!);
-      await sourceFile.copy(filePath);
+          final sourceFile = File(_localMediaPath!);
+          await sourceFile.copy(filePath);
 
-      log('Video saved to: $filePath');
+          log('Video saved to: $filePath');
 
-      if (mounted) {
-        AppSnackBar.success(context, 'Saved to $displayPath');
-      }
+          if (mounted) {
+            AppSnackBar.success(context, 'Saved to $displayPath');
+          }
+        },
+      );
     } catch (e) {
-      log('Download error: $e');
+      log('Video download error: $e');
       if (mounted) {
         AppSnackBar.error(context, 'Download failed: $e');
       }
     } finally {
-      setState(() => _isDownloading = false);
+      if (mounted) {
+        setState(() => _isDownloading = false);
+      }
     }
   }
 
   @override
   Widget build(BuildContext context) {
+    super.build(context);
     final screenWidth = MediaQuery.of(context).size.width;
     final isSmallScreen = screenWidth < 600;
 
@@ -1051,11 +1621,13 @@ class _DisplayMessagesState extends State<DisplayMessages> {
         : 295.0;
     final double defaultMediaHeight = isSmallScreen ? 235.0 : 265.0;
 
-    final double effectiveMediaWidth = widget.mediaWidth ??
-        (widget.isPreviewable ? defaultMediaWidth : 48.0);
-    final double effectiveMediaHeight = widget.mediaHeight ??
+    final double effectiveMediaWidth =
+        widget.mediaWidth ?? (widget.isPreviewable ? defaultMediaWidth : 48.0);
+    final double effectiveMediaHeight =
+        widget.mediaHeight ??
         (widget.isPreviewable ? defaultMediaHeight : 48.0);
-    final BorderRadius effectiveRadius = widget.mediaBorderRadius ??
+    final BorderRadius effectiveRadius =
+        widget.mediaBorderRadius ??
         BorderRadius.circular(widget.isPreviewable ? 14.0 : 8.0);
 
     Widget content;
@@ -1068,159 +1640,168 @@ class _DisplayMessagesState extends State<DisplayMessages> {
             _buildTextWithLinks(widget.message, context, isSmallScreen),
             // Add link previews if URLs are found
             if (widget.showLinkPreview && _extractedUrls.isNotEmpty)
-              ..._extractedUrls
-                  .map(
-                    (url) => Padding(
-                      padding: const EdgeInsets.only(top: 8.0),
-                      child: AnyLinkPreview(
-                        link: url,
-                        displayDirection: UIDirection.uiDirectionVertical,
-                        showMultimedia: true,
-                        bodyMaxLines: 3,
-                        bodyTextOverflow: TextOverflow.ellipsis,
-                        titleStyle: TextStyle(
-                          color: Theme.of(context).colorScheme.onSurface,
-                          fontWeight: FontWeight.bold,
-                          fontSize: isSmallScreen ? 14 : 16,
-                        ),
-                        bodyStyle: TextStyle(
-                          color: Theme.of(context).colorScheme.onSurfaceVariant,
-                          fontSize: isSmallScreen ? 12 : 14,
-                        ),
-                        errorBody: 'Failed to load preview',
-                        errorTitle: 'Error',
-                        errorWidget: Container(
-                          padding: const EdgeInsets.all(12),
-                          decoration: BoxDecoration(
-                            color: Theme.of(context).colorScheme.surfaceVariant,
-                            borderRadius: BorderRadius.circular(8),
-                            border: Border.all(
-                              color: Theme.of(
-                                context,
-                              ).colorScheme.outline.withOpacity(0.3),
-                            ),
-                          ),
-                          child: Row(
-                            children: [
-                              Icon(
-                                Icons.link,
-                                color: Theme.of(context).colorScheme.primary,
-                                size: 24,
-                              ),
-                              const SizedBox(width: 12),
-                              Expanded(
-                                child: Text(
-                                  url,
-                                  style: TextStyle(
-                                    color: Theme.of(
-                                      context,
-                                    ).colorScheme.primary,
-                                    decoration: TextDecoration.underline,
-                                  ),
-                                  maxLines: 1,
-                                  overflow: TextOverflow.ellipsis,
-                                ),
-                              ),
-                            ],
-                          ),
-                        ),
-                        errorImage:
-                            'https://via.placeholder.com/400x200?text=No+Preview',
-                        cache: const Duration(hours: 1),
-                        backgroundColor: Theme.of(context).colorScheme.surface,
-                        borderRadius: 8,
-                        removeElevation: false,
-                        boxShadow: [
-                          BoxShadow(
-                            color: Colors.black.withOpacity(0.1),
-                            blurRadius: 4,
-                            offset: const Offset(0, 2),
-                          ),
-                        ],
-                        onTap: () => _launchURL(url),
-                        placeholderWidget: Container(
-                          height: 150,
-                          decoration: BoxDecoration(
-                            color: Theme.of(context).colorScheme.surfaceVariant,
-                            borderRadius: BorderRadius.circular(8),
-                          ),
-                          child: const Center(
-                            child: CircularProgressIndicator(),
-                          ),
-                        ),
-                      ),
-                    ),
-                  )
-                  .toList(),
+              ..._extractedUrls.map(
+                (url) => Padding(
+                  padding: const EdgeInsets.only(top: 8.0),
+                  child: ChatLinkPreviewWidget(
+                    key: ValueKey('chat_link_preview_$url'),
+                    url: url,
+                    isSmallScreen: isSmallScreen,
+                    onTap: () => _launchURL(url),
+                  ),
+                ),
+              ),
           ],
         );
         break;
 
       case 'image':
+        final hasExplicitHeight =
+            widget.mediaHeight != null || !widget.isPreviewable;
         content =
             widget.fileMessageData != null && widget.fileMessageData!.isNotEmpty
-            ? SizedBox(
-                width: effectiveMediaWidth,
-                height: effectiveMediaHeight,
-                child: ClipRRect(
-                  borderRadius: effectiveRadius,
-                  child: widget.useCachedMedia
-                      ? _CachedImageWidget(
-                          key: ValueKey('cached_img_${widget.messageId ?? widget.fileMessageData}'),
-                          imageUrl: widget.fileMessageData!,
-                          screenWidth: screenWidth,
-                          width: effectiveMediaWidth,
-                          height: effectiveMediaHeight,
-                          fit: BoxFit.cover,
-                        )
-                      : CachedNetworkImage(
-                          key: ValueKey('cni_${widget.messageId ?? widget.fileMessageData}'),
-                          imageUrl: widget.fileMessageData!,
-                          width: effectiveMediaWidth,
-                          height: effectiveMediaHeight,
-                          fit: BoxFit.cover,
-                          maxWidthDiskCache: (effectiveMediaWidth * 2).toInt(),
-                          maxHeightDiskCache: (effectiveMediaHeight * 2).toInt(),
-                          fadeInDuration: Duration.zero,
-                          fadeOutDuration: Duration.zero,
-                          placeholder: (context, url) => Container(
-                            width: effectiveMediaWidth,
-                            height: effectiveMediaHeight,
-                            color: Colors.white.withOpacity(0.06),
-                            child: const Center(
-                              child: SizedBox(
-                                width: 22,
-                                height: 22,
-                                child: CircularProgressIndicator(strokeWidth: 2),
-                              ),
-                            ),
-                          ),
-                          errorWidget: (context, url, error) => Container(
-                            width: effectiveMediaWidth,
-                            height: effectiveMediaHeight,
-                            color: Theme.of(context).colorScheme.surfaceVariant.withOpacity(0.4),
-                            child: Center(
-                              child: Row(
-                                mainAxisSize: MainAxisSize.min,
-                                children: [
-                                  Icon(Icons.broken_image_outlined, color: Colors.grey[400], size: 20),
-                                  const SizedBox(width: 8),
-                                  Text(
-                                    'Image unavailable',
-                                    style: TextStyle(fontSize: 12, color: Colors.grey[300]),
+            ? (hasExplicitHeight
+                  ? SizedBox(
+                      width: effectiveMediaWidth,
+                      height: effectiveMediaHeight,
+                      child: ClipRRect(
+                        borderRadius: effectiveRadius,
+                        child: widget.useCachedMedia
+                            ? _CachedImageWidget(
+                                key: ValueKey(
+                                  'cached_img_${widget.messageId ?? widget.fileMessageData}',
+                                ),
+                                imageUrl: widget.fileMessageData!,
+                                screenWidth: screenWidth,
+                                width: effectiveMediaWidth,
+                                height: effectiveMediaHeight,
+                                fit: BoxFit.cover,
+                                alignment: Alignment.topCenter,
+                              )
+                            : CachedNetworkImage(
+                                key: ValueKey(
+                                  'cni_${widget.messageId ?? widget.fileMessageData}',
+                                ),
+                                imageUrl: widget.fileMessageData!,
+                                width: effectiveMediaWidth,
+                                height: effectiveMediaHeight,
+                                fit: BoxFit.cover,
+                                alignment: Alignment.topCenter,
+                                maxWidthDiskCache: (effectiveMediaWidth * 2)
+                                    .toInt(),
+                                maxHeightDiskCache: (effectiveMediaHeight * 2)
+                                    .toInt(),
+                                fadeInDuration: Duration.zero,
+                                fadeOutDuration: Duration.zero,
+                                placeholder: (context, url) => Container(
+                                  width: effectiveMediaWidth,
+                                  height: effectiveMediaHeight,
+                                  color: Colors.white.withValues(alpha: 0.06),
+                                ),
+                                errorWidget: (context, url, error) => Container(
+                                  width: effectiveMediaWidth,
+                                  height: effectiveMediaHeight,
+                                  color: Theme.of(context)
+                                      .colorScheme
+                                      .surfaceContainerHighest
+                                      .withValues(alpha: 0.4),
+                                  child: Center(
+                                    child: Icon(
+                                      Icons.broken_image_outlined,
+                                      color: Colors.grey[400],
+                                      size: 20,
+                                    ),
                                   ),
-                                ],
+                                ),
                               ),
-                            ),
-                          ),
+                      ),
+                    )
+                  : ConstrainedBox(
+                      constraints: BoxConstraints(
+                        minWidth: effectiveMediaWidth,
+                        maxWidth: effectiveMediaWidth,
+                        minHeight: 150.0,
+                        maxHeight: (effectiveMediaWidth * 1.5).clamp(
+                          360.0,
+                          440.0,
                         ),
-                ),
-              )
+                      ),
+                      child: ClipRRect(
+                        borderRadius: effectiveRadius,
+                        child: widget.useCachedMedia
+                            ? _CachedImageWidget(
+                                key: ValueKey(
+                                  'cached_img_${widget.messageId ?? widget.fileMessageData}',
+                                ),
+                                imageUrl: widget.fileMessageData!,
+                                screenWidth: screenWidth,
+                                width: effectiveMediaWidth,
+                                height: null,
+                                fit: BoxFit.cover,
+                                alignment: Alignment.topCenter,
+                              )
+                            : CachedNetworkImage(
+                                key: ValueKey(
+                                  'cni_${widget.messageId ?? widget.fileMessageData}',
+                                ),
+                                imageUrl: widget.fileMessageData!,
+                                width: effectiveMediaWidth,
+                                fit: BoxFit.cover,
+                                alignment: Alignment.topCenter,
+                                maxWidthDiskCache: (effectiveMediaWidth * 2)
+                                    .toInt(),
+                                fadeInDuration: Duration.zero,
+                                fadeOutDuration: Duration.zero,
+                                placeholder: (context, url) => Container(
+                                  width: effectiveMediaWidth,
+                                  height: 240,
+                                  color: Colors.white.withValues(alpha: 0.06),
+                                  child: const Center(
+                                    child: SizedBox(
+                                      width: 22,
+                                      height: 22,
+                                      child: CircularProgressIndicator(
+                                        strokeWidth: 2,
+                                      ),
+                                    ),
+                                  ),
+                                ),
+                                errorWidget: (context, url, error) => Container(
+                                  width: effectiveMediaWidth,
+                                  height: 160,
+                                  color: Theme.of(context)
+                                      .colorScheme
+                                      .surfaceContainerHighest
+                                      .withValues(alpha: 0.4),
+                                  child: Center(
+                                    child: Row(
+                                      mainAxisSize: MainAxisSize.min,
+                                      children: [
+                                        Icon(
+                                          Icons.broken_image_outlined,
+                                          color: Colors.grey[400],
+                                          size: 20,
+                                        ),
+                                        const SizedBox(width: 8),
+                                        Text(
+                                          'Image unavailable',
+                                          style: TextStyle(
+                                            fontSize: 12,
+                                            color: Colors.grey[300],
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                  ),
+                                ),
+                              ),
+                      ),
+                    ))
             : Container(
                 width: effectiveMediaWidth,
                 height: effectiveMediaHeight,
                 decoration: BoxDecoration(
-                  color: Theme.of(context).colorScheme.surfaceVariant,
+                  color: Theme.of(context).colorScheme.surfaceContainerHighest,
                   borderRadius: effectiveRadius,
                 ),
                 child: const Center(child: Text('Image not available')),
@@ -1237,7 +1818,11 @@ class _DisplayMessagesState extends State<DisplayMessages> {
               child: Container(
                 color: Colors.black45,
                 child: const Center(
-                  child: Icon(Icons.videocam_rounded, color: Colors.white70, size: 22),
+                  child: Icon(
+                    Icons.videocam_rounded,
+                    color: Colors.white70,
+                    size: 22,
+                  ),
                 ),
               ),
             ),
@@ -1286,7 +1871,10 @@ class _DisplayMessagesState extends State<DisplayMessages> {
                         const SizedBox(height: 6),
                         Text(
                           _errorMessage!,
-                          style: const TextStyle(color: Colors.white70, fontSize: 11),
+                          style: const TextStyle(
+                            color: Colors.white70,
+                            fontSize: 11,
+                          ),
                           textAlign: TextAlign.center,
                           maxLines: 2,
                           overflow: TextOverflow.ellipsis,
@@ -1300,13 +1888,16 @@ class _DisplayMessagesState extends State<DisplayMessages> {
                   _isVideoInitialized &&
                   _videoController != null
             ? VisibilityDetector(
-                key: ValueKey('vd_${widget.messageId ?? widget.fileMessageData!}'),
+                key: ValueKey(
+                  'vd_${widget.messageId ?? widget.fileMessageData!}',
+                ),
                 onVisibilityChanged: (info) {
-                  if (_videoController != null) {
-                    if (info.visibleFraction > 0.5) {
-                      _videoController!.play();
-                    } else {
+                  if (_videoController != null &&
+                      _videoController!.value.isInitialized) {
+                    final isPlaying = _videoController!.value.isPlaying;
+                    if (info.visibleFraction <= 0.05 && isPlaying) {
                       _videoController!.pause();
+                      if (mounted) setState(() => _showControls = true);
                     }
                   }
                 },
@@ -1320,19 +1911,36 @@ class _DisplayMessagesState extends State<DisplayMessages> {
                       alignment: Alignment.center,
                       children: [
                         // Video fitted with cover
-                        FittedBox(
-                          fit: BoxFit.cover,
-                          clipBehavior: Clip.hardEdge,
-                          child: SizedBox(
-                            width: (_videoController!.value.isInitialized &&
-                                    _videoController!.value.size.width > 0)
-                                ? _videoController!.value.size.width
-                                : 16,
-                            height: (_videoController!.value.isInitialized &&
-                                    _videoController!.value.size.height > 0)
-                                ? _videoController!.value.size.height
-                                : 9,
-                            child: VideoPlayer(_videoController!),
+                        GestureDetector(
+                          behavior: HitTestBehavior.opaque,
+                          onTap: () {
+                            if (_videoController != null &&
+                                _videoController!.value.isInitialized) {
+                              if (_videoController!.value.isPlaying) {
+                                setState(() => _showControls = !_showControls);
+                              } else {
+                                _togglePlayPause();
+                              }
+                            }
+                          },
+                          child: FittedBox(
+                            fit: BoxFit.cover,
+                            clipBehavior: Clip.hardEdge,
+                            child: RepaintBoundary(
+                              child: SizedBox(
+                                width:
+                                    (_videoController!.value.isInitialized &&
+                                        _videoController!.value.size.width > 0)
+                                    ? _videoController!.value.size.width
+                                    : 16,
+                                height:
+                                    (_videoController!.value.isInitialized &&
+                                        _videoController!.value.size.height > 0)
+                                    ? _videoController!.value.size.height
+                                    : 9,
+                                child: VideoPlayer(_videoController!),
+                              ),
+                            ),
                           ),
                         ),
                         // Top gradient overlay for controls readability
@@ -1347,7 +1955,7 @@ class _DisplayMessagesState extends State<DisplayMessages> {
                                 begin: Alignment.topCenter,
                                 end: Alignment.bottomCenter,
                                 colors: [
-                                  Colors.black.withOpacity(0.55),
+                                  Colors.black.withValues(alpha: 0.55),
                                   Colors.transparent,
                                 ],
                               ),
@@ -1366,7 +1974,7 @@ class _DisplayMessagesState extends State<DisplayMessages> {
                                 begin: Alignment.bottomCenter,
                                 end: Alignment.topCenter,
                                 colors: [
-                                  Colors.black.withOpacity(0.65),
+                                  Colors.black.withValues(alpha: 0.65),
                                   Colors.transparent,
                                 ],
                               ),
@@ -1379,25 +1987,40 @@ class _DisplayMessagesState extends State<DisplayMessages> {
                           child: GestureDetector(
                             onTap: _togglePlayPause,
                             child: AnimatedOpacity(
-                              opacity: _showControls || !_videoController!.value.isPlaying ? 1.0 : 0.0,
+                              opacity:
+                                  _showControls ||
+                                      !_videoController!.value.isPlaying
+                                  ? 1.0
+                                  : 0.0,
                               duration: const Duration(milliseconds: 250),
                               child: Container(
-                                width: 48,
-                                height: 48,
+                                width: 52,
+                                height: 52,
                                 decoration: BoxDecoration(
-                                  color: Colors.black.withOpacity(0.55),
+                                  color: Colors.black.withValues(alpha: 0.60),
                                   shape: BoxShape.circle,
                                   border: Border.all(
-                                    color: Colors.white.withOpacity(0.3),
-                                    width: 1,
+                                    color: Colors.white.withValues(alpha: 0.35),
+                                    width: 1.2,
                                   ),
+                                  boxShadow: [
+                                    BoxShadow(
+                                      color: Colors.black.withValues(
+                                        alpha: 0.4,
+                                      ),
+                                      blurRadius: 8,
+                                      offset: const Offset(0, 2),
+                                    ),
+                                  ],
                                 ),
-                                child: Icon(
-                                  _videoController!.value.isPlaying
-                                      ? Icons.pause_rounded
-                                      : Icons.play_arrow_rounded,
-                                  color: Colors.white,
-                                  size: 30,
+                                child: Center(
+                                  child: Icon(
+                                    _videoController!.value.isPlaying
+                                        ? Icons.pause_rounded
+                                        : Icons.play_arrow_rounded,
+                                    color: Colors.white,
+                                    size: 32,
+                                  ),
                                 ),
                               ),
                             ),
@@ -1414,7 +2037,7 @@ class _DisplayMessagesState extends State<DisplayMessages> {
                                 Container(
                                   padding: const EdgeInsets.all(5),
                                   decoration: BoxDecoration(
-                                    color: Colors.black.withOpacity(0.55),
+                                    color: Colors.black.withValues(alpha: 0.55),
                                     shape: BoxShape.circle,
                                   ),
                                   child: const SizedBox(
@@ -1432,7 +2055,9 @@ class _DisplayMessagesState extends State<DisplayMessages> {
                                   child: Container(
                                     padding: const EdgeInsets.all(5),
                                     decoration: BoxDecoration(
-                                      color: Colors.black.withOpacity(0.55),
+                                      color: Colors.black.withValues(
+                                        alpha: 0.55,
+                                      ),
                                       shape: BoxShape.circle,
                                     ),
                                     child: const Icon(
@@ -1448,7 +2073,7 @@ class _DisplayMessagesState extends State<DisplayMessages> {
                                 child: Container(
                                   padding: const EdgeInsets.all(5),
                                   decoration: BoxDecoration(
-                                    color: Colors.black.withOpacity(0.55),
+                                    color: Colors.black.withValues(alpha: 0.55),
                                     shape: BoxShape.circle,
                                   ),
                                   child: const Icon(
@@ -1473,7 +2098,7 @@ class _DisplayMessagesState extends State<DisplayMessages> {
                                 child: Container(
                                   padding: const EdgeInsets.all(4),
                                   decoration: BoxDecoration(
-                                    color: Colors.black.withOpacity(0.55),
+                                    color: Colors.black.withValues(alpha: 0.55),
                                     shape: BoxShape.circle,
                                   ),
                                   child: Icon(
@@ -1492,11 +2117,15 @@ class _DisplayMessagesState extends State<DisplayMessages> {
                                   vertical: 2.5,
                                 ),
                                 decoration: BoxDecoration(
-                                  color: Colors.black.withOpacity(0.55),
+                                  color: Colors.black.withValues(alpha: 0.55),
                                   borderRadius: BorderRadius.circular(10),
                                 ),
                                 child: Text(
-                                  _formatDuration(_videoController!.value.position),
+                                  _formatDuration(
+                                    _videoController!.value.isPlaying
+                                        ? _videoController!.value.position
+                                        : _videoController!.value.duration,
+                                  ),
                                   style: const TextStyle(
                                     color: Colors.white,
                                     fontSize: 10.5,
@@ -1516,7 +2145,7 @@ class _DisplayMessagesState extends State<DisplayMessages> {
                 width: effectiveMediaWidth,
                 height: effectiveMediaHeight,
                 decoration: BoxDecoration(
-                  color: Theme.of(context).colorScheme.surfaceVariant,
+                  color: Theme.of(context).colorScheme.surfaceContainerHighest,
                   borderRadius: effectiveRadius,
                 ),
                 child: const Center(child: CircularProgressIndicator()),
@@ -1534,7 +2163,9 @@ class _DisplayMessagesState extends State<DisplayMessages> {
                   borderRadius: effectiveRadius,
                   child: widget.useCachedMedia
                       ? _CachedImageWidget(
-                          key: ValueKey('cached_gif_${widget.messageId ?? gifData}'),
+                          key: ValueKey(
+                            'cached_gif_${widget.messageId ?? gifData}',
+                          ),
                           imageUrl: gifData,
                           screenWidth: screenWidth,
                           width: effectiveMediaWidth,
@@ -1542,73 +2173,97 @@ class _DisplayMessagesState extends State<DisplayMessages> {
                           fit: BoxFit.cover,
                         )
                       : (gifData.startsWith('http://') ||
-                              gifData.startsWith('https://'))
-                          ? CachedNetworkImage(
-                              key: ValueKey('cni_gif_${widget.messageId ?? gifData}'),
-                              imageUrl: gifData,
-                              width: effectiveMediaWidth,
-                              height: effectiveMediaHeight,
-                              fit: BoxFit.cover,
-                              maxWidthDiskCache: (effectiveMediaWidth * 2).toInt(),
-                              maxHeightDiskCache: (effectiveMediaHeight * 2).toInt(),
-                              fadeInDuration: Duration.zero,
-                              fadeOutDuration: Duration.zero,
-                              placeholder: (context, url) => Container(
-                                width: effectiveMediaWidth,
-                                height: effectiveMediaHeight,
-                                color: Colors.white.withOpacity(0.06),
-                              ),
-                              errorWidget: (context, url, error) => Container(
-                                width: effectiveMediaWidth,
-                                height: effectiveMediaHeight,
-                                color: Theme.of(context).colorScheme.surfaceVariant.withOpacity(0.4),
-                                child: Center(
-                                  child: Row(
-                                    mainAxisSize: MainAxisSize.min,
-                                    children: [
-                                      Icon(Icons.broken_image_outlined, color: Colors.grey[400], size: 20),
-                                      const SizedBox(width: 8),
-                                      Text(
-                                        'GIF unavailable',
-                                        style: TextStyle(fontSize: 12, color: Colors.grey[300]),
-                                      ),
-                                    ],
+                            gifData.startsWith('https://'))
+                      ? CachedNetworkImage(
+                          key: ValueKey(
+                            'cni_gif_${widget.messageId ?? gifData}',
+                          ),
+                          imageUrl: gifData,
+                          width: effectiveMediaWidth,
+                          height: effectiveMediaHeight,
+                          fit: BoxFit.cover,
+                          maxWidthDiskCache: (effectiveMediaWidth * 2).toInt(),
+                          maxHeightDiskCache: (effectiveMediaHeight * 2)
+                              .toInt(),
+                          fadeInDuration: Duration.zero,
+                          fadeOutDuration: Duration.zero,
+                          placeholder: (context, url) => Container(
+                            width: effectiveMediaWidth,
+                            height: effectiveMediaHeight,
+                            color: Colors.white.withValues(alpha: 0.06),
+                          ),
+                          errorWidget: (context, url, error) => Container(
+                            width: effectiveMediaWidth,
+                            height: effectiveMediaHeight,
+                            color: Theme.of(context)
+                                .colorScheme
+                                .surfaceContainerHighest
+                                .withValues(alpha: 0.4),
+                            child: Center(
+                              child: Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  Icon(
+                                    Icons.broken_image_outlined,
+                                    color: Colors.grey[400],
+                                    size: 20,
                                   ),
-                                ),
-                              ),
-                            )
-                          : Image.file(
-                              File(gifData),
-                              width: effectiveMediaWidth,
-                              height: effectiveMediaHeight,
-                              fit: BoxFit.cover,
-                              gaplessPlayback: true,
-                              errorBuilder: (context, error, stackTrace) => Container(
-                                width: effectiveMediaWidth,
-                                height: effectiveMediaHeight,
-                                color: Theme.of(context).colorScheme.surfaceVariant.withOpacity(0.4),
-                                child: Center(
-                                  child: Row(
-                                    mainAxisSize: MainAxisSize.min,
-                                    children: [
-                                      Icon(Icons.broken_image_outlined, color: Colors.grey[400], size: 20),
-                                      const SizedBox(width: 8),
-                                      Text(
-                                        'GIF unavailable',
-                                        style: TextStyle(fontSize: 12, color: Colors.grey[300]),
-                                      ),
-                                    ],
+                                  const SizedBox(width: 8),
+                                  Text(
+                                    'GIF unavailable',
+                                    style: TextStyle(
+                                      fontSize: 12,
+                                      color: Colors.grey[300],
+                                    ),
                                   ),
-                                ),
+                                ],
                               ),
                             ),
+                          ),
+                        )
+                      : Image.file(
+                          File(gifData),
+                          width: effectiveMediaWidth,
+                          height: effectiveMediaHeight,
+                          fit: BoxFit.cover,
+                          gaplessPlayback: true,
+                          errorBuilder: (context, error, stackTrace) =>
+                              Container(
+                                width: effectiveMediaWidth,
+                                height: effectiveMediaHeight,
+                                color: Theme.of(context)
+                                    .colorScheme
+                                    .surfaceContainerHighest
+                                    .withValues(alpha: 0.4),
+                                child: Center(
+                                  child: Row(
+                                    mainAxisSize: MainAxisSize.min,
+                                    children: [
+                                      Icon(
+                                        Icons.broken_image_outlined,
+                                        color: Colors.grey[400],
+                                        size: 20,
+                                      ),
+                                      const SizedBox(width: 8),
+                                      Text(
+                                        'GIF unavailable',
+                                        style: TextStyle(
+                                          fontSize: 12,
+                                          color: Colors.grey[300],
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                              ),
+                        ),
                 ),
               )
             : Container(
                 width: effectiveMediaWidth,
                 height: effectiveMediaHeight,
                 decoration: BoxDecoration(
-                  color: Theme.of(context).colorScheme.surfaceVariant,
+                  color: Theme.of(context).colorScheme.surfaceContainerHighest,
                   borderRadius: effectiveRadius,
                 ),
                 child: const Center(child: Text('GIF not available')),
@@ -1617,7 +2272,9 @@ class _DisplayMessagesState extends State<DisplayMessages> {
 
       case 'document':
         content = DocumentMessageWidget(
-          key: ValueKey('doc_${widget.messageId ?? widget.fileMessageData ?? widget.message}'),
+          key: ValueKey(
+            'doc_${widget.messageId ?? widget.fileMessageData ?? widget.message}',
+          ),
           fileName: widget.message.isNotEmpty ? widget.message : 'Document',
           fileUrl: widget.fileMessageData,
           isMe: widget.isMe,
@@ -1637,6 +2294,20 @@ class _DisplayMessagesState extends State<DisplayMessages> {
           receiverId: widget.receiverId,
           senderName: widget.senderName,
           senderProfilePic: widget.senderProfilePic,
+        );
+        break;
+
+      case 'wish':
+        content = Text(
+          widget.message,
+          style: TextStyle(
+            fontSize: isSmallScreen ? 14 : 16,
+            fontStyle: FontStyle.italic,
+            fontWeight: FontWeight.w600,
+            color: Theme.of(context).colorScheme.onSurface,
+          ),
+          maxLines: widget.isPreviewable ? null : 2,
+          overflow: widget.isPreviewable ? null : TextOverflow.ellipsis,
         );
         break;
 
@@ -1674,6 +2345,7 @@ class _CachedImageWidget extends StatefulWidget {
   final double? width;
   final double? height;
   final BoxFit fit;
+  final Alignment alignment;
 
   const _CachedImageWidget({
     super.key,
@@ -1682,6 +2354,7 @@ class _CachedImageWidget extends StatefulWidget {
     this.width,
     this.height,
     this.fit = BoxFit.cover,
+    this.alignment = Alignment.topCenter,
   });
 
   @override
@@ -1735,18 +2408,15 @@ class _CachedImageWidgetState extends State<_CachedImageWidget> {
       width: widget.width,
       height: widget.height,
       constraints: widget.width == null
-          ? BoxConstraints(
-              maxWidth: widget.screenWidth * 0.8,
-              minHeight: 90,
-            )
+          ? BoxConstraints(maxWidth: widget.screenWidth * 0.8, minHeight: 90)
           : null,
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
       decoration: BoxDecoration(
-        color: Theme.of(context).colorScheme.surfaceVariant.withOpacity(0.4),
+        color: Theme.of(
+          context,
+        ).colorScheme.surfaceContainerHighest.withValues(alpha: 0.4),
         borderRadius: BorderRadius.circular(12),
-        border: Border.all(
-          color: Colors.white.withOpacity(0.08),
-        ),
+        border: Border.all(color: Colors.white.withValues(alpha: 0.08)),
       ),
       child: InkWell(
         onTap: () {
@@ -1769,7 +2439,7 @@ class _CachedImageWidgetState extends State<_CachedImageWidget> {
                 style: TextStyle(
                   fontSize: 12,
                   fontWeight: FontWeight.w500,
-                  color: Colors.white.withOpacity(0.85),
+                  color: Colors.white.withValues(alpha: 0.85),
                 ),
               ),
             ],
@@ -1787,6 +2457,7 @@ class _CachedImageWidgetState extends State<_CachedImageWidget> {
         width: widget.width,
         height: widget.height,
         fit: widget.fit,
+        alignment: widget.alignment,
         maxWidthDiskCache: widget.width != null
             ? (widget.width! * 2).toInt()
             : (widget.screenWidth * 0.8).toInt(),
@@ -1797,14 +2468,16 @@ class _CachedImageWidgetState extends State<_CachedImageWidget> {
         fadeOutDuration: Duration.zero,
         placeholder: (context, url) => Container(
           width: widget.width,
-          height: widget.height,
+          height: widget.height ?? 240,
           constraints: widget.width == null
               ? BoxConstraints(
                   maxWidth: widget.screenWidth * 0.8,
                   minHeight: 120,
                 )
               : null,
-          color: Theme.of(context).colorScheme.surfaceVariant.withOpacity(0.2),
+          color: Theme.of(
+            context,
+          ).colorScheme.surfaceContainerHighest.withValues(alpha: 0.2),
           child: const Center(
             child: SizedBox(
               width: 22,
@@ -1829,6 +2502,7 @@ class _CachedImageWidgetState extends State<_CachedImageWidget> {
           width: widget.width,
           height: widget.height,
           fit: widget.fit,
+          alignment: widget.alignment,
           gaplessPlayback: true,
           errorBuilder: (context, error, stackTrace) {
             return _buildNetworkImage(context);

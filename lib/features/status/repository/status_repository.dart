@@ -8,6 +8,7 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:uuid/uuid.dart';
+import 'package:worship_chat/common/utils/firebase_notification_service.dart';
 import 'package:worship_chat/common/utils/utils.dart';
 
 final statusRepositoryProvider = Provider((ref) {
@@ -21,7 +22,7 @@ final statusRepositoryProvider = Provider((ref) {
 class StatusRepository {
   final FirebaseFirestore firestore;
   final FirebaseAuth auth;
-  final ProviderRef ref;
+  final Ref ref;
 
   static const _uploadPreset = 'ml_default'; // 👈 change this
   static const _cloudName = 'djr22nlx9';
@@ -37,7 +38,7 @@ class StatusRepository {
   static String _toHttps(String url) =>
       url.startsWith('http://') ? url.replaceFirst('http://', 'https://') : url;
 
-  static Map<String, dynamic> _sanitizeStatus(Map<String, dynamic> data) {
+  static Map<String, dynamic> sanitizeStatus(Map<String, dynamic> data) {
     final sanitized = Map<String, dynamic>.from(data);
     if (sanitized['statusUrl'] is String) {
       sanitized['statusUrl'] = _toHttps(sanitized['statusUrl'] as String);
@@ -55,16 +56,127 @@ class StatusRepository {
     const insertAfter = '/upload/';
     final idx = url.indexOf(insertAfter);
     if (idx != -1) {
-      final transform = isVideo ? 'f_auto,q_auto:good' : 'f_auto,q_auto,w_1080';
+      final transform = isVideo ? 'f_mp4,vc_h264,q_auto:good' : 'f_auto,q_auto,w_1080';
       url =
-          url.substring(0, idx + insertAfter.length) +
-          '$transform/' +
-          url.substring(idx + insertAfter.length);
+          '${url.substring(0, idx + insertAfter.length)}$transform/${url.substring(idx + insertAfter.length)}';
     }
     return url;
   }
 
-  // ── Upload status ──────────────────────────────────────────────────────────
+  // ── Upload multiple statuses ───────────────────────────────────────────────
+
+  Future<void> uploadMultipleStatuses({
+    required String userName,
+    required String profilePic,
+    required String email,
+    required List<File> statusFiles,
+    required bool isVideo,
+    required BuildContext context,
+    void Function(int current, int total)? onProgress,
+  }) async {
+    try {
+      final currentUser = auth.currentUser;
+      if (currentUser == null) {
+        throw Exception('User is not authenticated.');
+      }
+      final uid = currentUser.uid;
+
+      // 1. Fetch all users from Firestore to notify remaining users & grant visibility
+      final allUsersSnapshot = await firestore.collection('users').get();
+      final List<String> allUserIds = [];
+      final List<String> recipientFcmTokens = [];
+
+      for (final userDoc in allUsersSnapshot.docs) {
+        final otherUid = userDoc.id;
+        allUserIds.add(otherUid);
+        if (otherUid != uid) {
+          final token = userDoc.data()['fcmToken']?.toString().trim();
+          if (token != null && token.isNotEmpty) {
+            recipientFcmTokens.add(token);
+          }
+        }
+      }
+
+      if (!allUserIds.contains(uid)) {
+        allUserIds.add(uid);
+      }
+
+      final List<String> uploadedStatusIds = [];
+
+      // 2. Upload each file in sequence
+      for (int i = 0; i < statusFiles.length; i++) {
+        final file = statusFiles[i];
+        onProgress?.call(i, statusFiles.length);
+
+        final statusId = const Uuid().v1();
+        final timeCreated = DateTime.now().add(Duration(milliseconds: i * 50));
+
+        final statusUrl = isVideo
+            ? await _uploadVideoToCloudinary(file)
+            : await _uploadImageToCloudinary(file);
+
+        if (statusUrl == null) {
+          log('Warning: Failed to upload status item at index $i, skipping');
+          continue;
+        }
+
+        await firestore.collection('status').doc(statusId).set({
+          'statusId': statusId,
+          'uid': uid,
+          'userName': userName,
+          'email': email,
+          'profilePic': _toHttps(profilePic),
+          'statusUrl': statusUrl,
+          'mediaType': isVideo ? 'video' : 'image',
+          'timeCreated': Timestamp.fromDate(timeCreated),
+          'visibleTo': allUserIds,
+          'seenBy': {},
+          'likes': {},
+        });
+
+        uploadedStatusIds.add(statusId);
+      }
+
+      if (uploadedStatusIds.isEmpty) {
+        throw Exception(
+          'Failed to upload ${isVideo ? 'video' : 'photo'} to Cloudinary. Check network connection.',
+        );
+      }
+
+      // 3. Send push notification to all remaining users about the new story!
+      if (recipientFcmTokens.isNotEmpty) {
+        final String title = '✨ $userName added a new story';
+        final String body = isVideo
+            ? '📽️ Watch video story from $userName'
+            : (uploadedStatusIds.length > 1
+                ? '📷 ${uploadedStatusIds.length} new photos added to story'
+                : '📷 View new story photo from $userName');
+
+        await sendMultipleNotification(
+          recipientFcmTokens,
+          title,
+          body,
+          data: {
+            'type': 'story',
+            'uid': uid,
+            'senderUid': uid,
+            'name': userName,
+            'profilePic': profilePic,
+            'statusId': uploadedStatusIds.first,
+            'tag': 'story_$uid',
+          },
+        );
+        log('📢 Sent story notification to ${recipientFcmTokens.length} remaining users');
+      }
+    } catch (e) {
+      log('uploadMultipleStatuses error: $e');
+      if (context.mounted) {
+        showSnackBar(context: context, content: e.toString());
+      }
+    }
+  }
+
+  // ── Upload status (backward compatible single file) ─────────────────────────
 
   Future<void> uploadStatus({
     required String userName,
@@ -74,49 +186,14 @@ class StatusRepository {
     required bool isVideo,
     required BuildContext context,
   }) async {
-    try {
-      final currentUser = auth.currentUser!;
-      final uid = currentUser.uid;
-      final statusId = const Uuid().v1();
-      final timeCreated = DateTime.now();
-
-      final statusUrl = isVideo
-          ? await _uploadVideoToCloudinary(statusFile)
-          : await _uploadImageToCloudinary(statusFile);
-
-      if (statusUrl == null) {
-        throw Exception(
-          'Failed to upload ${isVideo ? 'video' : 'image'} to Cloudinary. '
-          'Check your upload preset and network connection.',
-        );
-      }
-
-      final chatsSnapshot = await firestore
-          .collection('users')
-          .doc(uid)
-          .collection('chats')
-          .get();
-
-      final List<String> visibleTo =
-          chatsSnapshot.docs.map((doc) => doc.id).toList()..add(uid);
-
-      await firestore.collection('status').doc(statusId).set({
-        'statusId': statusId,
-        'uid': uid,
-        'userName': userName,
-        'email': email,
-        'profilePic': _toHttps(profilePic),
-        'statusUrl': statusUrl,
-        'mediaType': isVideo ? 'video' : 'image',
-        'timeCreated': Timestamp.fromDate(timeCreated),
-        'visibleTo': visibleTo,
-        'seenBy': {},
-        'likes': {}, // { uid: { userName, profilePic, likedAt } }
-      });
-    } catch (e) {
-      log('uploadStatus error: $e');
-      showSnackBar(context: context, content: e.toString());
-    }
+    await uploadMultipleStatuses(
+      userName: userName,
+      profilePic: profilePic,
+      email: email,
+      statusFiles: [statusFile],
+      isVideo: isVideo,
+      context: context,
+    );
   }
 
   // ── Seen tracking ──────────────────────────────────────────────────────────
@@ -213,85 +290,86 @@ class StatusRepository {
   // ── Cloudinary image upload ────────────────────────────────────────────────
 
   Future<String?> _uploadImageToCloudinary(File file) async {
-    try {
-      log('Uploading image to Cloudinary...');
-      _initCloudinary();
-      final dio = Dio();
-      const url = 'https://api.cloudinary.com/v1_1/$_cloudName/image/upload';
-      final formData = FormData.fromMap({
-        'file': await MultipartFile.fromFile(file.path),
-        'upload_preset': _uploadPreset,
-      });
-      final response = await dio.post(
-        url,
-        data: formData,
-        options: Options(
-          sendTimeout: const Duration(minutes: 3),
-          receiveTimeout: const Duration(minutes: 3),
-        ),
-        onSendProgress: (sent, total) {
-          if (total > 0) {
-            log('Image upload: ${(sent / total * 100).toStringAsFixed(1)}%');
-          }
-        },
-      );
-      log('Cloudinary image response: ${response.statusCode}');
-      if (response.statusCode == 200) {
-        final raw =
-            response.data['secure_url'] as String? ??
-            response.data['url'] as String;
-        return _optimiseUrl(raw, isVideo: false);
+    final clouds = ['debeuo9x0', _cloudName];
+    for (final cloud in clouds) {
+      try {
+        log('Uploading image to Cloudinary ($cloud)...');
+        final dio = Dio();
+        final url = 'https://api.cloudinary.com/v1_1/$cloud/image/upload';
+        final formData = FormData.fromMap({
+          'file': await MultipartFile.fromFile(file.path),
+          'upload_preset': _uploadPreset,
+        });
+        final response = await dio.post(
+          url,
+          data: formData,
+          options: Options(
+            sendTimeout: const Duration(minutes: 3),
+            receiveTimeout: const Duration(minutes: 3),
+          ),
+          onSendProgress: (sent, total) {
+            if (total > 0) {
+              log('Image upload ($cloud): ${(sent / total * 100).toStringAsFixed(1)}%');
+            }
+          },
+        );
+        log('Cloudinary image response ($cloud): ${response.statusCode}');
+        if (response.statusCode == 200) {
+          final raw =
+              response.data['secure_url'] as String? ??
+              response.data['url'] as String;
+          return _optimiseUrl(raw, isVideo: false);
+        }
+      } on DioException catch (e) {
+        log('Cloudinary image DioError on $cloud: ${e.message} | ${e.response?.data}');
+      } catch (e) {
+        log('Cloudinary image error on $cloud: $e');
       }
-      return null;
-    } on DioException catch (e) {
-      log('Cloudinary image DioError: ${e.message} | ${e.response?.data}');
-      return null;
-    } catch (e) {
-      log('Cloudinary image error: $e');
-      return null;
     }
+    return null;
   }
 
   // ── Cloudinary video upload ────────────────────────────────────────────────
 
   Future<String?> _uploadVideoToCloudinary(File file) async {
-    try {
-      log('Uploading video to Cloudinary...');
-      _initCloudinary();
-      final dio = Dio();
-      const url = 'https://api.cloudinary.com/v1_1/$_cloudName/video/upload';
-      final formData = FormData.fromMap({
-        'file': await MultipartFile.fromFile(file.path),
-        'upload_preset': _uploadPreset,
-      });
-      final response = await dio.post(
-        url,
-        data: formData,
-        options: Options(
-          sendTimeout: const Duration(minutes: 10),
-          receiveTimeout: const Duration(minutes: 5),
-        ),
-        onSendProgress: (sent, total) {
-          if (total > 0) {
-            log('Video upload: ${(sent / total * 100).toStringAsFixed(1)}%');
-          }
-        },
-      );
-      log('Cloudinary video response: ${response.statusCode}');
-      if (response.statusCode == 200) {
-        final raw =
-            response.data['secure_url'] as String? ??
-            response.data['url'] as String;
-        return _optimiseUrl(raw, isVideo: true);
+    final clouds = ['debeuo9x0', _cloudName];
+    for (final cloud in clouds) {
+      try {
+        log('Uploading video to Cloudinary ($cloud)...');
+        final dio = Dio();
+        final url = 'https://api.cloudinary.com/v1_1/$cloud/auto/upload';
+        final formData = FormData.fromMap({
+          'file': await MultipartFile.fromFile(file.path),
+          'upload_preset': _uploadPreset,
+          'resource_type': 'video',
+        });
+        final response = await dio.post(
+          url,
+          data: formData,
+          options: Options(
+            sendTimeout: const Duration(minutes: 10),
+            receiveTimeout: const Duration(minutes: 5),
+          ),
+          onSendProgress: (sent, total) {
+            if (total > 0) {
+              log('Video upload ($cloud): ${(sent / total * 100).toStringAsFixed(1)}%');
+            }
+          },
+        );
+        log('Cloudinary video response ($cloud): ${response.statusCode}');
+        if (response.statusCode == 200) {
+          final raw =
+              response.data['secure_url'] as String? ??
+              response.data['url'] as String;
+          return _optimiseUrl(raw, isVideo: true);
+        }
+      } on DioException catch (e) {
+        log('Cloudinary video DioError on $cloud: ${e.message} | ${e.response?.data}');
+      } catch (e) {
+        log('Cloudinary video error on $cloud: $e');
       }
-      return null;
-    } on DioException catch (e) {
-      log('Cloudinary video DioError: ${e.message} | ${e.response?.data}');
-      return null;
-    } catch (e) {
-      log('Cloudinary video error: $e');
-      return null;
     }
+    return null;
   }
 
   void _initCloudinary() {
@@ -321,7 +399,7 @@ class StatusRepository {
             }
             final visibleTo = List<String>.from(data['visibleTo'] as List);
             if (visibleTo.contains(currentUserUid)) {
-              active.add(_sanitizeStatus(data));
+              active.add(sanitizeStatus(data));
             }
           }
           active.sort((a, b) {

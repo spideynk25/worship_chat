@@ -136,6 +136,7 @@ class _QueendomGroupPickerSheet extends StatefulWidget {
 class _QueendomGroupPickerSheetState extends State<_QueendomGroupPickerSheet>
     with SingleTickerProviderStateMixin {
   late TabController _tabController;
+  final TextEditingController _searchController = TextEditingController();
   String _searchQuery = '';
 
   @override
@@ -146,6 +147,7 @@ class _QueendomGroupPickerSheetState extends State<_QueendomGroupPickerSheet>
 
   @override
   void dispose() {
+    _searchController.dispose();
     _tabController.dispose();
     super.dispose();
   }
@@ -241,14 +243,40 @@ class _QueendomGroupPickerSheetState extends State<_QueendomGroupPickerSheet>
                 border: Border.all(color: Colors.white.withValues(alpha: 0.08)),
               ),
               child: TextField(
+                controller: _searchController,
+                textAlignVertical: TextAlignVertical.center,
                 style: const TextStyle(color: Colors.white, fontSize: 13.5),
                 onChanged: (val) => setState(() => _searchQuery = val.trim()),
-                decoration: const InputDecoration(
+                decoration: InputDecoration(
                   hintText: 'Search Queendom group...',
-                  hintStyle: TextStyle(color: Colors.white38, fontSize: 13),
-                  prefixIcon: Icon(Icons.search, color: Colors.white38, size: 18),
+                  hintStyle: const TextStyle(color: Colors.white38, fontSize: 13),
+                  prefixIcon: const Icon(Icons.search, color: Colors.white38, size: 18),
+                  prefixIconConstraints: const BoxConstraints(
+                    minWidth: 40,
+                    minHeight: 42,
+                  ),
+                  suffixIcon: _searchQuery.isNotEmpty
+                      ? IconButton(
+                          icon: const Icon(
+                            Icons.clear,
+                            color: Colors.white54,
+                            size: 16,
+                          ),
+                          splashRadius: 16,
+                          padding: EdgeInsets.zero,
+                          onPressed: () {
+                            _searchController.clear();
+                            setState(() => _searchQuery = '');
+                          },
+                        )
+                      : null,
+                  suffixIconConstraints: const BoxConstraints(
+                    minWidth: 36,
+                    minHeight: 42,
+                  ),
+                  isDense: true,
                   border: InputBorder.none,
-                  contentPadding: EdgeInsets.symmetric(vertical: 10),
+                  contentPadding: EdgeInsets.zero,
                 ),
               ),
             ),

@@ -527,6 +527,10 @@ class RoyalAvatarDecoration extends StatefulWidget {
   /// Optional tap handler for the entire avatar.
   final VoidCallback? onTap;
 
+  /// Explicit flag to indicate whether this avatar belongs to a Wife or Fuck Toy role.
+  /// When true, crown decorations are completely suppressed.
+  final bool? isWifeOrFuckToy;
+
   const RoyalAvatarDecoration({
     super.key,
     required this.child,
@@ -548,6 +552,7 @@ class RoyalAvatarDecoration extends StatefulWidget {
     this.badgeBottomOffset,
     this.badgeRightOffset,
     this.onTap,
+    this.isWifeOrFuckToy,
   });
 
   @override
@@ -621,7 +626,15 @@ class _RoyalAvatarDecorationState extends State<RoyalAvatarDecoration>
     super.dispose();
   }
 
+  bool _isWifeOrFuckToy() {
+    if (widget.isWifeOrFuckToy == true) return true;
+    if (widget.isWifeOrFuckToy == false) return false;
+    return QueendomEmblemHelper.isWifeOrFuckToy(widget.position) ||
+        QueendomEmblemHelper.isWifeOrFuckToy(widget.livingPlace);
+  }
+
   String? _resolveCrownAsset() {
+    if (_isWifeOrFuckToy()) return null;
     if (widget.crownAsset != null) return widget.crownAsset;
     final fromPosOrEmoji = QueendomEmblemHelper.getAsset(
       position: widget.position,

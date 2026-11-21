@@ -11,8 +11,10 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:hive_flutter/adapters.dart';
 import 'package:worship_chat/common/utils/fcm_token_manager.dart';
+import 'package:worship_chat/common/utils/app_capabilities.dart';
 import 'package:worship_chat/common/utils/utils.dart';
 import 'package:worship_chat/features/auth/screens/login_screen.dart';
+import 'package:worship_chat/features/auth/controller/auth_controller.dart';
 import 'package:worship_chat/features/home/screens/home_screen.dart';
 import 'package:worship_chat/models/user_model.dart';
 
@@ -34,10 +36,14 @@ class AuthRepository {
   }
 
   Future<UserModel?> getCurrentUserData() async {
+    final userId = auth.currentUser?.uid;
+    if (userId == null) return null;
     var userData = await firestore
         .collection('users')
-        .doc(auth.currentUser?.uid)
+        .doc(userId)
         .get();
+    // A previous account's in-flight read must not overwrite the new cache.
+    if (auth.currentUser?.uid != userId) return null;
     UserModel? user;
     if (userData.data() != null) {
       user = UserModel.fromMap(userData.data()!);
@@ -85,8 +91,15 @@ class AuthRepository {
       // 📧 Send email verification
       await user.sendEmailVerification();
 
-      //get fcm token
-      String? token = await FirebaseMessaging.instance.getToken();
+      // Notification registration is optional and only available on phones.
+      String? token;
+      if (AppCapabilities.current.notificationsEnabled) {
+        try {
+          token = await FirebaseMessaging.instance.getToken();
+        } catch (e) {
+          log('Could not get FCM token during registration: $e');
+        }
+      }
 
       // 🗃️ Save user to Firestore
       await firestore.collection('users').doc(user.uid).set({
@@ -95,10 +108,11 @@ class AuthRepository {
         'userName': userName,
         'email': email.trim(),
         'profilePic': '',
-        'isOnline': true,
+        'isOnline': AppCapabilities.current.chatEnabled,
         'groupId': [],
         'createdAt': FieldValue.serverTimestamp(),
-        'fcmToken': token,
+        'lastSeen': FieldValue.serverTimestamp(),
+        if (token != null && token.isNotEmpty) 'fcmToken': token,
       });
 
       // 💾 Save to Hive immediately so HomeScreen can show name/userName right away
@@ -107,10 +121,11 @@ class AuthRepository {
         name: name,
         uid: user.uid,
         profilePic: '',
-        isOnline: true,
+        isOnline: AppCapabilities.current.chatEnabled,
         email: email.trim(),
         groupId: [],
         fcmToken: token,
+        lastSeen: DateTime.now(),
       );
       await _saveUserToHive(newUser);
       log('✅ New user saved to Hive: ${newUser.name}');
@@ -169,7 +184,9 @@ class AuthRepository {
       }
 
       // Ensure fresh FCM token is stored for group and 1-to-1 notifications
-      FCMTokenManager.refreshAndSaveFCMToken();
+      if (AppCapabilities.current.notificationsEnabled) {
+        FCMTokenManager.refreshAndSaveFCMToken();
+      }
 
       // 💾 Eagerly fetch & cache user data to Hive so HomeScreen shows
       // name / userName / profilePic immediately (no waiting for a message).
@@ -199,6 +216,10 @@ class AuthRepository {
         case 'too-many-requests':
           errorMessage =
               'Too many failed attempts. Please reset your password or try again later.';
+          break;
+        case 'keychain-error':
+          errorMessage =
+              'macOS Keychain access restricted. Enable Keychain Sharing in Xcode or use "Enter Gallery Directly".';
           break;
         case 'network-request-failed':
           errorMessage = 'Network error. Please check your internet connection.';
@@ -261,8 +282,12 @@ class AuthRepository {
       );
 
       // Preserve existing user fields like fcmToken and groupId
-      String existingFcm = "";
-      List<String> existingGroup = [];
+      final cachedUser = Hive.box<UserModel>('userBox').get('currentUser');
+      final currentCache = cachedUser?.uid == currentUserData.uid ? cachedUser : null;
+      String existingFcm = currentCache?.fcmToken ?? "";
+      List<String> existingGroup = currentCache?.groupId ?? [];
+      bool existingOnline = currentCache?.isOnline ?? false;
+      DateTime? existingLastSeen = currentCache?.lastSeen;
       try {
         final existingDoc = await firestore
             .collection('users')
@@ -272,10 +297,19 @@ class AuthRepository {
           final data = existingDoc.data()!;
           existingFcm = data['fcmToken']?.toString() ?? "";
           existingGroup = List<String>.from(data['groupId'] ?? []);
+          existingOnline = data['isOnline'] == true;
+          final rawLastSeen = data['lastSeen'];
+          if (rawLastSeen is Timestamp) {
+            existingLastSeen = rawLastSeen.toDate();
+          } else if (rawLastSeen is DateTime) {
+            existingLastSeen = rawLastSeen;
+          } else if (rawLastSeen is int) {
+            existingLastSeen = DateTime.fromMillisecondsSinceEpoch(rawLastSeen);
+          }
         }
       } catch (_) {}
 
-      if (existingFcm.isEmpty) {
+      if (AppCapabilities.current.notificationsEnabled && existingFcm.isEmpty) {
         try {
           existingFcm = await FirebaseMessaging.instance.getToken() ?? "";
         } catch (_) {}
@@ -286,18 +320,32 @@ class AuthRepository {
         name: name,
         uid: currentUserData.uid,
         profilePic: photoUrl ?? "",
-        isOnline: true,
+        isOnline: AppCapabilities.current.chatEnabled ? true : existingOnline,
         email: currentUserData.email!,
         groupId: existingGroup,
         fcmToken: existingFcm,
+        lastSeen: existingLastSeen,
       );
 
+      final profileUpdate = user.toMap();
+      // Profile edits cannot change membership, including when metadata is offline.
+      profileUpdate.remove('groupId');
+      profileUpdate.remove('lastSeen');
+      if (!AppCapabilities.current.notificationsEnabled) {
+        // A gallery session must never replace a token registered by a phone.
+        profileUpdate.remove('fcmToken');
+      }
+      if (!AppCapabilities.current.chatEnabled) {
+        // Online presence describes the user's phone chat session.
+        profileUpdate.remove('isOnline');
+      }
       await firestore
           .collection('users')
           .doc(currentUserData.uid)
-          .set(user.toMap(), SetOptions(merge: true));
+          .set(profileUpdate, SetOptions(merge: true));
 
       await _saveUserToHive(user);
+      ref.invalidate(userDataAuthProvider);
       log('User data saved to Firestore and Hive: ${user.toMap()}');
 
       // Update existing bookmarks created by this user to keep profile pic and name in sync
@@ -357,13 +405,35 @@ class AuthRepository {
   }
 
   void setUserState(bool isOnline) async {
-    await firestore.collection('users').doc(auth.currentUser!.uid).update({
-      'isOnline': isOnline,
-    });
+    if (!AppCapabilities.current.chatEnabled) return;
+    final userId = auth.currentUser?.uid;
+    if (userId == null) return;
+    try {
+      final updateData = <String, dynamic>{
+        'isOnline': isOnline,
+      };
+      if (!isOnline) {
+        updateData['lastSeen'] = FieldValue.serverTimestamp();
+      }
+      await firestore.collection('users').doc(userId).update(updateData);
+    } catch (e) {
+      log('Error updating user state: $e');
+    }
   }
 
   void logout(BuildContext context) async {
     try {
+      final userId = auth.currentUser?.uid;
+      if (userId != null) {
+        try {
+          await firestore.collection('users').doc(userId).update({
+            'isOnline': false,
+            'lastSeen': FieldValue.serverTimestamp(),
+          });
+        } catch (e) {
+          log('Error setting offline status on logout: $e');
+        }
+      }
       await auth.signOut();
       Navigator.pushAndRemoveUntil(
         context,

@@ -1,5 +1,3 @@
-import 'dart:convert';
-import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:worship_chat/common/widgets/skeleton_loader.dart';
@@ -58,14 +56,5 @@ class StatusContactsScreen extends ConsumerWidget {
         error: (e, _) => Center(child: Text('Error: $e')),
       ),
     );
-  }
-
-  Uint8List _decodeBase64(String base64String) {
-    // Remove data:image/...;base64, if present
-    final cleaned =
-        base64String.contains(',')
-            ? base64String.split(',').last
-            : base64String;
-    return base64Decode(cleaned);
   }
 }

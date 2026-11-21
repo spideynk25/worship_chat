@@ -166,6 +166,27 @@ class _LiveLocationScreenState extends State<LiveLocationScreen>
       isMe: widget.isMe || initialSharerId == currentUid,
     );
 
+    // Ensure active tracking stream is running if current user is the live sharer
+    if (widget.isMe &&
+        widget.isLive &&
+        widget.messageId != null &&
+        widget.receiverId != null &&
+        (widget.liveUntil == null ||
+            widget.liveUntil! > DateTime.now().millisecondsSinceEpoch)) {
+      final now = DateTime.now().millisecondsSinceEpoch;
+      final remainingMs = (widget.liveUntil ?? (now + 900000)) - now;
+      if (remainingMs > 0 &&
+          !LocationService.instance.isTracking(widget.messageId!)) {
+        LocationService.instance.startLiveLocationTracking(
+          messageId: widget.messageId!,
+          currentUserId: currentUid,
+          receiverId: widget.receiverId!,
+          duration: Duration(milliseconds: remainingMs),
+          explicitLiveUntil: widget.liveUntil,
+        );
+      }
+    }
+
     _listenToChatLiveMessages();
     _initViewerLocation();
     _fetchAddress(widget.initialLatitude, widget.initialLongitude);
@@ -275,9 +296,14 @@ class _LiveLocationScreenState extends State<LiveLocationScreen>
       if (_showDirections) {
         _recalculateDirectionsIfActive();
       }
-      if (_autoFollow && _activeSharers.length == 1 && _isMapReady) {
+      if (_autoFollow && _isMapReady) {
         try {
-          _animatedMapMove(_activeSharers.first.position, _mapController.camera.zoom);
+          if (_bothUsersSharing) {
+            _fitAllSharers();
+          } else if (_primarySharer != null) {
+            _animatedMapMove(
+                _primarySharer!.position, _mapController.camera.zoom);
+          }
         } catch (_) {}
       }
     }
@@ -338,20 +364,44 @@ class _LiveLocationScreenState extends State<LiveLocationScreen>
       _myLocationSubscription = Geolocator.getPositionStream(
         locationSettings: const LocationSettings(
           accuracy: LocationAccuracy.high,
-          distanceFilter: 8,
+          distanceFilter: 5,
         ),
       ).listen((p) {
         if (mounted) {
           final myLatLng = LatLng(p.latitude, p.longitude);
+          final currentUid =
+              widget.currentUserId ?? FirebaseAuth.instance.currentUser?.uid;
           setState(() {
             _myPosition = myLatLng;
-            final currentUid = widget.currentUserId ?? FirebaseAuth.instance.currentUser?.uid;
             if (currentUid != null && _liveSharers.containsKey(currentUid)) {
               _liveSharers[currentUid]!.position = myLatLng;
             }
           });
           if (_showDirections) {
             _recalculateDirectionsIfActive();
+          }
+          if (_autoFollow && widget.isMe && _isMapReady) {
+            try {
+              _animatedMapMove(myLatLng, _mapController.camera.zoom);
+            } catch (_) {}
+          }
+          // Push update to Firestore if this viewer is the active live sharer
+          if (widget.isMe &&
+              widget.messageId != null &&
+              widget.receiverId != null &&
+              currentUid != null) {
+            final now = DateTime.now().millisecondsSinceEpoch;
+            final liveUntil = widget.liveUntil ?? (now + 900000);
+            if (now < liveUntil) {
+              LocationService.instance.updateLiveLocationInFirestore(
+                messageId: widget.messageId!,
+                currentUserId: currentUid,
+                receiverId: widget.receiverId!,
+                latitude: p.latitude,
+                longitude: p.longitude,
+                liveUntil: liveUntil,
+              );
+            }
           }
         }
       });

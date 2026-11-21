@@ -1,19 +1,23 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:developer';
 import 'dart:io';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:hive_flutter/hive_flutter.dart';
 import 'package:uuid/uuid.dart';
 import 'package:worship_chat/common/providers/message_reply_provider.dart';
+import 'package:worship_chat/common/utils/background_task_service.dart';
 import 'package:worship_chat/common/utils/fcm_token_manager.dart';
 import 'package:worship_chat/common/utils/file_messages.dart';
 import 'package:worship_chat/common/utils/firebase_notification_service.dart';
 import 'package:worship_chat/common/utils/media_cache_service.dart';
 import 'package:worship_chat/common/utils/utils.dart';
+import 'package:worship_chat/common/utils/wish_helper.dart';
 import 'package:worship_chat/models/chat_contact.dart';
 import 'package:worship_chat/models/group.dart' as model;
 import 'package:worship_chat/models/group.dart';
@@ -31,8 +35,20 @@ final groupRepositoryProvider = Provider(
 class GroupRepository {
   final FirebaseFirestore firestore;
   final FirebaseAuth auth;
-  final ProviderRef ref;
-  final Map<String, List<void Function(List<GroupChatMessageModel>)>> _activeGroupChatListeners = {};
+  final Ref ref;
+  static final Map<String, List<void Function(List<GroupChatMessageModel>)>> _activeGroupChatListeners = {};
+
+  static void notifyGroupChatListeners(String groupId, List<GroupChatMessageModel> messages) {
+    final listeners = _activeGroupChatListeners[groupId];
+    if (listeners != null) {
+      final msgsCopy = List<GroupChatMessageModel>.from(messages);
+      for (final listener in List.from(listeners)) {
+        try {
+          listener(msgsCopy);
+        } catch (_) {}
+      }
+    }
+  }
 
   GroupRepository({
     required this.firestore,
@@ -314,9 +330,9 @@ class GroupRepository {
 
   void updateChatBackground(String groupId, String backgroundUrl) async {
     try {
-      await firestore.collection('groups').doc(groupId).update({
+      await firestore.collection('groups').doc(groupId).set({
         'chatBackgroundUrl': backgroundUrl,
-      });
+      }, SetOptions(merge: true));
     } catch (e) {
       log('Error updating chat background: $e');
     }
@@ -339,6 +355,41 @@ class GroupRepository {
     final localKey = groupId;
     final controller = StreamController<List<GroupChatMessageModel>>();
 
+    bool areGroupMessagesEqual(
+      List<GroupChatMessageModel> prev,
+      List<GroupChatMessageModel> next,
+    ) {
+      if (identical(prev, next)) return true;
+      if (prev.length != next.length) return false;
+      for (int i = 0; i < prev.length; i++) {
+        final p = prev[i];
+        final n = next[i];
+        if (p.messageId != n.messageId ||
+            p.isSeen != n.isSeen ||
+            p.isDelivered != n.isDelivered ||
+            p.isSending != n.isSending ||
+            p.text != n.text ||
+            p.isEdited != n.isEdited ||
+            p.isDeleted != n.isDeleted ||
+            p.fileMessageData != n.fileMessageData ||
+            !mapEquals(p.reactions, n.reactions)) {
+          return false;
+        }
+      }
+      return true;
+    }
+
+    List<GroupChatMessageModel>? lastEmitted;
+
+    void emitGroupMessages(List<GroupChatMessageModel> msgs) {
+      if (controller.isClosed) return;
+      if (lastEmitted != null && areGroupMessagesEqual(lastEmitted!, msgs)) {
+        return; // identical — skip duplicate initial build
+      }
+      lastEmitted = msgs;
+      controller.add(msgs);
+    }
+
     // 1. Immediately emit cached messages from Hive (0ms)
     try {
       if (Hive.isBoxOpen('messages')) {
@@ -347,17 +398,11 @@ class GroupRepository {
         final cachedMessages = _safeCastGroupMessages(cachedData);
         if (cachedMessages.isNotEmpty) {
           log('⚡ [Instant Cache] Emitted ${cachedMessages.length} cached group messages for $groupId');
-          controller.add(cachedMessages);
+          emitGroupMessages(cachedMessages);
         }
       }
     } catch (e) {
       log('❌ Error emitting cached group messages: $e');
-    }
-
-    void emitGroupMessages(List<GroupChatMessageModel> msgs) {
-      if (!controller.isClosed) {
-        controller.add(msgs);
-      }
     }
 
     _activeGroupChatListeners.putIfAbsent(localKey, () => []).add(emitGroupMessages);
@@ -444,6 +489,11 @@ class GroupRepository {
     }
 
     // Build map starting from Firestore (wins on conflict)
+    final currentUserId = auth.currentUser?.uid;
+    final Set<String> firestoreIds =
+        firestoreMessages.map((m) => m.messageId).toSet();
+
+    // Build map starting from cached messages
     final Map<String, GroupChatMessageModel> allMessagesMap = {};
 
     // Load cached messages safely
@@ -452,7 +502,20 @@ class GroupRepository {
         final cachedData = box.get(localKey, defaultValue: []);
         final localMessages = _safeCastGroupMessages(cachedData);
         for (var m in localMessages) {
-          allMessagesMap[m.messageId] = m;
+          if (currentUserId != null && m.deletedFor.contains(currentUserId)) {
+            continue;
+          }
+          if (firestoreMessages.isNotEmpty) {
+            // Keep outgoing messages that are still sending or recent
+            if (m.senderId == currentUserId &&
+                (m.isSending || !firestoreIds.contains(m.messageId))) {
+              if (DateTime.now().difference(m.timeSent).inMinutes < 5) {
+                allMessagesMap[m.messageId] = m;
+              }
+            }
+          } else {
+            allMessagesMap[m.messageId] = m;
+          }
         }
         log('📦 Loaded ${localMessages.length} messages from cache');
       } catch (e) {
@@ -460,14 +523,67 @@ class GroupRepository {
       }
     }
 
-    // Firestore overwrites cache (newer data wins)
+    // Firestore overwrites cache (newer data wins, but preserve local delivery confirmation)
     for (var m in firestoreMessages) {
-      allMessagesMap[m.messageId] = m;
+      if (currentUserId != null && m.deletedFor.contains(currentUserId)) {
+        continue;
+      }
+      final cached = allMessagesMap[m.messageId];
+      if (cached != null && cached.isDelivered && !m.isDelivered) {
+        allMessagesMap[m.messageId] = m.copyWith(isDelivered: true);
+      } else {
+        allMessagesMap[m.messageId] = m;
+      }
     }
 
-    // Sort by time
-    final allMessages = allMessagesMap.values.toList()
+    final rawMerged = allMessagesMap.values.toList()
       ..sort((a, b) => a.timeSent.compareTo(b.timeSent));
+
+    // Deduplicate any consecutive phantom duplicates
+    final List<GroupChatMessageModel> allMessages = [];
+    for (final msg in rawMerged) {
+      if (allMessages.isEmpty) {
+        allMessages.add(msg);
+        continue;
+      }
+      final prev = allMessages.last;
+      final isSameSender = prev.senderId == msg.senderId;
+      final timeDiffSec =
+          msg.timeSent.difference(prev.timeSent).inSeconds.abs();
+
+      final isIdenticalText = isSameSender &&
+          prev.text.trim() == msg.text.trim() &&
+          prev.text.trim().isNotEmpty &&
+          timeDiffSec <= 60;
+
+      final isPhantomMediaMsg = isSameSender &&
+          timeDiffSec <= 60 &&
+          ((prev.messageType == 'image' && msg.text == '📷 Photo') ||
+              (prev.messageType == 'video' && msg.text == '🎥 Video'));
+
+      final isPhantomMediaPrev = isSameSender &&
+          timeDiffSec <= 60 &&
+          ((msg.messageType == 'image' && prev.text == '📷 Photo') ||
+              (msg.messageType == 'video' && prev.text == '🎥 Video'));
+
+      final isDuplicateRoleplay = (prev.messageType == 'roleplay' ||
+              prev.senderId == 'roleplay') &&
+          (msg.messageType == 'roleplay' || msg.senderId == 'roleplay') &&
+          (prev.fileMessageData == msg.fileMessageData ||
+              prev.messageId == msg.messageId) &&
+          timeDiffSec <= 30;
+
+      if (isIdenticalText || isPhantomMediaMsg || isDuplicateRoleplay) {
+        continue;
+      }
+      if (isPhantomMediaPrev) {
+        allMessages.removeLast();
+        allMessages.add(msg);
+        continue;
+      }
+
+      allMessages.add(msg);
+    }
 
     log('📊 Total unique messages: ${allMessages.length}');
 
@@ -865,7 +981,7 @@ class GroupRepository {
     }
   }
 
-  void _saveMessageToMessageSubcollection({
+  Future<void> _saveMessageToMessageSubcollection({
     required List<String> receiverIds,
     required String groupId,
     required String text,
@@ -894,7 +1010,9 @@ class GroupRepository {
       fileMessageData: fileMessageData,
       repliedMessage: messageReply == null
           ? ''
-          : messageReply.messageType == 'text'
+          : (messageReply.messageType == 'text' || messageReply.messageType == 'wish')
+          ? messageReply.message
+          : (messageReply.message.isNotEmpty && messageReply.fileMessageData.isEmpty)
           ? messageReply.message
           : messageReply.fileMessageData,
       repliedTo: messageReply == null
@@ -921,6 +1039,14 @@ class GroupRepository {
         messageType: messageType,
         text: text,
         messageReply: messageReply,
+        senderId: auth.currentUser!.uid,
+        messageId: messageId,
+        timeSent: timeSent,
+        fileMessageData: fileMessageData,
+        receiverIds: receiverIds,
+        senderUsername: senderUsername,
+        receiverUserName: receiverUserName,
+        messageReplyType: messageReplyType,
       );
     } catch (e) {
       log('❌ Error saving message: $e');
@@ -935,6 +1061,14 @@ class GroupRepository {
     required String messageType,
     required String text,
     required MessageReply? messageReply,
+    required String senderId,
+    required String messageId,
+    required DateTime timeSent,
+    String? fileMessageData,
+    List<String> receiverIds = const [],
+    String? senderUsername,
+    String? receiverUserName,
+    String? messageReplyType,
   }) {
     Future.microtask(() async {
       try {
@@ -1013,25 +1147,61 @@ class GroupRepository {
           }
         }
 
+        final isWish = messageReply == null &&
+            WishHelper.isWish(messageType: messageType, text: text);
+
+        final String finalTitle = isWish
+            ? WishHelper.getNotificationTitle(
+                senderName: name,
+                groupName: groupName,
+                text: text,
+              )
+            : groupName;
+
+        final String finalBody = isWish
+            ? WishHelper.getNotificationBody(senderName: name, text: text)
+            : "$name: $body";
+
         await sendMultipleNotification(
           validTokens,
-          groupName,
-          "$name: $body",
+          finalTitle,
+          finalBody,
           data: {
             'type': 'group',
             'groupId': groupId,
             'groupName': groupName,
             'tag': groupId,
             'name': name,
+            'senderId': senderId,
+            'senderUid': senderId,
+            'messageId': messageId,
+            'messageType': messageType,
+            'text': text,
+            'timeSent': timeSent.toIso8601String(),
+            if (fileMessageData != null && fileMessageData.isNotEmpty)
+              'fileMessageData': fileMessageData,
+            if (receiverIds.isNotEmpty)
+              'receiverIds': receiverIds.join(','),
+            if (messageReply != null) ...{
+              'repliedMessage': messageReply.message,
+              'repliedTo': messageReply.isMe
+                  ? (senderUsername ?? '')
+                  : (receiverUserName ?? ''),
+              'repliedMessageType':
+                  messageReplyType ?? messageReply.messageType,
+            },
+            if (isWish) 'isWish': 'true',
+            if (isWish) 'wishCategory': WishHelper.getWishCategory(text).name,
           },
         );
+        log('✅ Group notification sent successfully (isWish: $isWish)');
       } catch (e) {
         log("❌ Error in _sendGroupNotificationAsync: $e");
       }
     });
   }
 
-  void _saveDataToContactsSubCollection(
+  Future<void> _saveDataToContactsSubCollection(
     UserModel senderUserData,
     String text,
     DateTime timeSent,
@@ -1120,6 +1290,7 @@ class GroupRepository {
     required String groupName,
     required String type,
     dynamic file,
+    String? mediaGroupId,
   }) async {
     try {
       String? fileData;
@@ -1134,6 +1305,15 @@ class GroupRepository {
       final senderName = senderUser.name ?? senderUser.userName ?? 'User';
       final senderUsername = senderUser.userName ?? senderUser.name ?? 'User';
 
+      String? optimisticFileData;
+      if (mediaGroupId != null && mediaGroupId.isNotEmpty && file is File) {
+        optimisticFileData = jsonEncode({'url': file.path, 'groupId': mediaGroupId});
+      } else if (file is File) {
+        optimisticFileData = file.path;
+      } else if (file is String) {
+        optimisticFileData = file;
+      }
+
       final optimisticMessage = GroupChatMessageModel(
         senderId: currentUserId,
         receiverIds: receiverIds,
@@ -1145,10 +1325,12 @@ class GroupRepository {
         isSeen: false,
         isDelivered: false,
         isSending: true,
-        fileMessageData: file is File ? file.path : (file is String ? file : null),
+        fileMessageData: optimisticFileData,
         repliedMessage: messageReply == null
             ? ''
-            : messageReply.messageType == 'text'
+            : (messageReply.messageType == 'text' || messageReply.messageType == 'wish')
+            ? messageReply.message
+            : (messageReply.message.isNotEmpty && messageReply.fileMessageData.isEmpty)
             ? messageReply.message
             : messageReply.fileMessageData,
         repliedTo: messageReply == null
@@ -1160,96 +1342,205 @@ class GroupRepository {
       );
       _saveOptimisticGroupMessageToHive(groupId, optimisticMessage);
 
-      if (messageType == "image" && file != null) {
-        if (file is File) {
-          fileData = await uploadImageToCloudinary(file, type);
-          if (fileData != null && fileData.isNotEmpty) {
-            MediaCacheService().registerLocalMapping(fileData, file.path);
+      Future<void> performSend(
+        void Function(String message, {int? progress, int? maxProgress}) updateProgress,
+      ) async {
+        if (messageType == "image" && file != null) {
+          if (file is File) {
+            fileData = await uploadImageToCloudinary(
+              file,
+              type,
+              onProgress: (sent, total) {
+                final pct = total > 0 ? (sent / total * 100).toInt() : 0;
+                updateProgress('Uploading image ($pct%)...', progress: sent, maxProgress: total);
+              },
+            );
+            if (fileData != null && fileData!.isNotEmpty) {
+              MediaCacheService().registerLocalMapping(fileData!, file.path);
+            }
+          } else if (file is String) {
+            fileData = file;
+          }
+        } else if (messageType == "video" && file != null) {
+          if (file is File) {
+            fileData = await uploadVideoToCloudinary(
+              file,
+              type,
+              onProgress: (sent, total) {
+                final pct = total > 0 ? (sent / total * 100).toInt() : 0;
+                updateProgress('Uploading video ($pct%)...', progress: sent, maxProgress: total);
+              },
+            );
+            if (fileData != null && fileData!.isNotEmpty) {
+              MediaCacheService().registerLocalMapping(fileData!, file.path);
+            }
+          } else if (file is String) {
+            fileData = file;
+          }
+        } else if (messageType == "gif" && file != null) {
+          if (file is File) {
+            log("📤 Uploading GIF for group message: $messageId");
+            fileData = await uploadImageToCloudinary(
+              file,
+              type,
+              onProgress: (sent, total) {
+                final pct = total > 0 ? (sent / total * 100).toInt() : 0;
+                updateProgress('Uploading GIF ($pct%)...', progress: sent, maxProgress: total);
+              },
+            );
+            log("✅ GIF uploaded for group: $fileData");
+            if (fileData != null && fileData!.isNotEmpty) {
+              MediaCacheService().registerLocalMapping(fileData!, file.path);
+            }
+          } else if (file is String) {
+            fileData = file;
+          }
+        } else if (messageType == "url" && file != null) {
+          fileData = file;
+        } else if (messageType == "document" && file != null) {
+          if (file is File) {
+            log("📤 Uploading document for group message: $messageId");
+            fileData = await uploadDocumentToCloudinary(
+              file,
+              type,
+              onProgress: (sent, total) {
+                final pct = total > 0 ? (sent / total * 100).toInt() : 0;
+                updateProgress('Uploading document ($pct%)...', progress: sent, maxProgress: total);
+              },
+            );
+            log("✅ Document uploaded for group: $fileData");
+            if (fileData != null && fileData!.isNotEmpty) {
+              MediaCacheService().registerLocalMapping(fileData!, file.path);
+            }
+          } else if (file is String) {
+            fileData = file;
           }
         } else if (file is String) {
           fileData = file;
         }
-      } else if (messageType == "video" && file != null) {
-        if (file is File) {
-          fileData = await uploadVideoToCloudinary(file, type);
-          if (fileData != null && fileData.isNotEmpty) {
-            MediaCacheService().registerLocalMapping(fileData, file.path);
-          }
-        } else if (file is String) {
-          fileData = file;
-        }
-      } else if (messageType == "gif" && file != null) {
-        if (file is File) {
-          log("📤 Uploading GIF for group message: $messageId");
-          fileData = await uploadImageToCloudinary(file, type);
-          log("✅ GIF uploaded for group: $fileData");
-          if (fileData != null && fileData.isNotEmpty) {
-            MediaCacheService().registerLocalMapping(fileData, file.path);
-          }
-        } else if (file is String) {
-          fileData = file;
-        }
-      } else if (messageType == "url" && file != null) {
-        fileData = file;
-      } else if (messageType == "document" && file != null) {
-        if (file is File) {
-          log("📤 Uploading document for group message: $messageId");
-          fileData = await uploadDocumentToCloudinary(file, type);
-          log("✅ Document uploaded for group: $fileData");
-          if (fileData != null && fileData.isNotEmpty) {
-            MediaCacheService().registerLocalMapping(fileData, file.path);
-          }
-        } else if (file is String) {
-          fileData = file;
-        }
-      } else if (file is String) {
-        fileData = file;
-      }
 
-      List<String> freshFcmTokens = await FCMTokenManager.getGroupMemberTokens(
-        groupId,
-      );
+        // Embed mediaGroupId into fileMessageData for grouped-media support
+        if (mediaGroupId != null && mediaGroupId.isNotEmpty && fileData != null) {
+          try {
+            final existing = jsonDecode(fileData!);
+            if (existing is Map<String, dynamic>) {
+              final map = Map<String, dynamic>.from(existing);
+              map['groupId'] = mediaGroupId;
+              fileData = jsonEncode(map);
+            } else {
+              fileData = jsonEncode({'url': fileData, 'groupId': mediaGroupId});
+            }
+          } catch (_) {
+            fileData = jsonEncode({'url': fileData, 'groupId': mediaGroupId});
+          }
+        } else if (mediaGroupId != null && mediaGroupId.isNotEmpty && file is File) {
+          fileData = jsonEncode({'url': file.path, 'groupId': mediaGroupId});
+        }
 
-      // Fall back to passed fcmToken from widget if fresh lookup returned empty
-      if (freshFcmTokens.isEmpty && fcmToken.isNotEmpty) {
-        log('⚠️ freshFcmTokens was empty in sendTextMessage, using passed fcmToken (${fcmToken.length} tokens)');
-        freshFcmTokens = List<String>.from(fcmToken);
-      }
-
-      Future.microtask(() {
-        _saveDataToContactsSubCollection(
-          senderUser,
-          text,
-          timeSent,
+        List<String> freshFcmTokens = await FCMTokenManager.getGroupMemberTokens(
           groupId,
-          messageType,
-          freshFcmTokens,
         );
-      });
 
-      _saveMessageToMessageSubcollection(
-        groupId: groupId,
-        text: text,
-        timeSent: timeSent,
-        messageType: messageType,
-        messageId: messageId,
-        name: senderName,
-        username: senderUsername,
-        fileMessageData: fileData,
-        receiverUserName: "",
-        senderUsername: senderName,
-        messageReplyType: messageReply == null
-            ? "text"
-            : messageReply.messageType,
-        messageReply: messageReply,
-        fcmToken: freshFcmTokens,
-        receiverIds: receiverIds,
-        groupName: groupName,
-      );
+        // Fall back to passed fcmToken from widget if fresh lookup returned empty
+        if (freshFcmTokens.isEmpty && fcmToken.isNotEmpty) {
+          log('⚠️ freshFcmTokens was empty in sendTextMessage, using passed fcmToken (${fcmToken.length} tokens)');
+          freshFcmTokens = List<String>.from(fcmToken);
+        }
+
+        updateProgress('Saving message...');
+
+        await Future.wait([
+          _saveDataToContactsSubCollection(
+            senderUser,
+            text,
+            timeSent,
+            groupId,
+            messageType,
+            freshFcmTokens,
+          ),
+          _saveMessageToMessageSubcollection(
+            groupId: groupId,
+            text: text,
+            timeSent: timeSent,
+            messageType: messageType,
+            messageId: messageId,
+            name: senderName,
+            username: senderUsername,
+            fileMessageData: fileData,
+            receiverUserName: "",
+            senderUsername: senderName,
+            messageReplyType: messageReply == null
+                ? "text"
+                : messageReply.messageType,
+            messageReply: messageReply,
+            fcmToken: freshFcmTokens,
+            receiverIds: receiverIds,
+            groupName: groupName,
+          ),
+        ]);
+      }
+
+      final isMediaUpload = file is File;
+      if (isMediaUpload) {
+        await BackgroundTaskService.instance.runWithBackgroundTask(
+          title: 'Sending $messageType to $groupName',
+          initialMessage: 'Uploading $messageType...',
+          successMessage: '${messageType[0].toUpperCase()}${messageType.substring(1)} sent',
+          task: (updateProgress) => performSend(updateProgress),
+        );
+      } else {
+        await performSend((_, {progress, maxProgress}) {});
+      }
     } catch (e) {
       log("❌ Error sending message: $e");
       _removeOptimisticGroupMessageFromHive(groupId);
-      showSnackBar(context: context, content: e.toString());
+      if (context.mounted) {
+        showSnackBar(context: context, content: e.toString());
+      }
+    }
+  }
+
+  Future<void> sendRoleplayMessage({
+    required String groupId,
+    required String imageUrl,
+    String? caption,
+    required List<String> receiverIds,
+  }) async {
+    try {
+      final messageId = const Uuid().v1();
+      final timeSent = DateTime.now();
+
+      final message = GroupChatMessageModel(
+        senderId: 'roleplay',
+        receiverIds: receiverIds,
+        groupId: groupId,
+        text: caption ?? '',
+        messageType: 'roleplay',
+        timeSent: timeSent,
+        messageId: messageId,
+        isSeen: true,
+        isDelivered: true,
+        fileMessageData: imageUrl,
+        repliedMessage: '',
+        repliedTo: '',
+        repliedMessageType: 'text',
+      );
+
+      _saveOptimisticGroupMessageToHive(groupId, message);
+
+      await firestore
+          .collection('groups')
+          .doc(groupId)
+          .collection('chats')
+          .doc(messageId)
+          .set(message.toMap());
+
+      await firestore.collection('groups').doc(groupId).update({
+        'lastMessage': '🎭 Roleplay photo',
+        'timeSent': timeSent.millisecondsSinceEpoch,
+      });
+    } catch (e) {
+      log('❌ Error posting roleplay message: $e');
     }
   }
 
@@ -1326,7 +1617,7 @@ class GroupRepository {
       if (cachedData is List) {
         final messages = cachedData.cast<GroupChatMessageModel>();
         for (var m in messages) {
-          if (['image', 'video', 'gif'].contains(m.messageType) &&
+          if (['image', 'video', 'gif', 'roleplay'].contains(m.messageType) &&
               m.fileMessageData != null &&
               m.fileMessageData!.isNotEmpty) {
             allMedia.add(m);
@@ -1345,7 +1636,7 @@ class GroupRepository {
           .collection('groups')
           .doc(groupId)
           .collection('chats')
-          .where('messageType', whereIn: ['image', 'video', 'gif'])
+          .where('messageType', whereIn: ['image', 'video', 'gif', 'roleplay'])
           .orderBy('timeSent', descending: true)
           .get();
 
@@ -1484,6 +1775,137 @@ class GroupRepository {
       log('✅ Group reaction updated: $emoji on message $messageId in group $groupId');
     } catch (e) {
       log('❌ Error toggling group reaction: $e');
+    }
+  }
+
+  Future<void> editGroupMessage({
+    required String groupId,
+    required String messageId,
+    required String newText,
+  }) async {
+    final currentUserId = auth.currentUser?.uid;
+    if (currentUserId == null || newText.trim().isEmpty) return;
+
+    final trimmedText = newText.trim();
+
+    // 1. Optimistically update local Hive cache (0ms)
+    try {
+      if (Hive.isBoxOpen('messages')) {
+        final box = Hive.box('messages');
+        final cachedData = box.get(groupId, defaultValue: []);
+        final messages = _safeCastGroupMessages(cachedData);
+        final idx = messages.indexWhere((m) => m.messageId == messageId);
+        if (idx >= 0) {
+          messages[idx] = messages[idx].copyWith(
+            text: trimmedText,
+            isEdited: true,
+          );
+          await box.put(groupId, messages);
+          notifyGroupChatListeners(groupId, messages);
+        }
+      }
+    } catch (e) {
+      log('❌ Error updating Hive cache for edited group message: $e');
+    }
+
+    // 2. Persist to Firestore
+    try {
+      final msgRef = firestore
+          .collection('groups')
+          .doc(groupId)
+          .collection('chats')
+          .doc(messageId);
+
+      await msgRef.update({
+        'text': trimmedText,
+        'isEdited': true,
+      });
+    } catch (e) {
+      log('❌ Error editing group message in Firestore: $e');
+    }
+  }
+
+  Future<void> deleteGroupMessageForMe({
+    required String groupId,
+    required String messageId,
+  }) async {
+    final currentUserId = auth.currentUser?.uid;
+    if (currentUserId == null) return;
+
+    // 1. Optimistically remove from Hive cache
+    try {
+      if (Hive.isBoxOpen('messages')) {
+        final box = Hive.box('messages');
+        final cachedData = box.get(groupId, defaultValue: []);
+        final messages = _safeCastGroupMessages(cachedData);
+        messages.removeWhere((m) => m.messageId == messageId);
+        await box.put(groupId, messages);
+        notifyGroupChatListeners(groupId, messages);
+      }
+    } catch (e) {
+      log('❌ Error removing from Hive cache for group deleteForMe: $e');
+    }
+
+    // 2. Add currentUserId to deletedFor in Firestore
+    try {
+      final msgRef = firestore
+          .collection('groups')
+          .doc(groupId)
+          .collection('chats')
+          .doc(messageId);
+
+      await msgRef.update({
+        'deletedFor': FieldValue.arrayUnion([currentUserId]),
+      });
+    } catch (e) {
+      log('❌ Error updating group deletedFor in Firestore: $e');
+    }
+  }
+
+  Future<void> deleteGroupMessageForEveryone({
+    required String groupId,
+    required String messageId,
+  }) async {
+    final currentUserId = auth.currentUser?.uid;
+    if (currentUserId == null) return;
+
+    // 1. Optimistically update local Hive cache
+    try {
+      if (Hive.isBoxOpen('messages')) {
+        final box = Hive.box('messages');
+        final cachedData = box.get(groupId, defaultValue: []);
+        final messages = _safeCastGroupMessages(cachedData);
+        final idx = messages.indexWhere((m) => m.messageId == messageId);
+        if (idx >= 0) {
+          messages[idx] = messages[idx].copyWith(
+            text: 'This message was deleted',
+            isDeleted: true,
+            reactions: {},
+          );
+          await box.put(groupId, messages);
+          notifyGroupChatListeners(groupId, messages);
+        }
+      }
+    } catch (e) {
+      log('❌ Error updating Hive cache for group deleteForEveryone: $e');
+    }
+
+    // 2. Persist to Firestore
+    try {
+      final msgRef = firestore
+          .collection('groups')
+          .doc(groupId)
+          .collection('chats')
+          .doc(messageId);
+
+      await msgRef.update({
+        'text': 'This message was deleted',
+        'isDeleted': true,
+        'reactions': {},
+        'fileMessageData': null,
+      });
+    } catch (e) {
+      log('❌ Error updating group deleteForEveryone in Firestore: $e');
     }
   }
 }

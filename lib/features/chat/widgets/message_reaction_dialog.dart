@@ -3,6 +3,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:worship_chat/colors.dart';
+import 'package:worship_chat/common/utils/google_lens_service.dart';
 
 /// Quick emojis for the floating reaction bar (WhatsApp / Telegram style)
 const List<String> kQuickReactionEmojis = [
@@ -53,8 +54,11 @@ class MessageReactionDialog {
     VoidCallback? onReply,
     VoidCallback? onCopy,
     VoidCallback? onForward,
+    VoidCallback? onGoogleLens,
+    VoidCallback? onEdit,
     VoidCallback? onDelete,
     bool isMyMessage = false,
+    bool isDeleted = false,
   }) async {
     HapticFeedback.mediumImpact();
 
@@ -74,8 +78,11 @@ class MessageReactionDialog {
             onReply: onReply,
             onCopy: onCopy,
             onForward: onForward,
+            onGoogleLens: onGoogleLens,
+            onEdit: onEdit,
             onDelete: onDelete,
             isMyMessage: isMyMessage,
+            isDeleted: isDeleted,
             animation: anim,
           );
         },
@@ -92,8 +99,11 @@ class _ReactionOverlay extends StatefulWidget {
   final VoidCallback? onReply;
   final VoidCallback? onCopy;
   final VoidCallback? onForward;
+  final VoidCallback? onGoogleLens;
+  final VoidCallback? onEdit;
   final VoidCallback? onDelete;
   final bool isMyMessage;
+  final bool isDeleted;
   final Animation<double> animation;
 
   const _ReactionOverlay({
@@ -104,8 +114,11 @@ class _ReactionOverlay extends StatefulWidget {
     this.onReply,
     this.onCopy,
     this.onForward,
+    this.onGoogleLens,
+    this.onEdit,
     this.onDelete,
     required this.isMyMessage,
+    this.isDeleted = false,
     required this.animation,
   });
 
@@ -189,79 +202,80 @@ class _ReactionOverlayState extends State<_ReactionOverlay> {
                 mainAxisSize: MainAxisSize.min,
                 children: [
                   // ── Quick Emojis Pill Bar ─────────────────────────────────
-                  ClipRRect(
-                    borderRadius: BorderRadius.circular(32),
-                    child: BackdropFilter(
-                      filter: ImageFilter.blur(sigmaX: 16, sigmaY: 16),
-                      child: Container(
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: 8,
-                          vertical: 6,
-                        ),
-                        decoration: BoxDecoration(
-                          color: const Color(0xE61B182B),
-                          borderRadius: BorderRadius.circular(32),
-                          border: Border.all(
-                            color: Colors.white.withValues(alpha: 0.14),
-                            width: 1.2,
+                  if (!widget.isDeleted)
+                    ClipRRect(
+                      borderRadius: BorderRadius.circular(32),
+                      child: BackdropFilter(
+                        filter: ImageFilter.blur(sigmaX: 16, sigmaY: 16),
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 8,
+                            vertical: 6,
                           ),
-                          boxShadow: [
-                            BoxShadow(
-                              color: Colors.black.withValues(alpha: 0.45),
-                              blurRadius: 20,
-                              offset: const Offset(0, 8),
+                          decoration: BoxDecoration(
+                            color: const Color(0xE61B182B),
+                            borderRadius: BorderRadius.circular(32),
+                            border: Border.all(
+                              color: Colors.white.withValues(alpha: 0.14),
+                              width: 1.2,
                             ),
-                          ],
-                        ),
-                        child: Row(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            ...kQuickReactionEmojis.map((emoji) {
-                              final isSelected = myCurrentEmoji == emoji;
-                              return _EmojiButton(
-                                emoji: emoji,
-                                isSelected: isSelected,
+                            boxShadow: [
+                              BoxShadow(
+                                color: Colors.black.withValues(alpha: 0.45),
+                                blurRadius: 20,
+                                offset: const Offset(0, 8),
+                              ),
+                            ],
+                          ),
+                          child: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              ...kQuickReactionEmojis.map((emoji) {
+                                final isSelected = myCurrentEmoji == emoji;
+                                return _EmojiButton(
+                                  emoji: emoji,
+                                  isSelected: isSelected,
+                                  onTap: () {
+                                    Navigator.of(context).pop();
+                                    widget.onReactionSelected(emoji);
+                                  },
+                                );
+                              }),
+                              // Expand '+' button
+                              GestureDetector(
                                 onTap: () {
-                                  Navigator.of(context).pop();
-                                  widget.onReactionSelected(emoji);
+                                  HapticFeedback.selectionClick();
+                                  setState(() {
+                                    _showExtended = !_showExtended;
+                                  });
                                 },
-                              );
-                            }),
-                            // Expand '+' button
-                            GestureDetector(
-                              onTap: () {
-                                HapticFeedback.selectionClick();
-                                setState(() {
-                                  _showExtended = !_showExtended;
-                                });
-                              },
-                              child: Container(
-                                width: 36,
-                                height: 36,
-                                margin: const EdgeInsets.symmetric(horizontal: 2),
-                                decoration: BoxDecoration(
-                                  shape: BoxShape.circle,
-                                  color: _showExtended
-                                      ? tabColor.withValues(alpha: 0.3)
-                                      : Colors.white.withValues(alpha: 0.08),
-                                ),
-                                child: Icon(
-                                  _showExtended
-                                      ? Icons.close_rounded
-                                      : Icons.add_rounded,
-                                  size: 18,
-                                  color: _showExtended ? tabColor : Colors.white70,
+                                child: Container(
+                                  width: 36,
+                                  height: 36,
+                                  margin: const EdgeInsets.symmetric(horizontal: 2),
+                                  decoration: BoxDecoration(
+                                    shape: BoxShape.circle,
+                                    color: _showExtended
+                                        ? tabColor.withValues(alpha: 0.3)
+                                        : Colors.white.withValues(alpha: 0.08),
+                                  ),
+                                  child: Icon(
+                                    _showExtended
+                                        ? Icons.close_rounded
+                                        : Icons.add_rounded,
+                                    size: 18,
+                                    color: _showExtended ? tabColor : Colors.white70,
+                                  ),
                                 ),
                               ),
-                            ),
-                          ],
+                            ],
+                          ),
                         ),
                       ),
                     ),
-                  ),
 
                   // ── Extended Emoji Palette Grid (If expanded) ─────────────
-                  if (_showExtended) ...[
+                  if (!widget.isDeleted && _showExtended) ...[
                     const SizedBox(height: 8),
                     ClipRRect(
                       borderRadius: BorderRadius.circular(20),
@@ -305,7 +319,7 @@ class _ReactionOverlayState extends State<_ReactionOverlay> {
                     ),
                   ],
 
-                  // ── Message Actions (Reply, Copy, Delete) ─────────────────
+                  // ── Message Actions (Reply, Copy, Forward, Edit, Delete) ──
                   const SizedBox(height: 8),
                   ClipRRect(
                     borderRadius: BorderRadius.circular(16),
@@ -333,7 +347,7 @@ class _ReactionOverlayState extends State<_ReactionOverlay> {
                         child: Row(
                           mainAxisSize: MainAxisSize.min,
                           children: [
-                            if (widget.onReply != null)
+                            if (!widget.isDeleted && widget.onReply != null)
                               _ActionButton(
                                 icon: Icons.reply_rounded,
                                 label: 'Reply',
@@ -342,7 +356,7 @@ class _ReactionOverlayState extends State<_ReactionOverlay> {
                                   widget.onReply!();
                                 },
                               ),
-                            if (widget.onCopy != null)
+                            if (!widget.isDeleted && widget.onCopy != null)
                               _ActionButton(
                                 icon: Icons.copy_rounded,
                                 label: 'Copy',
@@ -351,7 +365,7 @@ class _ReactionOverlayState extends State<_ReactionOverlay> {
                                   widget.onCopy!();
                                 },
                               ),
-                            if (widget.onForward != null)
+                            if (!widget.isDeleted && widget.onForward != null)
                               _ActionButton(
                                 icon: Icons.forward_rounded,
                                 label: 'Forward',
@@ -360,7 +374,28 @@ class _ReactionOverlayState extends State<_ReactionOverlay> {
                                   widget.onForward!();
                                 },
                               ),
-                            if (widget.isMyMessage && widget.onDelete != null)
+                            if (!widget.isDeleted && widget.onGoogleLens != null)
+                              _ActionButton(
+                                customIcon: const GoogleLensIcon(size: 16),
+                                label: 'Lens',
+                                onTap: () {
+                                  Navigator.of(context).pop();
+                                  widget.onGoogleLens!();
+                                },
+                              ),
+                            if (!widget.isDeleted &&
+                                widget.isMyMessage &&
+                                widget.onEdit != null)
+                              _ActionButton(
+                                icon: Icons.edit_outlined,
+                                label: 'Edit',
+                                color: tabColor,
+                                onTap: () {
+                                  Navigator.of(context).pop();
+                                  widget.onEdit!();
+                                },
+                              ),
+                            if (widget.onDelete != null)
                               _ActionButton(
                                 icon: Icons.delete_outline_rounded,
                                 label: 'Delete',
@@ -461,13 +496,15 @@ class _EmojiButtonState extends State<_EmojiButton>
 }
 
 class _ActionButton extends StatelessWidget {
-  final IconData icon;
+  final IconData? icon;
+  final Widget? customIcon;
   final String label;
   final VoidCallback onTap;
   final Color color;
 
   const _ActionButton({
-    required this.icon,
+    this.icon,
+    this.customIcon,
     required this.label,
     required this.onTap,
     this.color = Colors.white70,
@@ -488,7 +525,7 @@ class _ActionButton extends StatelessWidget {
           child: Row(
             mainAxisSize: MainAxisSize.min,
             children: [
-              Icon(icon, size: 16, color: color),
+              customIcon ?? Icon(icon!, size: 16, color: color),
               const SizedBox(width: 4),
               Text(
                 label,

@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:worship_chat/colors.dart';
+import 'package:worship_chat/features/auth/widgets/auth_form_viewport.dart';
 import 'package:worship_chat/features/auth/controller/auth_controller.dart';
 import 'package:worship_chat/features/auth/screens/forget_password_screen.dart';
 import 'package:worship_chat/features/auth/screens/register_screen.dart';
@@ -33,8 +34,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
           .read(authControllerProvider)
           .loginWithEmail(context, email, password);
 
-      
-
+      if (!mounted) return;
       setState(() {
         _isLoading = false;
       });
@@ -60,10 +60,11 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
             ),
             //child: Image.asset('assets/images/black.png', fit: BoxFit.cover),
           ),
-          Center(
+          AuthFormViewport(
             child: Padding(
               padding: const EdgeInsets.symmetric(horizontal: 24.0),
               child: Container(
+                constraints: const BoxConstraints(maxWidth: 480),
                 padding: const EdgeInsets.all(25),
                 decoration: BoxDecoration(
                   color: Colors.black.withValues(alpha: 0.2),
@@ -198,8 +199,9 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                         ),
                       ),
                       const SizedBox(height: 10),
-                      Row(
-                        mainAxisAlignment: MainAxisAlignment.center,
+                      Wrap(
+                        alignment: WrapAlignment.center,
+                        crossAxisAlignment: WrapCrossAlignment.center,
                         children: [
                           const Text(
                             "Don't have an account?",

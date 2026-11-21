@@ -1,12 +1,17 @@
+import 'dart:async';
 import 'dart:developer';
 import 'dart:io';
+import 'dart:math' hide log;
+import 'package:cached_network_image/cached_network_image.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/cupertino.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:hive_flutter/hive_flutter.dart';
 import 'package:image_cropper/image_cropper.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:worship_chat/colors.dart';
 import 'package:worship_chat/common/utils/active_chat_notifier.dart';
 import 'package:worship_chat/common/utils/file_messages.dart';
@@ -18,6 +23,7 @@ import 'package:worship_chat/features/group/controller/group_controller.dart';
 import 'package:worship_chat/features/group/screens/edit_group_screen.dart';
 import 'package:worship_chat/features/group/screens/group_gallery_screen.dart';
 import 'package:worship_chat/features/group/screens/group_info_screen.dart';
+import 'package:worship_chat/features/group/services/roleplay_service.dart';
 import 'package:worship_chat/features/dashboard/repositories/event_repository.dart';
 import 'package:worship_chat/features/group/widgets/group_bottom_chat_field_widget.dart';
 import 'package:worship_chat/features/group/widgets/group_chat_list_widget.dart';
@@ -62,6 +68,505 @@ class _GroupChatScreenState extends ConsumerState<GroupChatScreen>
   late List<String> receiverIds;
   final Set<String> _dismissedBannerEventIds = {};
   late final Stream<GroupModel> _groupStream;
+  GroupModel? _currentGroup;
+  StreamSubscription<GroupModel>? _groupSubscription;
+  String? _currentChatBackgroundUrl;
+  bool get _isRoleplayMode =>
+      RoleplayService.instance.isRoleplayActive(widget.groupId);
+  bool get _isManualRoleplay =>
+      RoleplayService.instance.isManualRoleplay(widget.groupId);
+  int get _roleplayIntervalSeconds =>
+      RoleplayService.instance.getInterval(widget.groupId);
+  bool _isSendingManualPhoto = false;
+
+  bool get _hasSanctuary {
+    final group = _currentGroup;
+    if (group != null) {
+      final position = group.position;
+      final family = group.family;
+      final wish = group.wish ?? widget.wish;
+      final hasPosition =
+          position != null && position.isNotEmpty && position != 'None';
+      final hasFamily =
+          family != null && family.isNotEmpty && family != 'None';
+      final hasWish = wish != null && wish.isNotEmpty;
+      return hasPosition || hasFamily || hasWish;
+    }
+    final hasWish = widget.wish != null && widget.wish!.isNotEmpty;
+    final isQueendom = widget.queendom != null && widget.queendom!.isNotEmpty;
+    return hasWish || isQueendom;
+  }
+
+  void _onRoleplayServiceUpdated() {
+    if (mounted) setState(() {});
+  }
+
+  Future<void> _saveRoleplayInterval(int seconds) async {
+    await RoleplayService.instance.setInterval(widget.groupId, seconds);
+    if (mounted) setState(() {});
+  }
+
+  void _showRoleplayIntervalPicker() {
+    int tempSeconds = _roleplayIntervalSeconds;
+    final accent = _accentColor;
+    final presets = [5, 10, 15, 20, 30, 45, 60, 90, 120];
+
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: Colors.transparent,
+      isScrollControlled: true,
+      builder: (ctx) {
+        return StatefulBuilder(
+          builder: (context, setModalState) {
+            return Container(
+              padding: const EdgeInsets.fromLTRB(20, 16, 20, 24),
+              decoration: BoxDecoration(
+                color: const Color(0xFF1B192A),
+                borderRadius:
+                    const BorderRadius.vertical(top: Radius.circular(24)),
+                border: Border.all(
+                  color: accent.withValues(alpha: 0.35),
+                  width: 1,
+                ),
+                boxShadow: [
+                  BoxShadow(
+                    color: Colors.black.withValues(alpha: 0.6),
+                    blurRadius: 20,
+                    offset: const Offset(0, -4),
+                  ),
+                ],
+              ),
+              child: SafeArea(
+                top: false,
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    // Handle
+                    Container(
+                      width: 40,
+                      height: 4,
+                      margin: const EdgeInsets.only(bottom: 16),
+                      decoration: BoxDecoration(
+                        color: Colors.white24,
+                        borderRadius: BorderRadius.circular(2),
+                      ),
+                    ),
+
+                    // Title
+                    Row(
+                      children: [
+                        Container(
+                          padding: const EdgeInsets.all(6),
+                          decoration: BoxDecoration(
+                            color: accent.withValues(alpha: 0.2),
+                            shape: BoxShape.circle,
+                          ),
+                          child: Icon(
+                            Icons.timer_outlined,
+                            size: 20,
+                            color: accent,
+                          ),
+                        ),
+                        const SizedBox(width: 10),
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              const Text(
+                                'Roleplay Image Interval',
+                                style: TextStyle(
+                                  fontSize: 16,
+                                  fontWeight: FontWeight.bold,
+                                  color: Colors.white,
+                                ),
+                              ),
+                              Text(
+                                'Set seconds between random photos',
+                                style: TextStyle(
+                                  fontSize: 12,
+                                  color: Colors.white.withValues(alpha: 0.6),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 20),
+
+                    // Big current display with - and +
+                    Container(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 16, vertical: 12),
+                      decoration: BoxDecoration(
+                        color: Colors.white.withValues(alpha: 0.05),
+                        borderRadius: BorderRadius.circular(16),
+                        border: Border.all(
+                          color: accent.withValues(alpha: 0.25),
+                          width: 0.8,
+                        ),
+                      ),
+                      child: Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                        children: [
+                          IconButton(
+                            icon: const Icon(Icons.remove_circle_outline),
+                            color: tempSeconds > 3 ? accent : Colors.white24,
+                            onPressed: tempSeconds > 3
+                                ? () {
+                                    setModalState(() {
+                                      tempSeconds = max(3, tempSeconds - 1);
+                                    });
+                                  }
+                                : null,
+                          ),
+                          Column(
+                            children: [
+                              Text(
+                                '$tempSeconds',
+                                style: TextStyle(
+                                  fontSize: 34,
+                                  fontWeight: FontWeight.bold,
+                                  color: accent,
+                                  letterSpacing: -1,
+                                ),
+                              ),
+                              Text(
+                                'seconds',
+                                style: TextStyle(
+                                  fontSize: 12,
+                                  color: Colors.white.withValues(alpha: 0.7),
+                                  fontWeight: FontWeight.w500,
+                                ),
+                              ),
+                            ],
+                          ),
+                          IconButton(
+                            icon: const Icon(Icons.add_circle_outline),
+                            color: tempSeconds < 300 ? accent : Colors.white24,
+                            onPressed: tempSeconds < 300
+                                ? () {
+                                    setModalState(() {
+                                      tempSeconds = min(300, tempSeconds + 1);
+                                    });
+                                  }
+                                : null,
+                          ),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(height: 16),
+
+                    // Slider
+                    SliderTheme(
+                      data: SliderTheme.of(context).copyWith(
+                        activeTrackColor: accent,
+                        inactiveTrackColor: Colors.white12,
+                        thumbColor: accent,
+                        overlayColor: accent.withValues(alpha: 0.2),
+                        trackHeight: 4,
+                      ),
+                      child: Slider(
+                        value: tempSeconds.toDouble().clamp(3.0, 120.0),
+                        min: 3.0,
+                        max: 120.0,
+                        divisions: 117,
+                        onChanged: (val) {
+                          setModalState(() {
+                            tempSeconds = val.round();
+                          });
+                        },
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+
+                    // Preset Chips
+                    Align(
+                      alignment: Alignment.centerLeft,
+                      child: Text(
+                        'Quick Presets:',
+                        style: TextStyle(
+                          fontSize: 12,
+                          fontWeight: FontWeight.w600,
+                          color: Colors.white.withValues(alpha: 0.7),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                    Wrap(
+                      spacing: 8,
+                      runSpacing: 8,
+                      children: presets.map((sec) {
+                        final isSelected = tempSeconds == sec;
+                        return ChoiceChip(
+                          label: Text(
+                            '${sec}s',
+                            style: TextStyle(
+                              color: isSelected ? Colors.black : Colors.white,
+                              fontWeight: isSelected
+                                  ? FontWeight.bold
+                                  : FontWeight.normal,
+                              fontSize: 12,
+                            ),
+                          ),
+                          selected: isSelected,
+                          selectedColor: accent,
+                          backgroundColor:
+                              Colors.white.withValues(alpha: 0.08),
+                          showCheckmark: false,
+                          onSelected: (selected) {
+                            if (selected) {
+                              setModalState(() {
+                                tempSeconds = sec;
+                              });
+                            }
+                          },
+                        );
+                      }).toList(),
+                    ),
+                    const SizedBox(height: 22),
+
+                    // Apply Button
+                    SizedBox(
+                      width: double.infinity,
+                      height: 48,
+                      child: ElevatedButton(
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: accent,
+                          foregroundColor: Colors.black,
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(12),
+                          ),
+                          elevation: 0,
+                        ),
+                        onPressed: () {
+                          Navigator.pop(ctx);
+                          _saveRoleplayInterval(tempSeconds);
+                          AppSnackBar.success(
+                            context,
+                            '⏱ Roleplay interval fixed to ${tempSeconds}s',
+                          );
+                        },
+                        child: Text(
+                          'Save & Fix to ${tempSeconds}s',
+                          style: const TextStyle(
+                            fontSize: 15,
+                            fontWeight: FontWeight.bold,
+                            letterSpacing: 0.3,
+                          ),
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            );
+          },
+        );
+      },
+    );
+  }
+
+  bool _checkIsQueendom([GroupModel? group]) {
+    final q = group?.queendom ?? widget.queendom;
+    final t = widget.type;
+    return q == 'Queen Pooja' ||
+        q == 'Queen Rashmika' ||
+        t == 'queenPooja' ||
+        t == 'queenRashmika';
+  }
+
+  String _getQueendomDisplayName([GroupModel? group]) {
+    final q = group?.queendom ?? widget.queendom;
+    final t = widget.type;
+    if (q == 'Queen Pooja' || t == 'queenPooja') return 'Queen Pooja';
+    if (q == 'Queen Rashmika' || t == 'queenRashmika') return 'Queen Rashmika';
+    return q ?? 'Queendom';
+  }
+
+  Future<void> _toggleRoleplayMode([bool? isCurrentlyRunning]) async {
+    final running = isCurrentlyRunning ?? _isRoleplayMode;
+    if (running) {
+      await _stopRoleplayMode();
+    } else {
+      await _startRoleplayMode(mode: RoleplayModeType.automatic);
+    }
+  }
+
+  Future<void> _stopRoleplayMode() async {
+    await RoleplayService.instance.stopRoleplay(widget.groupId);
+    if (mounted) {
+      AppSnackBar.info(context, '🎭 Roleplay mode deactivated');
+    }
+  }
+
+  Future<void> _startRoleplayMode({
+    RoleplayModeType mode = RoleplayModeType.automatic,
+  }) async {
+    final success = await RoleplayService.instance.startRoleplay(
+      groupId: widget.groupId,
+      queendom: _getQueendomDisplayName(),
+      groupName: widget.name,
+      receiverIds: receiverIds,
+      chatBackgroundUrl: _currentChatBackgroundUrl ?? widget.chatBackgroundUrl,
+      groupPic: widget.groupPic,
+      intervalSeconds: _roleplayIntervalSeconds,
+      mode: mode,
+    );
+
+    if (!success) {
+      if (mounted) {
+        AppSnackBar.warning(
+          context,
+          'No photos found in gallery for roleplay mode',
+        );
+      }
+      return;
+    }
+
+    if (mounted) {
+      if (mode == RoleplayModeType.automatic) {
+        AppSnackBar.success(
+          context,
+          '🎭 Roleplay mode activated (Automatic)! Random photo every ${_roleplayIntervalSeconds}s',
+        );
+      } else {
+        AppSnackBar.success(
+          context,
+          '🎭 Roleplay mode activated (Manual)! Tap the top-left button to send random photos.',
+        );
+      }
+    }
+  }
+
+  Future<void> _switchRoleplayMode(RoleplayModeType newMode) async {
+    await RoleplayService.instance.switchRoleplayMode(widget.groupId, newMode);
+    if (mounted) {
+      if (newMode == RoleplayModeType.manual) {
+        AppSnackBar.info(
+          context,
+          'Switched to Manual Roleplay. Tap the floating button to send photos.',
+        );
+      } else {
+        AppSnackBar.info(
+          context,
+          'Switched to Automatic Roleplay (${_roleplayIntervalSeconds}s).',
+        );
+      }
+    }
+  }
+
+  Future<void> _sendManualRoleplayPhoto() async {
+    if (_isSendingManualPhoto) return;
+    HapticFeedback.lightImpact();
+    setState(() {
+      _isSendingManualPhoto = true;
+    });
+
+    try {
+      final success = await RoleplayService.instance.postSingleRoleplayPhoto(
+        widget.groupId,
+        queendom: _getQueendomDisplayName(),
+        groupName: widget.name,
+        receiverIds: receiverIds,
+        chatBackgroundUrl:
+            _currentChatBackgroundUrl ?? widget.chatBackgroundUrl,
+        groupPic: widget.groupPic,
+      );
+      if (!success && mounted) {
+        AppSnackBar.warning(
+          context,
+          'No photos found in gallery to send',
+        );
+      }
+    } catch (e) {
+      log('Error sending manual roleplay photo: $e');
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isSendingManualPhoto = false;
+        });
+      }
+    }
+  }
+
+  Widget _buildManualRoleplayFloatingButtonContent() {
+    final accent = _accentColor;
+    return SafeArea(
+      top: false,
+      bottom: false,
+      child: Material(
+        color: Colors.transparent,
+        child: InkWell(
+          key: const Key('manual_roleplay_floating_button'),
+          onTap: _isSendingManualPhoto ? null : _sendManualRoleplayPhoto,
+          borderRadius: BorderRadius.circular(24),
+          child: AnimatedContainer(
+            duration: const Duration(milliseconds: 200),
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+            decoration: BoxDecoration(
+              gradient: LinearGradient(
+                colors: [
+                  accent.withValues(alpha: 0.95),
+                  accent.withValues(alpha: 0.8),
+                ],
+                begin: Alignment.topLeft,
+                end: Alignment.bottomRight,
+              ),
+              borderRadius: BorderRadius.circular(24),
+              border: Border.all(
+                color: Colors.white.withValues(alpha: 0.45),
+                width: 1.2,
+              ),
+              boxShadow: [
+                BoxShadow(
+                  color: Colors.black.withValues(alpha: 0.35),
+                  blurRadius: 8,
+                  offset: const Offset(0, 3),
+                ),
+                BoxShadow(
+                  color: accent.withValues(alpha: 0.35),
+                  blurRadius: 10,
+                  spreadRadius: 1,
+                ),
+              ],
+            ),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                if (_isSendingManualPhoto)
+                  const SizedBox(
+                    width: 16,
+                    height: 16,
+                    child: CircularProgressIndicator(
+                      strokeWidth: 2,
+                      valueColor:
+                          AlwaysStoppedAnimation<Color>(Colors.white),
+                    ),
+                  )
+                else
+                  const Icon(
+                    Icons.casino_rounded,
+                    color: Colors.white,
+                    size: 18,
+                  ),
+                const SizedBox(width: 7),
+                Text(
+                  _isSendingManualPhoto ? 'Sending...' : 'Random Photo',
+                  style: const TextStyle(
+                    color: Colors.white,
+                    fontSize: 12,
+                    fontWeight: FontWeight.bold,
+                    letterSpacing: 0.3,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
 
   Color get _accentColor {
     if (widget.color != null) {
@@ -82,12 +587,26 @@ class _GroupChatScreenState extends ConsumerState<GroupChatScreen>
   @override
   void initState() {
     super.initState();
+    _currentChatBackgroundUrl = widget.chatBackgroundUrl;
+    _loadCachedBackground();
     WidgetsBinding.instance.addObserver(this);
+    RoleplayService.instance.addListener(_onRoleplayServiceUpdated);
     _groupStream = FirebaseFirestore.instance
         .collection('groups')
         .doc(widget.groupId)
         .snapshots()
-        .map((doc) => GroupModel.fromMap(doc.data()!));
+        .map((doc) => (doc.exists && doc.data() != null)
+            ? GroupModel.fromMap(doc.data()!)
+            : null)
+        .where((g) => g != null)
+        .cast<GroupModel>();
+    _groupSubscription = _groupStream.listen((group) {
+      if (mounted) {
+        setState(() {
+          _currentGroup = group;
+        });
+      }
+    });
     ActiveChatNotifier.instance.enter(widget.groupId, chatName: widget.name);
     FirebaseNotificationService.cancelNotificationsForChat(
       widget.groupId,
@@ -109,6 +628,24 @@ class _GroupChatScreenState extends ConsumerState<GroupChatScreen>
     });
   }
 
+  Future<void> _loadCachedBackground() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final cachedBg = prefs.getString('group_bg_${widget.groupId}');
+      if (cachedBg != null && cachedBg.isNotEmpty && mounted) {
+        if (_currentChatBackgroundUrl == null || _currentChatBackgroundUrl!.isEmpty) {
+          setState(() {
+            _currentChatBackgroundUrl = cachedBg;
+          });
+        }
+      } else if (widget.chatBackgroundUrl != null && widget.chatBackgroundUrl!.isNotEmpty) {
+        prefs.setString('group_bg_${widget.groupId}', widget.chatBackgroundUrl!);
+      }
+    } catch (e) {
+      log('Error loading cached group background: $e');
+    }
+  }
+
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     super.didChangeAppLifecycleState(state);
@@ -126,6 +663,8 @@ class _GroupChatScreenState extends ConsumerState<GroupChatScreen>
 
   @override
   void dispose() {
+    _groupSubscription?.cancel();
+    RoleplayService.instance.removeListener(_onRoleplayServiceUpdated);
     WidgetsBinding.instance.removeObserver(this);
     ActiveChatNotifier.instance.leave();
     FirebaseNotificationService.cancelNotificationsForChat(
@@ -268,6 +807,22 @@ class _GroupChatScreenState extends ConsumerState<GroupChatScreen>
       }
 
       if (imageUrl != null) {
+        setState(() {
+          _currentChatBackgroundUrl = imageUrl;
+        });
+        SharedPreferences.getInstance().then((prefs) {
+          prefs.setString('group_bg_${widget.groupId}', imageUrl);
+        }).catchError((_) {});
+
+        // Automatically ensure background is visible when user sets a new wallpaper
+        if (!ref.read(displayImageProvider)) {
+          Box displayImageBox = Hive.isBoxOpen('displayImage')
+              ? Hive.box('displayImage')
+              : await Hive.openBox('displayImage');
+          await displayImageBox.put('displayImage', true);
+          ref.read(displayImageProvider.notifier).state = true;
+        }
+
         await ref
             .read(groupControllerProvider)
             .updateChatBackground(widget.groupId, imageUrl);
@@ -427,42 +982,48 @@ class _GroupChatScreenState extends ConsumerState<GroupChatScreen>
                                 return Row(
                                   children: [
                                     if (hasFamily) ...[
-                                      Container(
-                                        padding: const EdgeInsets.symmetric(
-                                          horizontal: 4.5,
-                                          vertical: 1,
-                                        ),
-                                        margin: const EdgeInsets.only(right: 5),
-                                        decoration: BoxDecoration(
-                                          color: _accentColor
-                                              .withOpacity(0.2),
-                                          borderRadius:
-                                              BorderRadius.circular(4),
-                                          border: Border.all(
-                                            color: _accentColor
-                                                .withOpacity(0.5),
-                                            width: 0.6,
+                                      Flexible(
+                                        fit: FlexFit.loose,
+                                        child: Container(
+                                          padding: const EdgeInsets.symmetric(
+                                            horizontal: 4.5,
+                                            vertical: 1,
                                           ),
-                                        ),
-
-                                        child: Row(
-                                          mainAxisSize: MainAxisSize.min,
-                                          children: [
-                                            QueendomFamilyEmblemWidget(
-                                              family: family,
-                                              size: 11,
+                                          margin: const EdgeInsets.only(right: 5),
+                                          decoration: BoxDecoration(
+                                            color: _accentColor
+                                                .withOpacity(0.2),
+                                            borderRadius:
+                                                BorderRadius.circular(4),
+                                            border: Border.all(
+                                              color: _accentColor
+                                                  .withOpacity(0.5),
+                                              width: 0.6,
                                             ),
-                                            const SizedBox(width: 3),
-                                            Text(
-                                              '$family Family',
-                                              style: TextStyle(
-                                                fontSize: 9.5,
-                                                color: Colors.white
-                                                    .withOpacity(0.9),
-                                                fontWeight: FontWeight.w600,
+                                          ),
+                                          child: Row(
+                                            mainAxisSize: MainAxisSize.min,
+                                            children: [
+                                              QueendomFamilyEmblemWidget(
+                                                family: family,
+                                                size: 11,
                                               ),
-                                            ),
-                                          ],
+                                              const SizedBox(width: 3),
+                                              Flexible(
+                                                child: Text(
+                                                  '$family Family',
+                                                  style: TextStyle(
+                                                    fontSize: 9.5,
+                                                    color: Colors.white
+                                                        .withOpacity(0.9),
+                                                    fontWeight: FontWeight.w600,
+                                                  ),
+                                                  maxLines: 1,
+                                                  overflow: TextOverflow.ellipsis,
+                                                ),
+                                              ),
+                                            ],
+                                          ),
                                         ),
                                       ),
                                     ],
@@ -527,7 +1088,132 @@ class _GroupChatScreenState extends ConsumerState<GroupChatScreen>
                 ),
                 offset: const Offset(0, 50),
                 itemBuilder: (BuildContext context) {
+                  final isQueendom = _checkIsQueendom(snapshot.data);
+                  final isRoleplayRunning =
+                      (snapshot.data?.isRoleplayActive == true) || _isRoleplayMode;
+                  final currentMode = snapshot.data?.roleplayMode ??
+                      RoleplayService.instance
+                          .getRoleplayMode(widget.groupId)
+                          .name;
+                  final isManual = currentMode == 'manual';
+
                   List<PopupMenuEntry<String>> menuItems = [
+                    if (isQueendom) ...[
+                      if (isRoleplayRunning) ...[
+                        PopupMenuItem<String>(
+                          value: 'stop_roleplay',
+                          child: Row(
+                            children: const [
+                              Icon(
+                                Icons.stop_circle_outlined,
+                                size: 20,
+                                color: Color(0xFFFF5252),
+                              ),
+                              SizedBox(width: 12),
+                              Text(
+                                'Stop Roleplay Mode',
+                                style: TextStyle(
+                                  color: Color(0xFFFF5252),
+                                  fontWeight: FontWeight.bold,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                        if (isManual)
+                          PopupMenuItem<String>(
+                            value: 'switch_roleplay_auto',
+                            child: Row(
+                              children: [
+                                Icon(
+                                  Icons.autorenew_rounded,
+                                  size: 20,
+                                  color: Theme.of(context).iconTheme.color,
+                                ),
+                                const SizedBox(width: 12),
+                                const Text('Switch to Automatic Mode'),
+                              ],
+                            ),
+                          )
+                        else ...[
+                          PopupMenuItem<String>(
+                            value: 'switch_roleplay_manual',
+                            child: Row(
+                              children: [
+                                Icon(
+                                  Icons.touch_app_outlined,
+                                  size: 20,
+                                  color: Theme.of(context).iconTheme.color,
+                                ),
+                                const SizedBox(width: 12),
+                                const Text('Switch to Manual Mode'),
+                              ],
+                            ),
+                          ),
+                          PopupMenuItem<String>(
+                            value: 'roleplay_interval',
+                            child: Row(
+                              children: [
+                                Icon(
+                                  Icons.timer_outlined,
+                                  size: 20,
+                                  color: Theme.of(context).iconTheme.color,
+                                ),
+                                const SizedBox(width: 12),
+                                Text(
+                                  'Roleplay Interval (${_roleplayIntervalSeconds}s)',
+                                ),
+                              ],
+                            ),
+                          ),
+                        ],
+                      ] else ...[
+                        PopupMenuItem<String>(
+                          value: 'start_roleplay_auto',
+                          child: Row(
+                            children: [
+                              Icon(
+                                Icons.autorenew_rounded,
+                                size: 20,
+                                color: Theme.of(context).iconTheme.color,
+                              ),
+                              const SizedBox(width: 12),
+                              const Text('Start Roleplay (Automatic)'),
+                            ],
+                          ),
+                        ),
+                        PopupMenuItem<String>(
+                          value: 'start_roleplay_manual',
+                          child: Row(
+                            children: [
+                              Icon(
+                                Icons.touch_app_outlined,
+                                size: 20,
+                                color: Theme.of(context).iconTheme.color,
+                              ),
+                              const SizedBox(width: 12),
+                              const Text('Start Roleplay (Manual)'),
+                            ],
+                          ),
+                        ),
+                        PopupMenuItem<String>(
+                          value: 'roleplay_interval',
+                          child: Row(
+                            children: [
+                              Icon(
+                                Icons.timer_outlined,
+                                size: 20,
+                                color: Theme.of(context).iconTheme.color,
+                              ),
+                              const SizedBox(width: 12),
+                              Text(
+                                'Roleplay Interval (${_roleplayIntervalSeconds}s)',
+                              ),
+                            ],
+                          ),
+                        ),
+                      ],
+                    ],
                     PopupMenuItem<String>(
                       value: 'change_background',
                       child: Row(
@@ -582,6 +1268,28 @@ class _GroupChatScreenState extends ConsumerState<GroupChatScreen>
                 },
                 onSelected: (String value) {
                   switch (value) {
+                    case 'start_roleplay_auto':
+                    case 'start_roleplay':
+                      _startRoleplayMode(mode: RoleplayModeType.automatic);
+                      break;
+                    case 'start_roleplay_manual':
+                      _startRoleplayMode(mode: RoleplayModeType.manual);
+                      break;
+                    case 'switch_roleplay_auto':
+                      _switchRoleplayMode(RoleplayModeType.automatic);
+                      break;
+                    case 'switch_roleplay_manual':
+                      _switchRoleplayMode(RoleplayModeType.manual);
+                      break;
+                    case 'stop_roleplay':
+                      _stopRoleplayMode();
+                      break;
+                    case 'toggle_roleplay':
+                      _toggleRoleplayMode();
+                      break;
+                    case 'roleplay_interval':
+                      _showRoleplayIntervalPicker();
+                      break;
                     case 'change_background':
                       selectImageForBackground(ref, context);
                       break;
@@ -615,31 +1323,62 @@ class _GroupChatScreenState extends ConsumerState<GroupChatScreen>
           ),
           const SizedBox(width: 4),
         ],
+        bottom: _hasSanctuary
+            ? RoyalSanctuaryAppBarBottom(
+                stream: _groupStream,
+                initialGroup: _currentGroup,
+                fallbackWish: widget.wish,
+                fallbackName: widget.name,
+                accentColor: _accentColor,
+                onTap: _openGroupInfo,
+              )
+            : null,
       ),
       body: Stack(
         children: [
-          Consumer(
-            builder: (context, ref, child) {
-              final displayImage = ref.watch(displayImageProvider);
-              return widget.chatBackgroundUrl != null && displayImage
-                  ? Container(
-                      width: double.infinity,
-                      height: double.infinity,
-                      decoration: BoxDecoration(
-                        image: DecorationImage(
-                          image: NetworkImage(widget.chatBackgroundUrl!),
-                          fit: BoxFit.cover,
-                        ),
-                      ),
-                    )
-                  : const SizedBox.shrink();
+          StreamBuilder<GroupModel>(
+            stream: _groupStream,
+            builder: (context, snapshot) {
+              final streamBg = snapshot.data?.chatBackgroundUrl;
+              if (streamBg != null && streamBg.isNotEmpty) {
+                SharedPreferences.getInstance().then((prefs) {
+                  prefs.setString('group_bg_${widget.groupId}', streamBg);
+                }).catchError((_) {});
+              }
+              final effectiveBg = (streamBg != null && streamBg.isNotEmpty)
+                  ? streamBg
+                  : (_currentChatBackgroundUrl ?? widget.chatBackgroundUrl);
+              return Consumer(
+                builder: (context, ref, child) {
+                  final displayImage = ref.watch(displayImageProvider);
+                  return effectiveBg != null &&
+                          effectiveBg.isNotEmpty &&
+                          displayImage
+                      ? Container(
+                          width: double.infinity,
+                          height: double.infinity,
+                          decoration: BoxDecoration(
+                            image: DecorationImage(
+                              image: CachedNetworkImageProvider(effectiveBg),
+                              fit: BoxFit.cover,
+                            ),
+                          ),
+                        )
+                      : const SizedBox.shrink();
+                },
+              );
             },
           ),
           Column(
             children: [
               _buildGroupBirthdayMention(),
-              _buildRoyalSanctuaryBanner(),
-              Expanded(child: GroupChatListWidget(groupId: widget.groupId)),
+              Expanded(
+                child: GroupChatListWidget(
+                  groupId: widget.groupId,
+                  accentColor: _accentColor,
+                  queendom: widget.queendom,
+                ),
+              ),
 
               // Floating in-chat typing bubble for groups
               StreamBuilder<Map<String, String>>(
@@ -672,6 +1411,28 @@ class _GroupChatScreenState extends ConsumerState<GroupChatScreen>
                 type: widget.type,
               ),
             ],
+          ),
+          // Floating button for Manual Roleplay Mode: Top Left & down the AppBar
+          Positioned(
+            top: 10,
+            left: 14,
+            child: StreamBuilder<GroupModel>(
+              stream: _groupStream,
+              builder: (context, snapshot) {
+                final isRunning =
+                    (snapshot.data?.isRoleplayActive == true) || _isRoleplayMode;
+                final mode = snapshot.data?.roleplayMode ??
+                    RoleplayService.instance
+                        .getRoleplayMode(widget.groupId)
+                        .name;
+                final isManual = mode == 'manual' || _isManualRoleplay;
+
+                if (!isRunning || !isManual) {
+                  return const SizedBox.shrink();
+                }
+                return _buildManualRoleplayFloatingButtonContent();
+              },
+            ),
           ),
         ],
       ),
@@ -815,133 +1576,147 @@ class _GroupChatScreenState extends ConsumerState<GroupChatScreen>
     );
   }
 
-  bool _isSanctuaryBannerDismissed = false;
+}
 
+class RoyalSanctuaryAppBarBottom extends StatelessWidget
+    implements PreferredSizeWidget {
+  final Stream<GroupModel>? stream;
+  final GroupModel? initialGroup;
+  final String? fallbackWish;
+  final String? fallbackName;
+  final Color accentColor;
+  final VoidCallback? onTap;
 
-  Widget _buildRoyalSanctuaryBanner() {
-    if (_isSanctuaryBannerDismissed) return const SizedBox.shrink();
+  const RoyalSanctuaryAppBarBottom({
+    super.key,
+    this.stream,
+    this.initialGroup,
+    this.fallbackWish,
+    this.fallbackName,
+    required this.accentColor,
+    this.onTap,
+  });
 
-    return StreamBuilder<GroupModel>(
-      stream: _groupStream,
-      builder: (context, snapshot) {
-        final group = snapshot.data;
-        if (group == null) return const SizedBox.shrink();
+  @override
+  Size get preferredSize => const Size.fromHeight(42.0);
 
-        final position = group.position;
-        final family = group.family;
-        final wish = group.wish ?? widget.wish;
-        final livingPlace = group.effectiveLivingPlace;
+  @override
+  Widget build(BuildContext context) {
+    if (stream != null) {
+      return StreamBuilder<GroupModel>(
+        stream: stream,
+        initialData: initialGroup,
+        builder: (context, snapshot) {
+          final group = snapshot.data ?? initialGroup;
+          return _buildContent(context, group);
+        },
+      );
+    }
+    return _buildContent(context, initialGroup);
+  }
 
-        final hasPosition =
-            position != null && position.isNotEmpty && position != 'None';
-        final hasFamily =
-            family != null && family.isNotEmpty && family != 'None';
-        final hasWish = wish != null && wish.isNotEmpty;
+  Widget _buildContent(BuildContext context, GroupModel? group) {
+    if (group == null && fallbackWish == null) {
+      return const SizedBox.shrink();
+    }
 
-        if (!hasPosition && !hasFamily && !hasWish) {
-          return const SizedBox.shrink();
-        }
+    final position = group?.position;
+    final family = group?.family;
+    final wish = group?.wish ?? fallbackWish;
+    final livingPlace = group?.effectiveLivingPlace ?? fallbackName ?? '';
 
-        final bannerColor = _accentColor;
+    final hasPosition =
+        position != null && position.isNotEmpty && position != 'None';
+    final hasFamily =
+        family != null && family.isNotEmpty && family != 'None';
+    final hasWish = wish != null && wish.isNotEmpty;
 
-        return Center(
-          child: Container(
-            margin: const EdgeInsets.fromLTRB(14, 2, 14, 6),
-            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-            decoration: BoxDecoration(
-              color: const Color(0xFF141322).withOpacity(0.85),
-              borderRadius: BorderRadius.circular(12),
-              border: Border.all(
-                color: bannerColor.withOpacity(0.4),
-                width: 0.8,
-              ),
-              boxShadow: [
-                BoxShadow(
-                  color: bannerColor.withOpacity(0.12),
-                  blurRadius: 10,
-                  spreadRadius: 1,
-                ),
-              ],
+    if (!hasPosition && !hasFamily && !hasWish) {
+      return const SizedBox.shrink();
+    }
+
+    final bannerColor = accentColor;
+
+    return GestureDetector(
+      onTap: onTap,
+      behavior: HitTestBehavior.opaque,
+      child: Container(
+        height: 42,
+        width: double.infinity,
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 3),
+        decoration: BoxDecoration(
+          color: Colors.black.withValues(alpha: 0.18),
+          border: Border(
+            top: BorderSide(
+              color: bannerColor.withValues(alpha: 0.28),
+              width: 0.6,
             ),
-            child: Row(
-              children: [
-                if (hasPosition) ...[
-                  QueendomEmblemWidget(
-                    position: position,
-                    size: 26,
-                  ),
-                  const SizedBox(width: 8),
-                ],
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      if (livingPlace.isNotEmpty)
-                        QueendomEmblemHelper.buildRichTitle(
-                          title: livingPlace,
-                          family: family,
-                          fallbackFamily: 'Main',
-                          style: TextStyle(
-                            fontSize: 11,
-                            fontWeight: FontWeight.w700,
-                            color: bannerColor,
-                            letterSpacing: 0.2,
-                          ),
-                          emblemSize: 13,
-                        ),
-                      if (hasWish)
-                        Padding(
-                          padding: const EdgeInsets.only(top: 1.5),
-                          child: Text(
-                            wish,
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                            style: TextStyle(
-                              fontSize: 10,
-                              color: Colors.white.withOpacity(0.85),
-                              fontStyle: FontStyle.italic,
-                            ),
-                          ),
-                        ),
-                    ],
-                  ),
-                ),
-                if (hasFamily) ...[
-                  const SizedBox(width: 6),
-                  Tooltip(
-                    message: '$family Family',
-                    child: QueendomFamilyEmblemWidget(
-                      family: family,
-                      size: 22,
-                    ),
-                  ),
-                ],
-                const SizedBox(width: 6),
-                GestureDetector(
-                  onTap: () {
-                    setState(() {
-                      _isSanctuaryBannerDismissed = true;
-                    });
-                  },
-                  child: Container(
-                    padding: const EdgeInsets.all(2),
-                    decoration: BoxDecoration(
-                      color: Colors.white.withOpacity(0.08),
-                      shape: BoxShape.circle,
-                    ),
-                    child: const Icon(
-                      Icons.close_rounded,
-                      size: 12,
-                      color: Colors.white60,
-                    ),
-                  ),
-                ),
-              ],
+            bottom: BorderSide(
+              color: bannerColor.withValues(alpha: 0.2),
+              width: 0.6,
             ),
           ),
-        );
-      },
+        ),
+        child: Row(
+          children: [
+            if (hasPosition) ...[
+              QueendomEmblemWidget(
+                position: position,
+                size: 22,
+              ),
+              const SizedBox(width: 8),
+            ],
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisAlignment: MainAxisAlignment.center,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  if (livingPlace.isNotEmpty)
+                    QueendomEmblemHelper.buildRichTitle(
+                      title: livingPlace,
+                      family: family,
+                      fallbackFamily: 'Main',
+                      style: TextStyle(
+                        fontSize: 11,
+                        fontWeight: FontWeight.w700,
+                        color: bannerColor,
+                        letterSpacing: 0.2,
+                      ),
+                      emblemSize: 13,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  if (hasWish)
+                    Padding(
+                      padding: const EdgeInsets.only(top: 1),
+                      child: Text(
+                        wish,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                          fontSize: 9.5,
+                          color: Colors.white.withValues(alpha: 0.85),
+                          fontStyle: FontStyle.italic,
+                        ),
+                      ),
+                    ),
+                ],
+              ),
+            ),
+            if (hasFamily) ...[
+              const SizedBox(width: 6),
+              Tooltip(
+                message: '$family Family',
+                child: QueendomFamilyEmblemWidget(
+                  family: family,
+                  size: 20,
+                ),
+              ),
+            ],
+          ],
+        ),
+      ),
     );
   }
 }

@@ -1,6 +1,7 @@
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:intl/intl.dart';
 import 'package:worship_chat/colors.dart';
@@ -278,9 +279,18 @@ class _GroupInfoScreenState extends ConsumerState<GroupInfoScreen>
                 label: 'Position',
                 value: group.position!,
                 accentColor: _accentColor,
+                onTap: () {
+                  Royal3dCrownWidget.showVault(
+                    context: context,
+                    position: group.position,
+                    glowColor: _accentColor,
+                  );
+                },
                 trailing: QueendomEmblemWidget(
                   position: group.position,
                   size: 24,
+                  interactive3d: true,
+                  enableInspect: true,
                 ),
               ),
               _Hairline(),
@@ -514,7 +524,7 @@ class _GroupInfoScreenState extends ConsumerState<GroupInfoScreen>
                       gradient: LinearGradient(
                         colors: [
                           _accentColor,
-                          _accentColor.withOpacity(0.8),
+                          _accentColor.withValues(alpha: 0.8),
                         ],
                       ),
                       borderRadius: BorderRadius.circular(10),
@@ -605,7 +615,7 @@ class _GroupInfoScreenState extends ConsumerState<GroupInfoScreen>
                         'No sub-groups yet. Tap "+ Wife" or "+ Fuck Toy" to create one.',
                         style: TextStyle(
                           fontSize: 12.5,
-                          color: Colors.white.withOpacity(0.5),
+                          color: Colors.white.withValues(alpha: 0.5),
                         ),
                       ),
                     ),
@@ -685,7 +695,7 @@ class _GroupInfoScreenState extends ConsumerState<GroupInfoScreen>
         color: Colors.black26,
         borderRadius: BorderRadius.circular(12),
         border: Border.all(
-          color: tileAccent.withOpacity(0.25),
+          color: tileAccent.withValues(alpha: 0.25),
           width: 0.8,
         ),
       ),
@@ -698,7 +708,7 @@ class _GroupInfoScreenState extends ConsumerState<GroupInfoScreen>
           decoration: BoxDecoration(
             shape: BoxShape.circle,
             border: Border.all(
-              color: tileAccent.withOpacity(0.6),
+              color: tileAccent.withValues(alpha: 0.6),
               width: 1.5,
             ),
           ),
@@ -730,7 +740,7 @@ class _GroupInfoScreenState extends ConsumerState<GroupInfoScreen>
           '${subGroup.membersUid.length} members',
           style: TextStyle(
             fontSize: 11.5,
-            color: Colors.white.withOpacity(0.6),
+            color: Colors.white.withValues(alpha: 0.6),
           ),
         ),
         trailing: Icon(
@@ -1009,7 +1019,7 @@ class _CustomTabBarState extends State<_CustomTabBar> {
                     size: 22,
                     color: isActive
                         ? widget.color
-                        : Colors.white.withOpacity(0.35),
+                        : Colors.white.withValues(alpha: 0.35),
                   ),
                   const SizedBox(height: 5),
                   Text(
@@ -1019,7 +1029,7 @@ class _CustomTabBarState extends State<_CustomTabBar> {
                       fontWeight: isActive ? FontWeight.w600 : FontWeight.w400,
                       color: isActive
                           ? widget.color
-                          : Colors.white.withOpacity(0.35),
+                          : Colors.white.withValues(alpha: 0.35),
                       letterSpacing: 0.2,
                     ),
                   ),
@@ -1035,7 +1045,7 @@ class _CustomTabBarState extends State<_CustomTabBar> {
                       boxShadow: isActive
                           ? [
                               BoxShadow(
-                                color: widget.color.withOpacity(0.9),
+                                color: widget.color.withValues(alpha: 0.9),
                                 blurRadius: 6,
                                 spreadRadius: 1,
                               ),
@@ -1084,7 +1094,7 @@ class _CustomTabBarDelegate extends SliverPersistentHeaderDelegate {
               tabs: tabs,
             ),
           ),
-          Container(height: 0.5, color: Colors.white.withOpacity(0.08)),
+          Container(height: 0.5, color: Colors.white.withValues(alpha: 0.08)),
         ],
       ),
     );
@@ -1118,6 +1128,54 @@ class _GroupHeroHeader extends StatelessWidget {
   });
 
   Widget _buildProfileEmblemBadge(BuildContext context) {
+    final bool isWifeOrToy = group?.isWifeSubGroup == true ||
+        group?.isFuckToySubGroup == true ||
+        QueendomEmblemHelper.isWifeOrFuckToy(group?.position) ||
+        QueendomEmblemHelper.isWifeOrFuckToy(group?.effectiveLivingPlace) ||
+        QueendomEmblemHelper.isWifeOrFuckToy(name);
+
+    if (isWifeOrToy) {
+      final bool isToy = group?.isFuckToySubGroup == true ||
+          (group?.subGroupType != null &&
+              group!.subGroupType!.toLowerCase().contains('toy')) ||
+          QueendomEmblemHelper.isFuckToy(group?.position) ||
+          QueendomEmblemHelper.isFuckToy(name);
+
+      return Container(
+        padding: const EdgeInsets.all(4),
+        decoration: BoxDecoration(
+          color: const Color(0xFF141322),
+          shape: BoxShape.circle,
+          border: Border.all(
+            color: accentColor.withValues(alpha: 0.95),
+            width: 2.2,
+          ),
+          boxShadow: [
+            BoxShadow(
+              color: accentColor.withValues(alpha: 0.55),
+              blurRadius: 10,
+              spreadRadius: 1.5,
+            ),
+            BoxShadow(
+              color: Colors.black.withValues(alpha: 0.7),
+              blurRadius: 5,
+              offset: const Offset(0, 2),
+            ),
+          ],
+        ),
+        child: SizedBox(
+          width: 26,
+          height: 26,
+          child: Center(
+            child: Text(
+              isToy ? '🖤' : '❤️',
+              style: const TextStyle(fontSize: 16),
+            ),
+          ),
+        ),
+      );
+    }
+
     final familyBadge = QueendomFamilyEmblemHelper.buildFamilyEmblemBadge(
       family: group?.family,
       fallbackText: group?.effectiveLivingPlace,
@@ -1140,17 +1198,17 @@ class _GroupHeroHeader extends StatelessWidget {
           color: const Color(0xFF141322),
           shape: BoxShape.circle,
           border: Border.all(
-            color: accentColor.withOpacity(0.95),
+            color: accentColor.withValues(alpha: 0.95),
             width: 2.2,
           ),
           boxShadow: [
             BoxShadow(
-              color: accentColor.withOpacity(0.55),
+              color: accentColor.withValues(alpha: 0.55),
               blurRadius: 10,
               spreadRadius: 1.5,
             ),
             BoxShadow(
-              color: Colors.black.withOpacity(0.7),
+              color: Colors.black.withValues(alpha: 0.7),
               blurRadius: 5,
               offset: const Offset(0, 2),
             ),
@@ -1195,7 +1253,7 @@ class _GroupHeroHeader extends StatelessWidget {
           CachedNetworkImage(
             imageUrl: groupPic,
             fit: BoxFit.cover,
-            color: Colors.black.withOpacity(0.6),
+            color: Colors.black.withValues(alpha: 0.6),
             colorBlendMode: BlendMode.darken,
           )
         else
@@ -1206,7 +1264,7 @@ class _GroupHeroHeader extends StatelessWidget {
                 end: Alignment.bottomRight,
                 colors: [
                   appBarColor,
-                  accentColor.withOpacity(0.4),
+                  accentColor.withValues(alpha: 0.4),
                   backgroundColor,
                 ],
               ),
@@ -1250,8 +1308,25 @@ class _GroupHeroHeader extends StatelessWidget {
                 },
                 child: RoyalAvatarDecoration(
                   avatarRadius: 50,
-                  position: group?.position,
-                  livingPlace: group?.effectiveLivingPlace,
+                  isWifeOrFuckToy: group?.isWifeSubGroup == true ||
+                      group?.isFuckToySubGroup == true ||
+                      QueendomEmblemHelper.isWifeOrFuckToy(group?.position) ||
+                      QueendomEmblemHelper.isWifeOrFuckToy(group?.effectiveLivingPlace) ||
+                      QueendomEmblemHelper.isWifeOrFuckToy(name),
+                  position: (group?.isWifeSubGroup == true ||
+                          group?.isFuckToySubGroup == true ||
+                          QueendomEmblemHelper.isWifeOrFuckToy(group?.position) ||
+                          QueendomEmblemHelper.isWifeOrFuckToy(group?.effectiveLivingPlace) ||
+                          QueendomEmblemHelper.isWifeOrFuckToy(name))
+                      ? null
+                      : group?.position,
+                  livingPlace: (group?.isWifeSubGroup == true ||
+                          group?.isFuckToySubGroup == true ||
+                          QueendomEmblemHelper.isWifeOrFuckToy(group?.position) ||
+                          QueendomEmblemHelper.isWifeOrFuckToy(group?.effectiveLivingPlace) ||
+                          QueendomEmblemHelper.isWifeOrFuckToy(name))
+                      ? null
+                      : group?.effectiveLivingPlace,
                   accentColor: accentColor,
                   perchOutside: true,
                   badge: _buildProfileEmblemBadge(context),
@@ -1315,10 +1390,10 @@ class _GroupHeroHeader extends StatelessWidget {
                         vertical: 5,
                       ),
                       decoration: BoxDecoration(
-                        color: accentColor.withOpacity(0.18),
+                        color: accentColor.withValues(alpha: 0.18),
                         borderRadius: BorderRadius.circular(20),
                         border: Border.all(
-                          color: accentColor.withOpacity(0.55),
+                          color: accentColor.withValues(alpha: 0.55),
                           width: 0.8,
                         ),
                       ),
@@ -1347,10 +1422,10 @@ class _GroupHeroHeader extends StatelessWidget {
                       vertical: 5,
                     ),
                     decoration: BoxDecoration(
-                      color: accentColor.withOpacity(0.15),
+                      color: accentColor.withValues(alpha: 0.15),
                       borderRadius: BorderRadius.circular(20),
                       border: Border.all(
-                        color: accentColor.withOpacity(0.5),
+                        color: accentColor.withValues(alpha: 0.5),
                         width: 0.8,
                       ),
                     ),
@@ -1394,9 +1469,9 @@ class _GlassCard extends StatelessWidget {
       width: double.infinity,
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
       decoration: BoxDecoration(
-        color: Colors.white.withOpacity(0.04),
+        color: Colors.white.withValues(alpha: 0.04),
         borderRadius: BorderRadius.circular(18),
-        border: Border.all(color: Colors.white.withOpacity(0.08), width: 0.8),
+        border: Border.all(color: Colors.white.withValues(alpha: 0.08), width: 0.8),
       ),
       child: child,
     );
@@ -1411,7 +1486,7 @@ class _Hairline extends StatelessWidget {
     return Container(
       height: 0.5,
       margin: const EdgeInsets.symmetric(vertical: 2),
-      color: Colors.white.withOpacity(0.07),
+      color: Colors.white.withValues(alpha: 0.07),
     );
   }
 }
@@ -1445,7 +1520,7 @@ class _DetailRow extends StatelessWidget {
             width: 36,
             height: 36,
             decoration: BoxDecoration(
-              color: accentColor.withOpacity(0.12),
+              color: accentColor.withValues(alpha: 0.12),
               borderRadius: BorderRadius.circular(10),
             ),
             child: Icon(icon, color: accentColor, size: 18),
@@ -1459,7 +1534,7 @@ class _DetailRow extends StatelessWidget {
                   label,
                   style: TextStyle(
                     fontSize: 11,
-                    color: Colors.white.withOpacity(0.4),
+                    color: Colors.white.withValues(alpha: 0.4),
                     letterSpacing: 0.5,
                   ),
                 ),
@@ -1479,7 +1554,7 @@ class _DetailRow extends StatelessWidget {
           trailing ??
               Icon(
                 Icons.chevron_right_rounded,
-                color: Colors.white.withOpacity(0.2),
+                color: Colors.white.withValues(alpha: 0.2),
                 size: 18,
               ),
         ],
@@ -1521,8 +1596,8 @@ class _MediaTab extends StatelessWidget {
           );
         }
         return GridView.builder(
+          scrollCacheExtent: ScrollCacheExtent.pixels(500),
           padding: const EdgeInsets.all(2),
-          cacheExtent: 500,
           gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
             crossAxisCount: 3,
             crossAxisSpacing: 2,
@@ -1788,17 +1863,17 @@ class _LinksTab extends StatelessWidget {
           padding: const EdgeInsets.all(12),
           itemCount: links.length,
           separatorBuilder: (_, __) =>
-              Container(height: 0.5, color: Colors.white.withOpacity(0.06)),
+              Container(height: 0.5, color: Colors.white.withValues(alpha: 0.06)),
           itemBuilder: (context, index) {
             final msg = links[index];
             return Container(
               margin: const EdgeInsets.symmetric(vertical: 4),
               padding: const EdgeInsets.all(12),
               decoration: BoxDecoration(
-                color: Colors.white.withOpacity(0.04),
+                color: Colors.white.withValues(alpha: 0.04),
                 borderRadius: BorderRadius.circular(12),
                 border: Border.all(
-                  color: Colors.white.withOpacity(0.07),
+                  color: Colors.white.withValues(alpha: 0.07),
                   width: 0.8,
                 ),
               ),
@@ -1807,7 +1882,7 @@ class _LinksTab extends StatelessWidget {
                   Container(
                     padding: const EdgeInsets.all(8),
                     decoration: BoxDecoration(
-                      color: accentColor.withOpacity(0.12),
+                      color: accentColor.withValues(alpha: 0.12),
                       borderRadius: BorderRadius.circular(10),
                     ),
                     child: Icon(
@@ -1835,7 +1910,7 @@ class _LinksTab extends StatelessWidget {
                           DateFormat('MMM d, y').format(msg.timeSent),
                           style: TextStyle(
                             fontSize: 11,
-                            color: Colors.white.withOpacity(0.35),
+                            color: Colors.white.withValues(alpha: 0.35),
                           ),
                         ),
                       ],
@@ -1871,7 +1946,7 @@ class _MembersTab extends StatelessWidget {
       padding: const EdgeInsets.all(12),
       itemCount: membersUid.length,
       separatorBuilder: (_, __) =>
-          Container(height: 0.5, color: Colors.white.withOpacity(0.06)),
+          Container(height: 0.5, color: Colors.white.withValues(alpha: 0.06)),
       itemBuilder: (context, index) {
         final uid = membersUid[index];
         return FutureBuilder<DocumentSnapshot>(
@@ -1882,7 +1957,7 @@ class _MembersTab extends StatelessWidget {
                 margin: const EdgeInsets.symmetric(vertical: 4),
                 padding: const EdgeInsets.all(12),
                 decoration: BoxDecoration(
-                  color: Colors.white.withOpacity(0.04),
+                  color: Colors.white.withValues(alpha: 0.04),
                   borderRadius: BorderRadius.circular(12),
                 ),
                 child: Row(
@@ -1913,10 +1988,10 @@ class _MembersTab extends StatelessWidget {
               margin: const EdgeInsets.symmetric(vertical: 4),
               padding: const EdgeInsets.all(12),
               decoration: BoxDecoration(
-                color: Colors.white.withOpacity(0.04),
+                color: Colors.white.withValues(alpha: 0.04),
                 borderRadius: BorderRadius.circular(12),
                 border: Border.all(
-                  color: Colors.white.withOpacity(0.07),
+                  color: Colors.white.withValues(alpha: 0.07),
                   width: 0.8,
                 ),
               ),
@@ -1975,7 +2050,7 @@ class _MembersTab extends StatelessWidget {
                             '@$userName',
                             style: TextStyle(
                               fontSize: 12,
-                              color: Colors.white.withOpacity(0.4),
+                              color: Colors.white.withValues(alpha: 0.4),
                             ),
                           ),
                       ],
@@ -2020,10 +2095,10 @@ class _EmptyState extends StatelessWidget {
           Container(
             padding: const EdgeInsets.all(20),
             decoration: BoxDecoration(
-              color: Colors.white.withOpacity(0.04),
+              color: Colors.white.withValues(alpha: 0.04),
               shape: BoxShape.circle,
               border: Border.all(
-                color: Colors.white.withOpacity(0.08),
+                color: Colors.white.withValues(alpha: 0.08),
                 width: 0.8,
               ),
             ),

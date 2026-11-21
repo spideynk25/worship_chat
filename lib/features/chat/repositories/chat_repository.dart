@@ -11,11 +11,13 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:hive_flutter/adapters.dart';
 import 'package:uuid/uuid.dart';
 import 'package:worship_chat/common/providers/message_reply_provider.dart';
+import 'package:worship_chat/common/utils/background_task_service.dart';
 import 'package:worship_chat/common/utils/file_messages.dart';
 import 'package:worship_chat/common/utils/firebase_notification_service.dart';
 import 'package:worship_chat/common/utils/location_service.dart';
 import 'package:worship_chat/common/utils/media_cache_service.dart';
 import 'package:worship_chat/common/utils/utils.dart';
+import 'package:worship_chat/common/utils/wish_helper.dart';
 import 'package:worship_chat/models/chat_contact.dart';
 import 'package:worship_chat/models/one_to_one_message_model.dart';
 import 'package:worship_chat/models/user_model.dart';
@@ -39,7 +41,19 @@ final currentUserProvider = FutureProvider<User?>((ref) async {
 class ChatRepository {
   final FirebaseFirestore fireStore;
   final FirebaseAuth auth;
-  final Map<String, List<void Function(List<OneToOneMessageModel>)>> _activeChatListeners = {};
+  static final Map<String, List<void Function(List<OneToOneMessageModel>)>> _activeChatListeners = {};
+
+  static void notifyChatListeners(String localKey, List<OneToOneMessageModel> messages) {
+    final listeners = _activeChatListeners[localKey];
+    if (listeners != null) {
+      final msgsCopy = List<OneToOneMessageModel>.from(messages);
+      for (final listener in List.from(listeners)) {
+        try {
+          listener(msgsCopy);
+        } catch (_) {}
+      }
+    }
+  }
 
   ChatRepository({required this.fireStore, required this.auth});
 
@@ -206,7 +220,67 @@ class ChatRepository {
                 continue;
               }
 
-              var chatContact = ChatContact.fromMap(docData, documentId: targetUid);
+              var chatContact =
+                  ChatContact.fromMap(docData, documentId: targetUid);
+
+              // Check if Hive messages cache has a newer message for accurate last message display
+              String effectiveLastMessage = chatContact.lastMessage ?? '';
+              DateTime? effectiveTimeSent = chatContact.timeSent;
+              bool? effectiveUnseen = chatContact.unseenCount;
+
+              try {
+                if (Hive.isBoxOpen('messages')) {
+                  final msgsBox = Hive.box('messages');
+                  final cachedMsgs = msgsBox.get('${currentUserId}_$targetUid');
+                  if (cachedMsgs is List && cachedMsgs.isNotEmpty) {
+                    final lastItem = cachedMsgs.last;
+                    OneToOneMessageModel? parsedLast;
+                    if (lastItem is OneToOneMessageModel) {
+                      parsedLast = lastItem;
+                    } else if (lastItem is Map) {
+                      parsedLast = OneToOneMessageModel.fromMap(
+                          Map<String, dynamic>.from(lastItem));
+                    }
+                    if (parsedLast != null) {
+                      if (effectiveTimeSent == null ||
+                          parsedLast.timeSent.isAfter(effectiveTimeSent)) {
+                        effectiveTimeSent = parsedLast.timeSent;
+                        switch (parsedLast.messageType) {
+                          case 'image':
+                            effectiveLastMessage = '📷 Photo';
+                            break;
+                          case 'video':
+                            effectiveLastMessage = '🎥 Video';
+                            break;
+                          case 'gif':
+                            effectiveLastMessage = '🎮 Gif';
+                            break;
+                          case 'document':
+                            effectiveLastMessage =
+                                '📄 ${parsedLast.text.isNotEmpty ? parsedLast.text : 'Document'}';
+                            break;
+                          case 'location':
+                            effectiveLastMessage = '📍 Location';
+                            break;
+                          case 'live_location':
+                            effectiveLastMessage = '📡 Live Location';
+                            break;
+                          default:
+                            effectiveLastMessage =
+                                parsedLast.text.trim().isNotEmpty
+                                    ? parsedLast.text.trim()
+                                    : 'New message';
+                        }
+                        if (parsedLast.receiverId == currentUserId &&
+                            !parsedLast.isSeen) {
+                          effectiveUnseen = true;
+                        }
+                      }
+                    }
+                  }
+                }
+              } catch (_) {}
+
               try {
                 var userData = await fireStore
                     .collection('users')
@@ -215,7 +289,8 @@ class ChatRepository {
 
                 if (userData.data() != null) {
                   var user = UserModel.fromMap(userData.data()!);
-                  final freshToken = (user.fcmToken != null && user.fcmToken!.isNotEmpty)
+                  final freshToken = (user.fcmToken != null &&
+                          user.fcmToken!.isNotEmpty)
                       ? user.fcmToken!
                       : (chatContact.fcmToken ?? '');
                   contacts.add(
@@ -225,10 +300,10 @@ class ChatRepository {
                           : chatContact.name,
                       profilePic: user.profilePic ?? chatContact.profilePic,
                       uid: targetUid,
-                      timeSent: chatContact.timeSent,
-                      lastMessage: chatContact.lastMessage,
+                      timeSent: effectiveTimeSent,
+                      lastMessage: effectiveLastMessage,
                       fcmToken: freshToken,
-                      unseenCount: chatContact.unseenCount,
+                      unseenCount: effectiveUnseen,
                       chatBackgroundUrl: chatContact.chatBackgroundUrl,
                     ),
                   );
@@ -238,10 +313,10 @@ class ChatRepository {
                       name: chatContact.name,
                       profilePic: chatContact.profilePic,
                       uid: targetUid,
-                      timeSent: chatContact.timeSent,
-                      lastMessage: chatContact.lastMessage,
+                      timeSent: effectiveTimeSent,
+                      lastMessage: effectiveLastMessage,
                       fcmToken: chatContact.fcmToken,
-                      unseenCount: chatContact.unseenCount,
+                      unseenCount: effectiveUnseen,
                       chatBackgroundUrl: chatContact.chatBackgroundUrl,
                     ),
                   );
@@ -252,10 +327,10 @@ class ChatRepository {
                     name: chatContact.name,
                     profilePic: chatContact.profilePic,
                     uid: targetUid,
-                    timeSent: chatContact.timeSent,
-                    lastMessage: chatContact.lastMessage,
+                    timeSent: effectiveTimeSent,
+                    lastMessage: effectiveLastMessage,
                     fcmToken: chatContact.fcmToken,
-                    unseenCount: chatContact.unseenCount,
+                    unseenCount: effectiveUnseen,
                     chatBackgroundUrl: chatContact.chatBackgroundUrl,
                   ),
                 );
@@ -338,6 +413,8 @@ class ChatRepository {
             p.isDelivered != n.isDelivered ||
             p.isSending != n.isSending ||
             p.text != n.text ||
+            p.isEdited != n.isEdited ||
+            p.isDeleted != n.isDeleted ||
             p.fileMessageData != n.fileMessageData ||
             !mapEquals(p.reactions, n.reactions)) {
           return false;
@@ -450,11 +527,14 @@ class ChatRepository {
 
     // Firestore is source of truth - parse individually to prevent single doc failure
     List<OneToOneMessageModel> firestoreMessages = [];
+    final Set<String> firestoreIds = {};
     for (var doc in snapshot.docs) {
       try {
         final data = doc.data();
         data['isSeen'] = data['isSeen'] ?? false;
-        firestoreMessages.add(OneToOneMessageModel.fromMap(data));
+        final msg = OneToOneMessageModel.fromMap(data);
+        firestoreMessages.add(msg);
+        firestoreIds.add(msg.messageId);
       } catch (e) {
         log('❌ Error parsing message ${doc.id}: $e');
       }
@@ -475,24 +555,179 @@ class ChatRepository {
       log('❌ Error loading from Hive: $e');
     }
 
-    // Merge: Firestore wins on conflict
+    // Merge: Firestore is authoritative ground truth
     final Map<String, OneToOneMessageModel> messagesMap = {};
-    for (var m in cachedMessages) {
-      messagesMap[m.messageId] = m;
-    }
-    for (var m in firestoreMessages) {
-      messagesMap[m.messageId] = m;
+
+    if (firestoreMessages.isNotEmpty) {
+      // 1. Keep cached outgoing messages that are still sending or recent (<5min)
+      for (var m in cachedMessages) {
+        if (currentUid != null && m.deletedFor.contains(currentUid)) continue;
+        if (m.senderId == currentUid &&
+            (m.isSending || !firestoreIds.contains(m.messageId))) {
+          if (DateTime.now().difference(m.timeSent).inMinutes < 5) {
+            messagesMap[m.messageId] = m;
+          }
+        }
+      }
+      // 2. Add all Firestore messages (they overwrite any cache, but preserve local delivery confirmation)
+      for (var m in firestoreMessages) {
+        if (currentUid != null && m.deletedFor.contains(currentUid)) continue;
+        final cached = messagesMap[m.messageId];
+        if (cached != null && cached.isDelivered && !m.isDelivered) {
+          messagesMap[m.messageId] = m.copyWith(isDelivered: true);
+        } else {
+          messagesMap[m.messageId] = m;
+        }
+      }
+    } else {
+      // If Firestore returned 0 docs (offline or brand new chat), use cache
+      for (var m in cachedMessages) {
+        if (currentUid != null && m.deletedFor.contains(currentUid)) continue;
+        messagesMap[m.messageId] = m;
+      }
     }
 
-    final allMessages = messagesMap.values.toList()
+    final rawMerged = messagesMap.values.toList()
       ..sort((a, b) => a.timeSent.compareTo(b.timeSent));
+
+    // Deduplicate any consecutive phantom duplicates (same sender, same text or fake media text card within 60s)
+    final List<OneToOneMessageModel> allMessages = [];
+    for (final msg in rawMerged) {
+      if (allMessages.isEmpty) {
+        allMessages.add(msg);
+        continue;
+      }
+      final prev = allMessages.last;
+      final isSameSender = prev.senderId == msg.senderId;
+      final timeDiffSec =
+          msg.timeSent.difference(prev.timeSent).inSeconds.abs();
+
+      // Case A: Identical non-empty text from same sender within 60s
+      final isIdenticalText = isSameSender &&
+          prev.text.trim() == msg.text.trim() &&
+          prev.text.trim().isNotEmpty &&
+          timeDiffSec <= 60;
+
+      // Case B: Phantom media text card ("📷 Photo" / "🎥 Video") alongside a real media message
+      final isPhantomMediaMsg = isSameSender &&
+          timeDiffSec <= 60 &&
+          ((prev.messageType == 'image' && msg.text == '📷 Photo') ||
+              (prev.messageType == 'video' && msg.text == '🎥 Video'));
+
+      final isPhantomMediaPrev = isSameSender &&
+          timeDiffSec <= 60 &&
+          ((msg.messageType == 'image' && prev.text == '📷 Photo') ||
+              (msg.messageType == 'video' && prev.text == '🎥 Video'));
+
+      if (isIdenticalText || isPhantomMediaMsg) {
+        continue;
+      }
+      if (isPhantomMediaPrev) {
+        allMessages.removeLast();
+        allMessages.add(msg);
+        continue;
+      }
+
+      allMessages.add(msg);
+    }
 
     log('📊 Total unique messages: ${allMessages.length}');
 
-    // Save merged list to Hive, then batch clean seen/old messages from Firestore
-    _saveToHiveAsync(box, localKey, allMessages, receiverUserId, firestoreMessages);
+    // Save cleaned list to Hive
+    _saveToHiveAsync(
+        box, localKey, allMessages, receiverUserId, firestoreMessages);
+
+    // Sync contact's lastMessage in Firestore and Hive
+    if (allMessages.isNotEmpty) {
+      _syncContactLastMessage(
+        currentUid: currentUid,
+        receiverUserId: receiverUserId,
+        lastMsg: allMessages.last,
+        hasUnseen:
+            allMessages.any((m) => m.receiverId == currentUid && !m.isSeen),
+      );
+    }
 
     return allMessages;
+  }
+
+  void _syncContactLastMessage({
+    required String currentUid,
+    required String receiverUserId,
+    required OneToOneMessageModel lastMsg,
+    required bool hasUnseen,
+  }) {
+    String formatted;
+    switch (lastMsg.messageType) {
+      case "image":
+        formatted = "📷 Photo";
+        break;
+      case "video":
+        formatted = "🎥 Video";
+        break;
+      case "gif":
+        formatted = "🎮 Gif";
+        break;
+      case "document":
+        formatted =
+            "📄 ${lastMsg.text.isNotEmpty ? lastMsg.text : 'Document'}";
+        break;
+      case "location":
+        formatted = "📍 Location";
+        break;
+      case "live_location":
+        formatted = "📡 Live Location";
+        break;
+      default:
+        formatted = lastMsg.text.trim().isNotEmpty
+            ? lastMsg.text.trim()
+            : "New message";
+    }
+
+    // 1. Update Firestore contact doc for current user (best effort)
+    fireStore
+        .collection('users')
+        .doc(currentUid)
+        .collection('chats')
+        .doc(receiverUserId)
+        .set({
+      'lastMessage': formatted,
+      'timeSent': lastMsg.timeSent.millisecondsSinceEpoch,
+      'unseenCount': hasUnseen,
+    }, SetOptions(merge: true)).catchError((e) {
+      log('Note: Error updating contact lastMessage in Firestore: $e');
+    });
+
+    // 2. Update local Hive contacts_cache
+    try {
+      if (Hive.isBoxOpen('contacts_cache')) {
+        final contactsBox = Hive.box('contacts_cache');
+        final cacheKey = 'user_chats_$currentUid';
+        final cachedRaw = contactsBox.get(cacheKey, defaultValue: []);
+        if (cachedRaw is List) {
+          final List<Map<String, dynamic>> contactMaps = [];
+          for (final item in cachedRaw) {
+            if (item is Map) {
+              contactMaps.add(Map<String, dynamic>.from(item));
+            }
+          }
+          final idx =
+              contactMaps.indexWhere((c) => c['uid'] == receiverUserId);
+          if (idx >= 0) {
+            contactMaps[idx]['lastMessage'] = formatted;
+            contactMaps[idx]['timeSent'] =
+                lastMsg.timeSent.millisecondsSinceEpoch;
+            contactMaps[idx]['unseenCount'] = hasUnseen;
+            contactMaps.sort((a, b) {
+              final tA = a['timeSent'] as int? ?? 0;
+              final tB = b['timeSent'] as int? ?? 0;
+              return tB.compareTo(tA);
+            });
+            contactsBox.put(cacheKey, contactMaps);
+          }
+        }
+      }
+    } catch (_) {}
   }
 
   List<OneToOneMessageModel> _processFirestoreOnly(
@@ -581,14 +816,14 @@ class ChatRepository {
           .doc(currentUserId)
           .collection('chats')
           .doc(receiverUserId)
-          .update({'chatBackgroundUrl': backgroundUrl});
+          .set({'chatBackgroundUrl': backgroundUrl}, SetOptions(merge: true));
 
       await fireStore
           .collection('users')
           .doc(receiverUserId)
           .collection('chats')
           .doc(currentUserId)
-          .update({'chatBackgroundUrl': backgroundUrl});
+          .set({'chatBackgroundUrl': backgroundUrl}, SetOptions(merge: true));
     } catch (e) {
       log('Error updating chat background: $e');
     }
@@ -637,6 +872,8 @@ class ChatRepository {
     try {
       final myToken = await FirebaseMessaging.instance.getToken() ?? '';
 
+      // The receiver's contact entry on the receiver's device should keep their own wallpaper.
+      // Passing null ensures toMap() omits chatBackgroundUrl so merge: true never overwrites it.
       var receiverChatContact = ChatContact(
         name: senderUserData.name ?? 'User',
         profilePic: senderUserData.profilePic,
@@ -645,7 +882,7 @@ class ChatRepository {
         lastMessage: lastMessage,
         fcmToken: myToken,
         unseenCount: true,
-        chatBackgroundUrl: chatBackgroundUrl ?? "",
+        chatBackgroundUrl: null,
       );
 
       await fireStore
@@ -655,6 +892,11 @@ class ChatRepository {
           .doc(currentUserId)
           .set(receiverChatContact.toMap(), SetOptions(merge: true));
 
+      // The sender's contact entry updates chatBackgroundUrl only if non-null and non-empty.
+      final validBg = (chatBackgroundUrl != null && chatBackgroundUrl.trim().isNotEmpty)
+          ? chatBackgroundUrl.trim()
+          : null;
+
       var senderChatContact = ChatContact(
         name: receiverUserData?.name ?? 'User',
         profilePic: receiverUserData?.profilePic,
@@ -663,7 +905,7 @@ class ChatRepository {
         lastMessage: lastMessage,
         fcmToken: fcmToken,
         unseenCount: false,
-        chatBackgroundUrl: chatBackgroundUrl ?? "",
+        chatBackgroundUrl: validBg,
       );
 
       await fireStore
@@ -714,7 +956,9 @@ class ChatRepository {
       fileMessageData: fileMessageData,
       repliedMessage: messageReply == null
           ? ''
-          : messageReply.messageType == 'text'
+          : (messageReply.messageType == 'text' || messageReply.messageType == 'wish')
+          ? messageReply.message
+          : (messageReply.message.isNotEmpty && messageReply.fileMessageData.isEmpty)
           ? messageReply.message
           : messageReply.fileMessageData,
       repliedTo: messageReply == null
@@ -763,6 +1007,13 @@ class ChatRepository {
           messageReply: messageReply,
           senderUid: senderUid,
           senderProfilePic: senderProfilePic,
+          messageId: messageId,
+          timeSent: timeSent,
+          receiverUserId: receiverUserId,
+          fileMessageData: fileMessageData,
+          senderUsername: senderUsername,
+          receiverUserName: receiverUserName,
+          messageReplyType: messageReplyType,
         );
       } else {
         log('⚠️ [Notification] Cannot send notification: recipient fcmToken is empty for receiver $receiverUserId');
@@ -781,6 +1032,13 @@ class ChatRepository {
     required MessageReply? messageReply,
     required String senderUid,
     required String senderProfilePic,
+    required String messageId,
+    required DateTime timeSent,
+    required String receiverUserId,
+    String? fileMessageData,
+    String? senderUsername,
+    String? receiverUserName,
+    String? messageReplyType,
   }) {
     Future.microtask(() async {
       try {
@@ -789,6 +1047,7 @@ class ChatRepository {
         if (messageReply != null) {
           switch (messageReply.messageType) {
             case 'text':
+            case 'wish':
               body = 'Replying to: "${messageReply.message}"';
               break;
             case 'image':
@@ -831,21 +1090,49 @@ class ChatRepository {
           }
         }
 
+        final isWish = messageReply == null &&
+            WishHelper.isWish(messageType: messageType, text: text);
+
         final safeName = name.trim().isNotEmpty ? name.trim() : 'New Message';
+
+        final String finalTitle = isWish
+            ? WishHelper.getNotificationTitle(senderName: safeName, text: text)
+            : safeName;
+
+        final String finalBody = isWish
+            ? WishHelper.getNotificationBody(senderName: safeName, text: text)
+            : body;
 
         await sendNotification(
           fcmToken,
-          safeName,
-          body,
+          finalTitle,
+          finalBody,
           data: {
             'type': 'chat',
             'senderUid': senderUid,
+            'receiverId': receiverUserId,
             'name': safeName,
             'profilePic': senderProfilePic,
             'tag': senderUid,
+            'messageId': messageId,
+            'messageType': messageType,
+            'text': text,
+            'timeSent': timeSent.toIso8601String(),
+            if (fileMessageData != null && fileMessageData.isNotEmpty)
+              'fileMessageData': fileMessageData,
+            if (messageReply != null) ...{
+              'repliedMessage': messageReply.message,
+              'repliedTo': messageReply.isMe
+                  ? (senderUsername ?? '')
+                  : (receiverUserName ?? ''),
+              'repliedMessageType':
+                  messageReplyType ?? messageReply.messageType,
+            },
+            if (isWish) 'isWish': 'true',
+            if (isWish) 'wishCategory': WishHelper.getWishCategory(text).name,
           },
         );
-        log('✅ Notification sent successfully');
+        log('✅ Notification sent successfully (isWish: $isWish)');
       } catch (e) {
         log('❌ Error sending notification: $e');
       }
@@ -898,7 +1185,9 @@ class ChatRepository {
         fileMessageData: optimisticFileData,
         repliedMessage: messageReply == null
             ? ''
-            : messageReply.messageType == 'text'
+            : (messageReply.messageType == 'text' || messageReply.messageType == 'wish')
+            ? messageReply.message
+            : (messageReply.message.isNotEmpty && messageReply.fileMessageData.isEmpty)
             ? messageReply.message
             : messageReply.fileMessageData,
         repliedTo: messageReply == null
@@ -913,156 +1202,202 @@ class ChatRepository {
 
       String? fileData;
 
-      if (messageType == "image" && file != null) {
-        if (file is File) {
-          log("📤 Uploading image for message: $messageId");
-          fileData = await uploadImageToCloudinary(file, type);
-          log("✅ Image uploaded: $fileData");
-          if (fileData != null && fileData.isNotEmpty) {
-            MediaCacheService().registerLocalMapping(fileData, file.path);
+      Future<void> performSend(
+        void Function(String message, {int? progress, int? maxProgress}) updateProgress,
+      ) async {
+        if (messageType == "image" && file != null) {
+          if (file is File) {
+            log("📤 Uploading image for message: $messageId");
+            fileData = await uploadImageToCloudinary(
+              file,
+              type,
+              onProgress: (sent, total) {
+                final pct = total > 0 ? (sent / total * 100).toInt() : 0;
+                updateProgress('Uploading image ($pct%)...', progress: sent, maxProgress: total);
+              },
+            );
+            log("✅ Image uploaded: $fileData");
+            if (fileData != null && fileData!.isNotEmpty) {
+              MediaCacheService().registerLocalMapping(fileData!, file.path);
+            }
+          } else if (file is String) {
+            fileData = file;
+          }
+        } else if (messageType == "video" && file != null) {
+          if (file is File) {
+            log("📤 Uploading video for message: $messageId");
+            fileData = await uploadVideoToCloudinary(
+              file,
+              type,
+              onProgress: (sent, total) {
+                final pct = total > 0 ? (sent / total * 100).toInt() : 0;
+                updateProgress('Uploading video ($pct%)...', progress: sent, maxProgress: total);
+              },
+            );
+            log("✅ Video uploaded: $fileData");
+            if (fileData != null && fileData!.isNotEmpty) {
+              MediaCacheService().registerLocalMapping(fileData!, file.path);
+            }
+          } else if (file is String) {
+            fileData = file;
+          }
+        } else if (messageType == "gif" && file != null) {
+          if (file is File) {
+            log("📤 Uploading GIF for message: $messageId");
+            fileData = await uploadImageToCloudinary(
+              file,
+              type,
+              onProgress: (sent, total) {
+                final pct = total > 0 ? (sent / total * 100).toInt() : 0;
+                updateProgress('Uploading GIF ($pct%)...', progress: sent, maxProgress: total);
+              },
+            );
+            log("✅ GIF uploaded: $fileData");
+            if (fileData != null && fileData!.isNotEmpty) {
+              MediaCacheService().registerLocalMapping(fileData!, file.path);
+            }
+          } else if (file is String) {
+            fileData = file;
+          }
+        } else if (messageType == "document" && file != null) {
+          if (file is File) {
+            log("📤 Uploading document for message: $messageId");
+            fileData = await uploadDocumentToCloudinary(
+              file,
+              type,
+              onProgress: (sent, total) {
+                final pct = total > 0 ? (sent / total * 100).toInt() : 0;
+                updateProgress('Uploading document ($pct%)...', progress: sent, maxProgress: total);
+              },
+            );
+            log("✅ Document uploaded: $fileData");
+            if (fileData != null && fileData!.isNotEmpty) {
+              MediaCacheService().registerLocalMapping(fileData!, file.path);
+            }
+          } else if (file is String) {
+            fileData = file;
+          }
+        } else if (messageType == "location" || messageType == "live_location") {
+          if (file is String) {
+            fileData = file;
           }
         } else if (file is String) {
           fileData = file;
         }
-      } else if (messageType == "video" && file != null) {
-        if (file is File) {
-          log("📤 Uploading video for message: $messageId");
-          fileData = await uploadVideoToCloudinary(file, type);
-          log("✅ Video uploaded: $fileData");
-          if (fileData != null && fileData.isNotEmpty) {
-            MediaCacheService().registerLocalMapping(fileData, file.path);
-          }
-        } else if (file is String) {
-          fileData = file;
-        }
-      } else if (messageType == "gif" && file != null) {
-        if (file is File) {
-          log("📤 Uploading GIF for message: $messageId");
-          fileData = await uploadImageToCloudinary(file, type);
-          log("✅ GIF uploaded: $fileData");
-          if (fileData != null && fileData.isNotEmpty) {
-            MediaCacheService().registerLocalMapping(fileData, file.path);
-          }
-        } else if (file is String) {
-          fileData = file;
-        }
-      } else if (messageType == "document" && file != null) {
-        if (file is File) {
-          log("📤 Uploading document for message: $messageId");
-          fileData = await uploadDocumentToCloudinary(file, type);
-          log("✅ Document uploaded: $fileData");
-          if (fileData != null && fileData.isNotEmpty) {
-            MediaCacheService().registerLocalMapping(fileData, file.path);
-          }
-        } else if (file is String) {
-          fileData = file;
-        }
-      } else if (messageType == "location" || messageType == "live_location") {
-        if (file is String) {
-          fileData = file;
-        }
-      } else if (file is String) {
-        fileData = file;
-      }
 
-      // Embed groupId into fileMessageData for grouped-media support
-      if (groupId != null && groupId.isNotEmpty && fileData != null) {
+        // Embed groupId into fileMessageData for grouped-media support
+        if (groupId != null && groupId.isNotEmpty && fileData != null) {
+          try {
+            // fileData is already a URL string for image/video/gif
+            // Wrap it in JSON: {"url": "...", "groupId": "..."}
+            final existing = jsonDecode(fileData!);
+            if (existing is Map) {
+              // Already JSON (e.g. location), just add groupId
+              final map = Map<String, dynamic>.from(existing);
+              map['groupId'] = groupId;
+              fileData = jsonEncode(map);
+            }
+          } catch (_) {
+            // Plain URL string – wrap it
+            fileData = jsonEncode({'url': fileData, 'groupId': groupId});
+          }
+        } else if (groupId != null && groupId.isNotEmpty && file is File) {
+          // Still uploading – local path fallback with groupId
+          fileData = jsonEncode({'url': file.path, 'groupId': groupId});
+        }
+
+        // Fetch fresh receiver data to get latest FCM token (server-first with cache fallback)
+        UserModel? receiverUserData;
         try {
-          // fileData is already a URL string for image/video/gif
-          // Wrap it in JSON: {"url": "...", "groupId": "..."}
-          final existing = jsonDecode(fileData);
-          if (existing is Map) {
-            // Already JSON (e.g. location), just add groupId
-            final map = Map<String, dynamic>.from(existing);
-            map['groupId'] = groupId;
-            fileData = jsonEncode(map);
+          DocumentSnapshot<Map<String, dynamic>> userDataMap;
+          try {
+            userDataMap = await fireStore
+                .collection('users')
+                .doc(receiverUserId)
+                .get(const GetOptions(source: Source.server))
+                .timeout(const Duration(seconds: 3));
+          } catch (_) {
+            userDataMap = await fireStore
+                .collection('users')
+                .doc(receiverUserId)
+                .get();
           }
-        } catch (_) {
-          // Plain URL string – wrap it
-          fileData = jsonEncode({'url': fileData, 'groupId': groupId});
+
+          if (userDataMap.exists && userDataMap.data() != null) {
+            receiverUserData = UserModel.fromMap(userDataMap.data()!);
+          }
+        } catch (e) {
+          log('Warning: could not fetch receiverUserData: $e');
         }
-      } else if (groupId != null && groupId.isNotEmpty && file is File) {
-        // Still uploading – local path fallback with groupId
-        fileData = jsonEncode({'url': file.path, 'groupId': groupId});
+
+        // Priority: fresh token from receiver's Firestore doc, fallback to passed token
+        final recipientFcmToken = (receiverUserData?.fcmToken != null &&
+                receiverUserData!.fcmToken!.isNotEmpty)
+            ? receiverUserData.fcmToken!
+            : fcmToken;
+
+        log("token sendTextMessage: recipientFcmToken length=${recipientFcmToken.length}");
+
+        final safeSenderName = senderUser.name ?? 'User';
+        final safeSenderUsername = senderUser.userName ?? 'User';
+        final safeReceiverName = receiverUserData?.name ?? 'User';
+        final safeReceiverUsername = receiverUserData?.userName ?? 'User';
+
+        updateProgress('Saving message...');
+
+        await Future.wait([
+          _saveDataToContactsSubCollection(
+            senderUserData: senderUser,
+            receiverUserData: receiverUserData,
+            text: text,
+            timeSent: timeSent,
+            receiverUserId: receiverUserId,
+            messageType: messageType,
+            fcmToken: recipientFcmToken,
+            unseenCount: unseenCount,
+            chatBackgroundUrl: chatBackgroundUrl,
+          ),
+          _saveMessageToMessageSubcollection(
+            receiverUserId: receiverUserId,
+            text: text,
+            timeSent: timeSent,
+            messageType: messageType,
+            messageId: messageId,
+            receiverUsername: safeReceiverUsername,
+            receiverName: safeReceiverName,
+            name: safeSenderName,
+            username: safeSenderUsername,
+            fileMessageData: fileData,
+            receiverUserName: safeReceiverName,
+            senderUsername: safeSenderName,
+            messageReplyType: messageReply == null
+                ? "text"
+                : messageReply.messageType,
+            messageReply: messageReply,
+            fcmToken: recipientFcmToken,
+            senderUid: currentUserId,
+            senderProfilePic: senderUser.profilePic ?? '',
+          ),
+        ]);
       }
 
-      // Fetch fresh receiver data to get latest FCM token (server-first with cache fallback)
-      UserModel? receiverUserData;
-      try {
-        DocumentSnapshot<Map<String, dynamic>> userDataMap;
-        try {
-          userDataMap = await fireStore
-              .collection('users')
-              .doc(receiverUserId)
-              .get(const GetOptions(source: Source.server))
-              .timeout(const Duration(seconds: 3));
-        } catch (_) {
-          userDataMap = await fireStore
-              .collection('users')
-              .doc(receiverUserId)
-              .get();
-        }
-
-        if (userDataMap.exists && userDataMap.data() != null) {
-          receiverUserData = UserModel.fromMap(userDataMap.data()!);
-        }
-      } catch (e) {
-        log('Warning: could not fetch receiverUserData: $e');
+      final isMediaUpload = file is File;
+      if (isMediaUpload) {
+        await BackgroundTaskService.instance.runWithBackgroundTask(
+          title: 'Sending $messageType',
+          initialMessage: 'Uploading $messageType...',
+          successMessage: '${messageType[0].toUpperCase()}${messageType.substring(1)} sent',
+          task: (updateProgress) => performSend(updateProgress),
+        );
+      } else {
+        await performSend((_, {progress, maxProgress}) {});
       }
-
-      // Priority: fresh token from receiver's Firestore doc, fallback to passed token
-      final recipientFcmToken = (receiverUserData?.fcmToken != null &&
-              receiverUserData!.fcmToken!.isNotEmpty)
-          ? receiverUserData.fcmToken!
-          : fcmToken;
-
-      log("token sendTextMessage: recipientFcmToken length=${recipientFcmToken.length}");
-
-      final safeSenderName = senderUser.name ?? 'User';
-      final safeSenderUsername = senderUser.userName ?? 'User';
-      final safeReceiverName = receiverUserData?.name ?? 'User';
-      final safeReceiverUsername = receiverUserData?.userName ?? 'User';
-
-      await Future.wait([
-        _saveDataToContactsSubCollection(
-          senderUserData: senderUser,
-          receiverUserData: receiverUserData,
-          text: text,
-          timeSent: timeSent,
-          receiverUserId: receiverUserId,
-          messageType: messageType,
-          fcmToken: recipientFcmToken,
-          unseenCount: unseenCount,
-          chatBackgroundUrl: chatBackgroundUrl,
-        ),
-        _saveMessageToMessageSubcollection(
-          receiverUserId: receiverUserId,
-          text: text,
-          timeSent: timeSent,
-          messageType: messageType,
-          messageId: messageId,
-          receiverUsername: safeReceiverUsername,
-          receiverName: safeReceiverName,
-          name: safeSenderName,
-          username: safeSenderUsername,
-          fileMessageData: fileData,
-          receiverUserName: safeReceiverName,
-          senderUsername: safeSenderName,
-          messageReplyType: messageReply == null
-              ? "text"
-              : messageReply.messageType,
-          messageReply: messageReply,
-          fcmToken: recipientFcmToken,
-          senderUid: currentUserId,
-          senderProfilePic: senderUser.profilePic ?? '',
-        ),
-      ]);
 
       log('✅ Message saved with ID: $messageId');
 
       if (messageType == 'live_location' && fileData != null) {
         try {
-          final liveMap = jsonDecode(fileData) as Map<String, dynamic>;
+          final liveMap = jsonDecode(fileData!) as Map<String, dynamic>;
           final liveUntil = liveMap['liveUntil'] as int?;
           if (liveUntil != null) {
             final durationMs = liveUntil - DateTime.now().millisecondsSinceEpoch;
@@ -1546,6 +1881,181 @@ class ChatRepository {
       log('✅ Reaction updated: $emoji on message $messageId');
     } catch (e) {
       log('❌ Error toggling reaction: $e');
+    }
+  }
+
+  Future<void> editMessage({
+    required String messageId,
+    required String receiverUserId,
+    required String newText,
+  }) async {
+    final currentUserId = auth.currentUser?.uid;
+    if (currentUserId == null || newText.trim().isEmpty) return;
+
+    final trimmedText = newText.trim();
+    final localKey = '${currentUserId}_$receiverUserId';
+
+    // 1. Optimistically update local Hive cache (0ms)
+    try {
+      if (Hive.isBoxOpen('messages')) {
+        final box = Hive.box('messages');
+        final cachedData = box.get(localKey, defaultValue: []);
+        final messages = _safeCastMessages(cachedData);
+        final idx = messages.indexWhere((m) => m.messageId == messageId);
+        if (idx >= 0) {
+          messages[idx] = messages[idx].copyWith(
+            text: trimmedText,
+            isEdited: true,
+          );
+          await box.put(localKey, messages);
+          notifyChatListeners(localKey, messages);
+        }
+      }
+    } catch (e) {
+      log('❌ Error updating Hive cache for edited message: $e');
+    }
+
+    // 2. Persist to Firestore
+    try {
+      final senderMsgRef = fireStore
+          .collection('users')
+          .doc(currentUserId)
+          .collection('chats')
+          .doc(receiverUserId)
+          .collection('messages')
+          .doc(messageId);
+
+      final receiverMsgRef = fireStore
+          .collection('users')
+          .doc(receiverUserId)
+          .collection('chats')
+          .doc(currentUserId)
+          .collection('messages')
+          .doc(messageId);
+
+      await senderMsgRef.update({
+        'text': trimmedText,
+        'isEdited': true,
+      });
+
+      try {
+        await receiverMsgRef.update({
+          'text': trimmedText,
+          'isEdited': true,
+        });
+      } catch (e) {
+        log('⚠️ Notice updating receiver doc for edit: $e');
+      }
+    } catch (e) {
+      log('❌ Error editing message in Firestore: $e');
+    }
+  }
+
+  Future<void> deleteMessageForMe({
+    required String messageId,
+    required String receiverUserId,
+  }) async {
+    final currentUserId = auth.currentUser?.uid;
+    if (currentUserId == null) return;
+
+    final localKey = '${currentUserId}_$receiverUserId';
+
+    // 1. Optimistically remove from local Hive cache (0ms)
+    try {
+      if (Hive.isBoxOpen('messages')) {
+        final box = Hive.box('messages');
+        final cachedData = box.get(localKey, defaultValue: []);
+        final messages = _safeCastMessages(cachedData);
+        messages.removeWhere((m) => m.messageId == messageId);
+        await box.put(localKey, messages);
+        notifyChatListeners(localKey, messages);
+      }
+    } catch (e) {
+      log('❌ Error removing from Hive cache for deleteForMe: $e');
+    }
+
+    // 2. Add currentUserId to deletedFor in Firestore
+    try {
+      final senderMsgRef = fireStore
+          .collection('users')
+          .doc(currentUserId)
+          .collection('chats')
+          .doc(receiverUserId)
+          .collection('messages')
+          .doc(messageId);
+
+      await senderMsgRef.update({
+        'deletedFor': FieldValue.arrayUnion([currentUserId]),
+      });
+    } catch (e) {
+      log('❌ Error updating deletedFor in Firestore: $e');
+    }
+  }
+
+  Future<void> deleteMessageForEveryone({
+    required String messageId,
+    required String receiverUserId,
+  }) async {
+    final currentUserId = auth.currentUser?.uid;
+    if (currentUserId == null) return;
+
+    final localKey = '${currentUserId}_$receiverUserId';
+
+    // 1. Optimistically update local Hive cache (0ms)
+    try {
+      if (Hive.isBoxOpen('messages')) {
+        final box = Hive.box('messages');
+        final cachedData = box.get(localKey, defaultValue: []);
+        final messages = _safeCastMessages(cachedData);
+        final idx = messages.indexWhere((m) => m.messageId == messageId);
+        if (idx >= 0) {
+          messages[idx] = messages[idx].copyWith(
+            text: 'This message was deleted',
+            isDeleted: true,
+            reactions: {},
+          );
+          await box.put(localKey, messages);
+          notifyChatListeners(localKey, messages);
+        }
+      }
+    } catch (e) {
+      log('❌ Error updating Hive cache for deleteForEveryone: $e');
+    }
+
+    // 2. Persist to Firestore
+    try {
+      final senderMsgRef = fireStore
+          .collection('users')
+          .doc(currentUserId)
+          .collection('chats')
+          .doc(receiverUserId)
+          .collection('messages')
+          .doc(messageId);
+
+      final receiverMsgRef = fireStore
+          .collection('users')
+          .doc(receiverUserId)
+          .collection('chats')
+          .doc(currentUserId)
+          .collection('messages')
+          .doc(messageId);
+
+      final deleteData = {
+        'text': 'This message was deleted',
+        'isDeleted': true,
+        'reactions': {},
+        'fileMessageData': null,
+      };
+
+      await senderMsgRef.update(deleteData);
+
+      try {
+        await receiverMsgRef.update(deleteData);
+      } catch (e) {
+        log('⚠️ Notice updating receiver doc for deleteForEveryone: $e');
+      }
+    } catch (e) {
+      log('❌ Error updating deleteForEveryone in Firestore: $e');
     }
   }
 }

@@ -1,8 +1,10 @@
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:intl/intl.dart';
 import 'package:worship_chat/colors.dart';
+import 'package:worship_chat/common/widgets/chat_status_indicator.dart';
 import 'package:worship_chat/common/widgets/loader.dart';
 import 'package:worship_chat/common/widgets/user_avatar.dart';
 import 'package:worship_chat/features/auth/controller/auth_controller.dart';
@@ -157,7 +159,7 @@ class _UserInfoScreenState extends ConsumerState<UserInfoScreen>
               _DetailRow(
                 icon: Icons.mail_outline_rounded,
                 label: 'Email',
-                value: user.email??"N/A",
+                value: user.email ?? "N/A",
               ),
               _Hairline(),
             ],
@@ -233,7 +235,7 @@ class _CustomTabBarState extends State<_CustomTabBar> {
                     size: 22,
                     color: isActive
                         ? widget.color
-                        : Colors.white.withOpacity(0.35),
+                        : Colors.white.withValues(alpha: 0.35),
                   ),
                   const SizedBox(height: 5),
                   Text(
@@ -243,7 +245,7 @@ class _CustomTabBarState extends State<_CustomTabBar> {
                       fontWeight: isActive ? FontWeight.w600 : FontWeight.w400,
                       color: isActive
                           ? widget.color
-                          : Colors.white.withOpacity(0.35),
+                          : Colors.white.withValues(alpha: 0.35),
                       letterSpacing: 0.2,
                     ),
                   ),
@@ -260,7 +262,7 @@ class _CustomTabBarState extends State<_CustomTabBar> {
                       boxShadow: isActive
                           ? [
                               BoxShadow(
-                                color: widget.color.withOpacity(0.9),
+                                color: widget.color.withValues(alpha: 0.9),
                                 blurRadius: 6,
                                 spreadRadius: 1,
                               ),
@@ -309,7 +311,7 @@ class _CustomTabBarDelegate extends SliverPersistentHeaderDelegate {
               tabs: tabs,
             ),
           ),
-          Container(height: 0.5, color: Colors.white.withOpacity(0.08)),
+          Container(height: 0.5, color: Colors.white.withValues(alpha: 0.08)),
         ],
       ),
     );
@@ -352,7 +354,7 @@ class _HeroHeader extends StatelessWidget {
           CachedNetworkImage(
             imageUrl: profilePic,
             fit: BoxFit.cover,
-            color: Colors.black.withOpacity(0.55),
+            color: Colors.black.withValues(alpha: 0.55),
             colorBlendMode: BlendMode.darken,
           )
         else
@@ -363,7 +365,7 @@ class _HeroHeader extends StatelessWidget {
                 end: Alignment.bottomRight,
                 colors: [
                   appBarColor,
-                  tabColor.withOpacity(0.4),
+                  tabColor.withValues(alpha: 0.4),
                   backgroundColor,
                 ],
               ),
@@ -416,14 +418,14 @@ class _HeroHeader extends StatelessWidget {
                         shape: BoxShape.circle,
                         border: Border.all(
                           color: isOnline
-                              ? Colors.greenAccent.withOpacity(0.7)
+                              ? Colors.greenAccent.withValues(alpha: 0.7)
                               : Colors.white24,
                           width: 2.5,
                         ),
                         boxShadow: [
                           BoxShadow(
                             color: isOnline
-                                ? Colors.greenAccent.withOpacity(0.25)
+                                ? Colors.greenAccent.withValues(alpha: 0.25)
                                 : Colors.black26,
                             blurRadius: 20,
                             spreadRadius: 2,
@@ -483,12 +485,12 @@ class _HeroHeader extends StatelessWidget {
                 ),
                 decoration: BoxDecoration(
                   color: isOnline
-                      ? Colors.greenAccent.withOpacity(0.15)
-                      : Colors.white.withOpacity(0.08),
+                      ? Colors.greenAccent.withValues(alpha: 0.15)
+                      : Colors.white.withValues(alpha: 0.08),
                   borderRadius: BorderRadius.circular(20),
                   border: Border.all(
                     color: isOnline
-                        ? Colors.greenAccent.withOpacity(0.5)
+                        ? Colors.greenAccent.withValues(alpha: 0.5)
                         : Colors.white12,
                     width: 0.8,
                   ),
@@ -505,7 +507,9 @@ class _HeroHeader extends StatelessWidget {
                         boxShadow: isOnline
                             ? [
                                 BoxShadow(
-                                  color: Colors.greenAccent.withOpacity(0.7),
+                                  color: Colors.greenAccent.withValues(
+                                    alpha: 0.7,
+                                  ),
                                   blurRadius: 6,
                                 ),
                               ]
@@ -513,12 +517,22 @@ class _HeroHeader extends StatelessWidget {
                       ),
                     ),
                     const SizedBox(width: 6),
-                    Text(
-                      isOnline ? 'Online' : 'Offline',
-                      style: TextStyle(
-                        fontSize: 12,
-                        fontWeight: FontWeight.w500,
-                        color: isOnline ? Colors.greenAccent : Colors.grey,
+                    Expanded(
+                      child: Text(
+                        isOnline
+                            ? 'Online'
+                            : (user?.lastSeen != null
+                                  ? AppBarStatusSubtitle.formatLastSeen(
+                                      user!.lastSeen!,
+                                    )
+                                  : 'Offline'),
+                        style: TextStyle(
+                          fontSize: 12,
+                          fontWeight: FontWeight.w500,
+                          color: isOnline ? Colors.greenAccent : Colors.grey,
+                        ),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
                       ),
                     ),
                   ],
@@ -544,9 +558,12 @@ class _GlassCard extends StatelessWidget {
       width: double.infinity,
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
       decoration: BoxDecoration(
-        color: Colors.white.withOpacity(0.04),
+        color: Colors.white.withValues(alpha: 0.04),
         borderRadius: BorderRadius.circular(18),
-        border: Border.all(color: Colors.white.withOpacity(0.08), width: 0.8),
+        border: Border.all(
+          color: Colors.white.withValues(alpha: 0.08),
+          width: 0.8,
+        ),
       ),
       child: child,
     );
@@ -561,7 +578,7 @@ class _Hairline extends StatelessWidget {
     return Container(
       height: 0.5,
       margin: const EdgeInsets.symmetric(vertical: 2),
-      color: Colors.white.withOpacity(0.07),
+      color: Colors.white.withValues(alpha: 0.07),
     );
   }
 }
@@ -589,7 +606,7 @@ class _DetailRow extends StatelessWidget {
             width: 36,
             height: 36,
             decoration: BoxDecoration(
-              color: tabColor.withOpacity(0.12),
+              color: tabColor.withValues(alpha: 0.12),
               borderRadius: BorderRadius.circular(10),
             ),
             child: Icon(icon, color: tabColor, size: 18),
@@ -603,7 +620,7 @@ class _DetailRow extends StatelessWidget {
                   label,
                   style: TextStyle(
                     fontSize: 11,
-                    color: Colors.white.withOpacity(0.4),
+                    color: Colors.white.withValues(alpha: 0.4),
                     letterSpacing: 0.5,
                   ),
                 ),
@@ -621,7 +638,7 @@ class _DetailRow extends StatelessWidget {
           ),
           Icon(
             Icons.chevron_right_rounded,
-            color: Colors.white.withOpacity(0.2),
+            color: Colors.white.withValues(alpha: 0.2),
             size: 18,
           ),
         ],
@@ -654,8 +671,8 @@ class _MediaTab extends StatelessWidget {
           );
         }
         return GridView.builder(
+          scrollCacheExtent: ScrollCacheExtent.pixels(500),
           padding: const EdgeInsets.all(2),
-          cacheExtent: 500,
           gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
             crossAxisCount: 3,
             crossAxisSpacing: 2,
@@ -868,7 +885,9 @@ class _MediaPageViewerState extends State<_MediaPageViewer> {
                           height: 6,
                           decoration: BoxDecoration(
                             borderRadius: BorderRadius.circular(3),
-                            color: _currentIndex == i ? tabColor : Colors.grey[700],
+                            color: _currentIndex == i
+                                ? tabColor
+                                : Colors.grey[700],
                           ),
                         ),
                       ),
@@ -908,18 +927,20 @@ class _LinksTab extends StatelessWidget {
         return ListView.separated(
           padding: const EdgeInsets.all(12),
           itemCount: links.length,
-          separatorBuilder: (_, __) =>
-              Container(height: 0.5, color: Colors.white.withOpacity(0.06)),
+          separatorBuilder: (_, __) => Container(
+            height: 0.5,
+            color: Colors.white.withValues(alpha: 0.06),
+          ),
           itemBuilder: (context, index) {
             final msg = links[index];
             return Container(
               margin: const EdgeInsets.symmetric(vertical: 4),
               padding: const EdgeInsets.all(12),
               decoration: BoxDecoration(
-                color: Colors.white.withOpacity(0.04),
+                color: Colors.white.withValues(alpha: 0.04),
                 borderRadius: BorderRadius.circular(12),
                 border: Border.all(
-                  color: Colors.white.withOpacity(0.07),
+                  color: Colors.white.withValues(alpha: 0.07),
                   width: 0.8,
                 ),
               ),
@@ -928,7 +949,7 @@ class _LinksTab extends StatelessWidget {
                   Container(
                     padding: const EdgeInsets.all(8),
                     decoration: BoxDecoration(
-                      color: tabColor.withOpacity(0.12),
+                      color: tabColor.withValues(alpha: 0.12),
                       borderRadius: BorderRadius.circular(10),
                     ),
                     child: const Icon(
@@ -956,7 +977,7 @@ class _LinksTab extends StatelessWidget {
                           DateFormat('MMM d, y').format(msg.timeSent),
                           style: TextStyle(
                             fontSize: 11,
-                            color: Colors.white.withOpacity(0.35),
+                            color: Colors.white.withValues(alpha: 0.35),
                           ),
                         ),
                       ],
@@ -1002,10 +1023,10 @@ class _EmptyState extends StatelessWidget {
           Container(
             padding: const EdgeInsets.all(20),
             decoration: BoxDecoration(
-              color: Colors.white.withOpacity(0.04),
+              color: Colors.white.withValues(alpha: 0.04),
               shape: BoxShape.circle,
               border: Border.all(
-                color: Colors.white.withOpacity(0.08),
+                color: Colors.white.withValues(alpha: 0.08),
                 width: 0.8,
               ),
             ),

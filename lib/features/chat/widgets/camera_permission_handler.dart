@@ -25,8 +25,12 @@ class CameraPermissionHandler {
     }
 
     // Check if permanently denied
-    if (statuses[Permission.camera]?.isPermanentlyDenied ?? false ||
-        statuses[Permission.microphone]!.isPermanentlyDenied ?? false) {
+    final cameraPermanentlyDenied =
+        statuses[Permission.camera]?.isPermanentlyDenied ?? false;
+    final microphonePermanentlyDenied =
+        statuses[Permission.microphone]?.isPermanentlyDenied ?? false;
+
+    if (cameraPermanentlyDenied || microphonePermanentlyDenied) {
       if (context.mounted) {
         _showPermissionDeniedDialog(context);
       }

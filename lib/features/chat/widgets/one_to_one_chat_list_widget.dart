@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:hive_flutter/adapters.dart';
@@ -8,9 +9,11 @@ import 'package:intl/intl.dart';
 import 'dart:developer';
 import 'package:worship_chat/common/enums/message_status_enum.dart';
 import 'package:worship_chat/common/providers/message_reply_provider.dart';
+import 'package:worship_chat/common/providers/message_edit_provider.dart';
 import 'package:worship_chat/common/widgets/skeleton_loader.dart';
 import 'package:worship_chat/common/widgets/user_avatar.dart';
 import 'package:worship_chat/features/chat/controller/chat_controller.dart';
+import 'package:worship_chat/features/chat/widgets/delete_message_dialog.dart';
 import 'package:worship_chat/features/chat/widgets/media_group_widget.dart';
 import 'package:worship_chat/features/chat/widgets/sender_message_card.dart';
 import 'package:worship_chat/models/one_to_one_message_model.dart';
@@ -54,6 +57,13 @@ class _OneToOneChatListWidgetState extends ConsumerState<OneToOneChatListWidget>
   final Set<String> _initialMessageIds = <String>{};
   final Set<String> _newlyArrivedIds = <String>{};
   bool _hasRecordedInitialIds = false;
+  final Map<String, GlobalKey> _messageKeys = {};
+  String? _highlightedMessageId;
+  Timer? _highlightTimer;
+
+  GlobalKey _getMessageKey(String messageId) {
+    return _messageKeys.putIfAbsent(messageId, () => GlobalKey());
+  }
 
   @override
   bool get wantKeepAlive => true;
@@ -81,6 +91,12 @@ class _OneToOneChatListWidgetState extends ConsumerState<OneToOneChatListWidget>
     if (!mounted) return;
 
     final currentUserId = FirebaseAuth.instance.currentUser?.uid;
+
+    // Check if newMessages has any changes compared to current _displayMessages
+    if (_displayMessages.isNotEmpty && !_hasDeliveryOrSeenStatusChanged(newMessages)) {
+      _isInitialLoad = false;
+      return; // Skip redundant build if messages are identical to initial Hive cache
+    }
 
     // Mark unseen messages
     if (currentUserId != null) {
@@ -177,6 +193,7 @@ class _OneToOneChatListWidgetState extends ConsumerState<OneToOneChatListWidget>
             _prevTotalMessages = _displayMessages.length;
             _initialMessageIds.addAll(parsed.map((m) => m.messageId));
             _hasRecordedInitialIds = true;
+            _isInitialLoad = false;
             log('⚡ Pre-seeded ${_displayMessages.length} messages from Hive in initState');
           }
         }
@@ -233,6 +250,7 @@ class _OneToOneChatListWidgetState extends ConsumerState<OneToOneChatListWidget>
 
   @override
   void dispose() {
+    _highlightTimer?.cancel();
     _chatSubscription?.cancel();
     messageController.dispose();
     super.dispose();
@@ -244,12 +262,151 @@ class _OneToOneChatListWidgetState extends ConsumerState<OneToOneChatListWidget>
     String messageType,
     String fileMessageData,
   ) {
+    final effectiveMessage = (messageType == 'text' || messageType == 'wish')
+        ? message
+        : (message.isNotEmpty && fileMessageData.isEmpty
+            ? message
+            : fileMessageData);
     ref.read(messageReplyProvider.notifier).state = MessageReply(
-      message: messageType == 'text' ? message : fileMessageData,
+      message: effectiveMessage,
       isMe: isMe,
       messageType: messageType,
       fileMessageData: fileMessageData,
     );
+  }
+
+  void _navigateToRepliedMessage(OneToOneMessageModel sourceMessage) {
+    final repliedText = sourceMessage.repliedMessage.trim();
+    final repliedType = sourceMessage.repliedMessageType;
+    if (repliedText.isEmpty && repliedType.isEmpty) return;
+
+    final sourceIdx = _displayMessages.indexWhere(
+      (m) => m.messageId == sourceMessage.messageId,
+    );
+
+    int targetIdx = -1;
+    final searchLimit = sourceIdx > 0 ? sourceIdx : _displayMessages.length;
+
+    // Search backwards from the replying message
+    for (int i = searchLimit - 1; i >= 0; i--) {
+      final m = _displayMessages[i];
+      final textMatch = (m.text.isNotEmpty && m.text == repliedText) ||
+          (m.fileMessageData != null && m.fileMessageData == repliedText) ||
+          (m.text.isNotEmpty &&
+              (m.text.startsWith(repliedText) ||
+                  repliedText.startsWith(m.text)));
+
+      if (textMatch) {
+        targetIdx = i;
+        break;
+      }
+    }
+
+    // Fallback search across all messages if not found before source
+    if (targetIdx == -1) {
+      for (int i = _displayMessages.length - 1; i >= 0; i--) {
+        if (i == sourceIdx) continue;
+        final m = _displayMessages[i];
+        if ((m.text.isNotEmpty && m.text == repliedText) ||
+            (m.fileMessageData != null && m.fileMessageData == repliedText)) {
+          targetIdx = i;
+          break;
+        }
+      }
+    }
+
+    if (targetIdx == -1) {
+      log('⚠️ Target replied message not found in history');
+      return;
+    }
+
+    final targetMessage = _displayMessages[targetIdx];
+
+    // Check pagination: if target is older than visible window, expand _visibleCount
+    final totalCount = _displayMessages.length;
+    final effectiveCount = _visibleCount.clamp(0, totalCount);
+    final startIndex =
+        totalCount > effectiveCount ? totalCount - effectiveCount : 0;
+
+    if (targetIdx < startIndex) {
+      final neededCount = totalCount - targetIdx + 10;
+      setState(() {
+        _visibleCount = neededCount;
+      });
+    }
+
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _scrollToAndHighlightMessage(targetMessage.messageId);
+    });
+  }
+
+  void _scrollToAndHighlightMessage(String targetMessageId) {
+    if (!mounted) return;
+
+    final key = _messageKeys[targetMessageId];
+    final context = key?.currentContext;
+
+    if (context != null) {
+      Scrollable.ensureVisible(
+        context,
+        duration: const Duration(milliseconds: 350),
+        curve: Curves.easeInOutCubic,
+        alignment: 0.5,
+      ).then((_) {
+        _triggerMessageHighlight(targetMessageId);
+      });
+    } else {
+      final totalCount = _displayMessages.length;
+      final effectiveCount = _visibleCount.clamp(0, totalCount);
+      final startIndex =
+          totalCount > effectiveCount ? totalCount - effectiveCount : 0;
+      final targetIdx =
+          _displayMessages.indexWhere((m) => m.messageId == targetMessageId);
+
+      if (targetIdx >= 0 && messageController.hasClients) {
+        final visibleIdx = targetIdx - startIndex;
+        final itemIndex =
+            (effectiveCount - 1 - visibleIdx).clamp(0, effectiveCount - 1);
+        final maxExtent = messageController.position.maxScrollExtent;
+        final estimatedOffset =
+            ((itemIndex / (effectiveCount > 0 ? effectiveCount : 1)) *
+                    maxExtent)
+                .clamp(0.0, maxExtent);
+
+        messageController.jumpTo(estimatedOffset);
+
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (!mounted) return;
+          final retryCtx = _messageKeys[targetMessageId]?.currentContext;
+          if (retryCtx != null) {
+            Scrollable.ensureVisible(
+              retryCtx,
+              duration: const Duration(milliseconds: 350),
+              curve: Curves.easeInOutCubic,
+              alignment: 0.5,
+            ).then((_) {
+              _triggerMessageHighlight(targetMessageId);
+            });
+          } else {
+            _triggerMessageHighlight(targetMessageId);
+          }
+        });
+      }
+    }
+  }
+
+  void _triggerMessageHighlight(String targetMessageId) {
+    _highlightTimer?.cancel();
+    setState(() {
+      _highlightedMessageId = targetMessageId;
+    });
+    _highlightTimer = Timer(const Duration(milliseconds: 1400), () {
+      if (mounted && _highlightedMessageId == targetMessageId) {
+        setState(() {
+          _highlightedMessageId = null;
+        });
+      }
+    });
   }
 
   void _markMessageAsSeen(OneToOneMessageModel message) {
@@ -261,15 +418,17 @@ class _OneToOneChatListWidgetState extends ConsumerState<OneToOneChatListWidget>
         !_processedMessages.contains(message.messageId)) {
       _processedMessages.add(message.messageId);
 
-      if (mounted) {
-        ref
-            .read(chatControllerProvider)
-            .setChatMessageSeen(
-              context,
-              widget.receiverUserId,
-              message.messageId,
-            );
-      }
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) {
+          ref
+              .read(chatControllerProvider)
+              .setChatMessageSeen(
+                context,
+                widget.receiverUserId,
+                message.messageId,
+              );
+        }
+      });
     }
   }
 
@@ -328,6 +487,24 @@ class _OneToOneChatListWidgetState extends ConsumerState<OneToOneChatListWidget>
       previousMessage.timeSent.day,
     );
     return currentDate != previousDate;
+  }
+
+  bool _hasDeliveryOrSeenStatusChanged(List<OneToOneMessageModel> newMessages) {
+    if (_displayMessages.length != newMessages.length) return true;
+    for (int i = 0; i < newMessages.length; i++) {
+      if (_displayMessages[i].messageId != newMessages[i].messageId ||
+          _displayMessages[i].isSeen != newMessages[i].isSeen ||
+          _displayMessages[i].isDelivered != newMessages[i].isDelivered ||
+          _displayMessages[i].isSending != newMessages[i].isSending ||
+          _displayMessages[i].text != newMessages[i].text ||
+          _displayMessages[i].fileMessageData != newMessages[i].fileMessageData ||
+          _displayMessages[i].isEdited != newMessages[i].isEdited ||
+          _displayMessages[i].isDeleted != newMessages[i].isDeleted ||
+          !mapEquals(_displayMessages[i].reactions, newMessages[i].reactions)) {
+        return true;
+      }
+    }
+    return false;
   }
 
   @override
@@ -507,18 +684,50 @@ class _OneToOneChatListWidgetState extends ConsumerState<OneToOneChatListWidget>
                           .abs() <
                       25));
 
-          return RepaintBoundary(
-            child: _ChatRowWidget(
-              key: ValueKey('${row.key}_$rowReactionsKey'),
-              row: row,
-              isNewlySent: isNewlyArrived,
-              currentUserProfilePic: currentUserProfilePic,
-              receiverProfilePic: widget.profilePic,
-              receiverUserId: widget.receiverUserId,
-              currentUserId: currentUserId ?? '',
-              onMessageSwipe: onMessageSwipe,
-              getDateSeparatorText: _getDateSeparatorText,
-              onReactionToggle: _optimisticToggleReaction,
+          final primaryMsgId = row.messages.first.messageId;
+          for (final m in row.messages) {
+            _messageKeys[m.messageId] = _getMessageKey(primaryMsgId);
+          }
+
+          final isRowHighlighted = _highlightedMessageId != null &&
+              row.messages.any((m) => m.messageId == _highlightedMessageId);
+
+          return KeyedSubtree(
+            key: _getMessageKey(primaryMsgId),
+            child: AnimatedContainer(
+              duration: const Duration(milliseconds: 300),
+              curve: Curves.easeOut,
+              decoration: BoxDecoration(
+                borderRadius: BorderRadius.circular(20),
+                color: isRowHighlighted
+                    ? const Color(0xFFFFD700).withValues(alpha: 0.25)
+                    : Colors.transparent,
+                boxShadow: isRowHighlighted
+                    ? [
+                        BoxShadow(
+                          color:
+                              const Color(0xFFFFD700).withValues(alpha: 0.40),
+                          blurRadius: 18,
+                          spreadRadius: 3,
+                        ),
+                      ]
+                    : null,
+              ),
+              child: RepaintBoundary(
+                child: _ChatRowWidget(
+                  key: ValueKey('${row.key}_$rowReactionsKey'),
+                  row: row,
+                  isNewlySent: isNewlyArrived,
+                  currentUserProfilePic: currentUserProfilePic,
+                  receiverProfilePic: widget.profilePic,
+                  receiverUserId: widget.receiverUserId,
+                  currentUserId: currentUserId ?? '',
+                  onMessageSwipe: onMessageSwipe,
+                  getDateSeparatorText: _getDateSeparatorText,
+                  onReactionToggle: _optimisticToggleReaction,
+                  onReplyTap: _navigateToRepliedMessage,
+                ),
+              ),
             ),
           );
         },
@@ -611,6 +820,7 @@ class _ChatRowWidget extends ConsumerWidget {
   final Function(String, bool, String, String) onMessageSwipe;
   final String Function(DateTime) getDateSeparatorText;
   final void Function(String messageId, String emoji)? onReactionToggle;
+  final void Function(OneToOneMessageModel)? onReplyTap;
 
   const _ChatRowWidget({
     super.key,
@@ -623,6 +833,7 @@ class _ChatRowWidget extends ConsumerWidget {
     required this.onMessageSwipe,
     required this.getDateSeparatorText,
     this.onReactionToggle,
+    this.onReplyTap,
   });
 
   Widget _buildDateSeparator(DateTime date) {
@@ -763,6 +974,42 @@ class _ChatRowWidget extends ConsumerWidget {
                       currentUserId: currentUserId,
                       receiverId: receiverUserId,
                       reactions: messageData.reactions,
+                      isEdited: messageData.isEdited,
+                      isDeleted: messageData.isDeleted,
+                      onEdit: (messageData.isDeleted || messageData.messageType != 'text')
+                          ? null
+                          : () {
+                              ref.read(messageEditProvider.notifier).state =
+                                  MessageEdit(
+                                messageId: messageData.messageId,
+                                text: messageData.text,
+                                chatType: 'one_to_one',
+                                receiverUserId: receiverUserId,
+                              );
+                            },
+                      onDelete: () {
+                        DeleteMessageDialog.show(
+                          context: context,
+                          isMyMessage: true,
+                          isDeleted: messageData.isDeleted,
+                          onDeleteForMe: () {
+                            ref.read(chatControllerProvider).deleteMessageForMe(
+                              messageId: messageData.messageId,
+                              receiverUserId: receiverUserId,
+                            );
+                          },
+                          onDeleteForEveryone: messageData.isDeleted
+                              ? null
+                              : () {
+                                  ref
+                                      .read(chatControllerProvider)
+                                      .deleteMessageForEveryone(
+                                        messageId: messageData.messageId,
+                                        receiverUserId: receiverUserId,
+                                      );
+                                },
+                        );
+                      },
                       onReactionSelected: (emoji) {
                         onReactionToggle?.call(messageData.messageId, emoji);
                         ref.read(chatControllerProvider).toggleReaction(
@@ -781,6 +1028,7 @@ class _ChatRowWidget extends ConsumerWidget {
                           ),
                         );
                       },
+                      onReplyTap: () => onReplyTap?.call(messageData),
                     ),
                   ),
                   _buildProfileAvatar(currentUserProfilePic, true),
@@ -812,6 +1060,21 @@ class _ChatRowWidget extends ConsumerWidget {
                       receiverId: receiverUserId,
                       senderProfilePic: receiverProfilePic,
                       reactions: messageData.reactions,
+                      isEdited: messageData.isEdited,
+                      isDeleted: messageData.isDeleted,
+                      onDelete: () {
+                        DeleteMessageDialog.show(
+                          context: context,
+                          isMyMessage: false,
+                          isDeleted: messageData.isDeleted,
+                          onDeleteForMe: () {
+                            ref.read(chatControllerProvider).deleteMessageForMe(
+                              messageId: messageData.messageId,
+                              receiverUserId: receiverUserId,
+                            );
+                          },
+                        );
+                      },
                       onReactionSelected: (emoji) {
                         onReactionToggle?.call(messageData.messageId, emoji);
                         ref.read(chatControllerProvider).toggleReaction(
@@ -830,6 +1093,7 @@ class _ChatRowWidget extends ConsumerWidget {
                           ),
                         );
                       },
+                      onReplyTap: () => onReplyTap?.call(messageData),
                     ),
                   ),
                 ],

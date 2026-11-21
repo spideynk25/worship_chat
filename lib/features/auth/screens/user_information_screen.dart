@@ -19,13 +19,14 @@ class _UserInformationScreenState extends ConsumerState<UserInformationScreen> {
   File? image;
   @override
   void dispose() {
-    super.dispose();
     nameController.dispose();
+    super.dispose();
   }
 
   void selectImage() async {
-    image = await pickImageFromGallery(context);
-    setState(() {});
+    final selectedImage = await pickImageFromGallery(context);
+    if (!mounted || selectedImage == null) return;
+    setState(() => image = selectedImage);
   }
 
   void storeUserData() async {
@@ -39,60 +40,70 @@ class _UserInformationScreenState extends ConsumerState<UserInformationScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final size = MediaQuery.of(context).size;
     return Scaffold(
       body: SafeArea(
-          child: Center(
-        child: Column(
-          children: [
-            Stack(
-              children: [
-                image == null
-                    ? const CircleAvatar(
-                        backgroundColor: greyColor,
-                        radius: 64,
-                        child: Icon(
-                          Icons.person,
-                          color: blackColor,
-                          size: 70,
+        child: Align(
+          alignment: Alignment.topCenter,
+          child: SingleChildScrollView(
+            padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 16),
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: 480),
+              child: Column(
+                children: [
+                  Stack(
+                    children: [
+                      image == null
+                          ? const CircleAvatar(
+                              backgroundColor: greyColor,
+                              radius: 64,
+                              child: Icon(
+                                Icons.person,
+                                color: blackColor,
+                                size: 70,
+                              ),
+                            )
+                          : CircleAvatar(
+                              radius: 64,
+                              backgroundImage: FileImage(image!),
+                            ),
+                      Positioned(
+                        bottom: -10,
+                        left: 80,
+                        child: IconButton(
+                          onPressed: selectImage,
+                          icon: const Icon(Icons.add_a_photo),
                         ),
-                      )
-                    : CircleAvatar(
-                        radius: 64,
-                        backgroundImage: FileImage(image!),
                       ),
-                Positioned(
-                  bottom: -10,
-                  left: 80,
-                  child: IconButton(
-                      onPressed: selectImage,
-                      icon: const Icon(
-                        Icons.add_a_photo,
-                      )),
-                )
-              ],
-            ),
-            Row(
-              children: [
-                Container(
-                  width: size.width * 0.8,
-                  padding: const EdgeInsets.all(20),
-                  child: TextField(
-                    controller: nameController,
-                    decoration: const InputDecoration(
-                      hintText: 'Enter your name',
-                      border: InputBorder.none,
-                      enabledBorder: InputBorder.none,
-                      focusedBorder: InputBorder.none,
-                    ),
+                    ],
                   ),
-                ),
-                IconButton(onPressed: storeUserData, icon: const Icon(Icons.done))
-              ],
-            )
-          ],
+                  Row(
+                    children: [
+                      Expanded(
+                        child: Padding(
+                          padding: const EdgeInsets.all(20),
+                          child: TextField(
+                            controller: nameController,
+                            decoration: const InputDecoration(
+                              hintText: 'Enter your name',
+                              border: InputBorder.none,
+                              enabledBorder: InputBorder.none,
+                              focusedBorder: InputBorder.none,
+                            ),
+                          ),
+                        ),
+                      ),
+                      IconButton(
+                        onPressed: storeUserData,
+                        icon: const Icon(Icons.done),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+          ),
         ),
-      )),
+      ),
     );
   }
 }

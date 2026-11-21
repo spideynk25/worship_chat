@@ -13,6 +13,9 @@ final authControllerProvider = Provider((ref) {
 });
 
 final userDataAuthProvider = FutureProvider<UserModel?>((ref) {
+  // Refresh cached gallery attribution when the signed-in account changes.
+  // Keep the eager current-user read while the auth stream initially resolves.
+  ref.watch(authStateChangesProvider);
   final authController = ref.watch(authControllerProvider);
   return authController.getUsetData();
 });

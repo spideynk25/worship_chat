@@ -2,18 +2,40 @@ import 'dart:developer';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
+import 'package:flutter/foundation.dart';
 import 'package:hive_flutter/hive_flutter.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:worship_chat/models/user_model.dart';
+import 'package:worship_chat/common/utils/app_capabilities.dart';
 
 class FCMTokenManager {
   static final FirebaseFirestore _firestore = FirebaseFirestore.instance;
   static final FirebaseAuth _auth = FirebaseAuth.instance;
   static final FirebaseMessaging _messaging = FirebaseMessaging.instance;
 
+  /// Removes an old tablet installation token after upgrading from chat support.
+  /// Only the token for this installation is deleted; the account's phone token
+  /// in Firestore is deliberately left untouched.
+  static Future<void> disableForGalleryDevice() async {
+    final capabilities = AppCapabilities.current;
+    if (capabilities.notificationsEnabled || capabilities.isWeb) return;
+    if (capabilities.platform != TargetPlatform.android &&
+        capabilities.platform != TargetPlatform.iOS) {
+      return;
+    }
+    try {
+      await _messaging.setAutoInitEnabled(false);
+      await _messaging.deleteToken().timeout(const Duration(seconds: 5));
+    } catch (e) {
+      log('Could not clear this tablet installation notification token: $e');
+    }
+  }
+
   // Initialize FCM and save token
   static Future<void> initializeFCM() async {
+    if (!AppCapabilities.current.notificationsEnabled) return;
     try {
+      await _messaging.setAutoInitEnabled(true);
       // Request permission (iOS / Android 13+)
       try {
         await _messaging.requestPermission(
@@ -56,6 +78,7 @@ class FCMTokenManager {
 
   // Get current FCM token and save to Firestore + local Hive
   static Future<String?> refreshAndSaveFCMToken({int maxRetries = 3}) async {
+    if (!AppCapabilities.current.notificationsEnabled) return null;
     try {
       // 1. Wait briefly for auth to resolve if still initializing
       String? userId = _auth.currentUser?.uid;
@@ -102,6 +125,7 @@ class FCMTokenManager {
 
   // Save FCM token to user document in Firestore and sync to Hive cache
   static Future<void> _saveFCMTokenToFirestore(String token, {String? targetUserId}) async {
+    if (!AppCapabilities.current.notificationsEnabled) return;
     try {
       final userId = targetUserId ?? _auth.currentUser?.uid;
       if (userId == null) return;
@@ -132,6 +156,7 @@ class FCMTokenManager {
               email: current.email,
               groupId: current.groupId,
               fcmToken: token,
+              lastSeen: current.lastSeen,
             );
             await box.put('currentUser', updated);
             log('✅ Synced fresh FCM token to Hive userBox');
@@ -154,6 +179,7 @@ class FCMTokenManager {
 
   // Get fresh FCM tokens for a list of user IDs (server-first with cache fallback)
   static Future<List<String>> getFreshFCMTokens(List<String> userIds) async {
+    if (!AppCapabilities.current.notificationsEnabled) return [];
     if (userIds.isEmpty) return [];
 
     try {
@@ -207,6 +233,7 @@ class FCMTokenManager {
 
   // Get FCM tokens for group members (excluding current user)
   static Future<List<String>> getGroupMemberTokens(String groupId) async {
+    if (!AppCapabilities.current.notificationsEnabled) return [];
     try {
       final groupDoc = await _firestore.collection('groups').doc(groupId).get();
 
@@ -251,6 +278,7 @@ class FCMTokenManager {
 
   // Verify if user has valid FCM token
   static Future<bool> hasValidFCMToken(String userId) async {
+    if (!AppCapabilities.current.notificationsEnabled) return false;
     try {
       final userDoc = await _firestore.collection('users').doc(userId).get();
 
@@ -267,6 +295,7 @@ class FCMTokenManager {
 
   // Debug: Print all FCM tokens in a group
   static Future<void> debugGroupTokens(String groupId) async {
+    if (!AppCapabilities.current.notificationsEnabled) return;
     try {
       log('🔍 === FCM TOKEN DEBUG FOR GROUP: $groupId ===');
 

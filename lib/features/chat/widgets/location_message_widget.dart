@@ -53,6 +53,36 @@ class _LocationMessageWidgetState extends State<LocationMessageWidget>
       _countdownTimer = Timer.periodic(const Duration(seconds: 30), (_) {
         if (mounted) setState(() {});
       });
+      _checkAndResumeTracking();
+    }
+  }
+
+  void _checkAndResumeTracking() {
+    if (!widget.isMe || widget.messageType != 'live_location') {
+      return;
+    }
+    if (widget.messageId == null ||
+        widget.currentUserId == null ||
+        widget.receiverId == null) {
+      return;
+    }
+
+    final data = _parseData();
+    if (data != null && data['isLive'] == true) {
+      final liveUntil = (data['liveUntil'] as num?)?.toInt();
+      final now = DateTime.now().millisecondsSinceEpoch;
+      if (liveUntil != null && liveUntil > now) {
+        if (!LocationService.instance.isTracking(widget.messageId!)) {
+          final remaining = Duration(milliseconds: liveUntil - now);
+          LocationService.instance.startLiveLocationTracking(
+            messageId: widget.messageId!,
+            currentUserId: widget.currentUserId!,
+            receiverId: widget.receiverId!,
+            duration: remaining,
+            explicitLiveUntil: liveUntil,
+          );
+        }
+      }
     }
   }
 
@@ -62,6 +92,7 @@ class _LocationMessageWidgetState extends State<LocationMessageWidget>
     if (oldWidget.locationData != widget.locationData ||
         oldWidget.messageType != widget.messageType) {
       setState(() {});
+      _checkAndResumeTracking();
     }
   }
 

@@ -25,6 +25,10 @@ class GroupModel {
   final String? parentGroupName;
   final bool isSubGroup;
   final String? subGroupType;
+  final bool isRoleplayActive;
+  final String? roleplayStartedBy;
+  final int roleplayIntervalSeconds;
+  final String roleplayMode;
 
   GroupModel({
     required this.senderId,
@@ -49,6 +53,10 @@ class GroupModel {
     this.parentGroupName,
     this.isSubGroup = false,
     this.subGroupType,
+    this.isRoleplayActive = false,
+    this.roleplayStartedBy,
+    this.roleplayIntervalSeconds = 15,
+    this.roleplayMode = 'automatic',
   });
 
   /// Helper getter to get living place or fallback to name
@@ -84,7 +92,7 @@ class GroupModel {
   }
 
   Map<String, dynamic> toMap() {
-    return {
+    final map = <String, dynamic>{
       'senderId': senderId,
       'name': name,
       'groupId': groupId,
@@ -99,7 +107,6 @@ class GroupModel {
       'priority': priority ?? order,
       'family': family,
       'position': position,
-      'chatBackgroundUrl': chatBackgroundUrl,
       'wish': wish,
       'livingPlace': livingPlace,
       'galleryCount': galleryCount,
@@ -107,7 +114,15 @@ class GroupModel {
       'parentGroupName': parentGroupName,
       'isSubGroup': isSubGroup,
       'subGroupType': subGroupType,
+      'isRoleplayActive': isRoleplayActive,
+      'roleplayStartedBy': roleplayStartedBy,
+      'roleplayIntervalSeconds': roleplayIntervalSeconds,
+      'roleplayMode': roleplayMode,
     };
+    if (chatBackgroundUrl != null && chatBackgroundUrl!.trim().isNotEmpty) {
+      map['chatBackgroundUrl'] = chatBackgroundUrl!.trim();
+    }
+    return map;
   }
 
   @override
@@ -138,6 +153,10 @@ class GroupModel {
     String? parentGroupName,
     bool? isSubGroup,
     String? subGroupType,
+    bool? isRoleplayActive,
+    String? roleplayStartedBy,
+    int? roleplayIntervalSeconds,
+    String? roleplayMode,
   }) {
     return GroupModel(
       senderId: senderId ?? this.senderId,
@@ -162,6 +181,11 @@ class GroupModel {
       parentGroupName: parentGroupName ?? this.parentGroupName,
       isSubGroup: isSubGroup ?? this.isSubGroup,
       subGroupType: subGroupType ?? this.subGroupType,
+      isRoleplayActive: isRoleplayActive ?? this.isRoleplayActive,
+      roleplayStartedBy: roleplayStartedBy ?? this.roleplayStartedBy,
+      roleplayIntervalSeconds:
+          roleplayIntervalSeconds ?? this.roleplayIntervalSeconds,
+      roleplayMode: roleplayMode ?? this.roleplayMode,
     );
   }
 
@@ -223,6 +247,11 @@ class GroupModel {
       parentGroupName: map['parentGroupName'] as String?,
       isSubGroup: isSubGrp,
       subGroupType: map['subGroupType'] as String?,
+      isRoleplayActive: (map['isRoleplayActive'] as bool?) ?? false,
+      roleplayStartedBy: map['roleplayStartedBy'] as String?,
+      roleplayIntervalSeconds:
+          (map['roleplayIntervalSeconds'] as num?)?.toInt() ?? 15,
+      roleplayMode: (map['roleplayMode'] as String?) ?? 'automatic',
     );
   }
 }

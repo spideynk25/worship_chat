@@ -6,7 +6,9 @@ import 'package:worship_chat/colors.dart';
 import 'package:worship_chat/common/utils/utils.dart';
 import 'package:worship_chat/features/dashboard/controller/event_controller.dart';
 import 'package:worship_chat/features/dashboard/screens/event_calender_page.dart';
+import 'package:worship_chat/features/group/controller/group_controller.dart';
 import 'package:worship_chat/features/group/utils/queendom_group_helper.dart';
+import 'package:worship_chat/features/group/widgets/queendom_badge_widget.dart';
 import 'package:worship_chat/models/event.dart';
 import 'package:worship_chat/models/group.dart';
 
@@ -445,7 +447,8 @@ class _EventShortcutsWidgetState extends ConsumerState<EventShortcutsWidget> {
                           time: selectedTime,
                           isRecurring: isRecurring,
                           connectedGroupId: selectedQueendomGroup?.groupId,
-                          connectedGroupName: selectedQueendomGroup?.name,
+                          connectedGroupName: selectedQueendomGroup?.nameWithPosition ??
+                              selectedQueendomGroup?.name,
                           connectedGroupPic: selectedQueendomGroup?.groupPic,
                           connectedQueendom: selectedQueendomGroup?.queendom,
                         );
@@ -546,7 +549,6 @@ class _EventShortcutsWidgetState extends ConsumerState<EventShortcutsWidget> {
                 // ── Queen Pooja Portrait (img3) ──
                 _buildQueenAvatar(
                   imagePath: 'assets/images/img3.png',
-                  name: 'Pooja',
                   crownColor: const Color(0xFFFFD700), // Gold
                   angle: -0.05,
                   onTap: () => _navigateToCalendar(null),
@@ -639,7 +641,6 @@ class _EventShortcutsWidgetState extends ConsumerState<EventShortcutsWidget> {
                 // ── Queen Rashmika Portrait (img2) ──
                 _buildQueenAvatar(
                   imagePath: 'assets/images/img2.png',
-                  name: 'Rashmika',
                   crownColor: const Color(0xFFFF4081), // Rose Pink
                   angle: 0.05,
                   onTap: () => _navigateToCalendar(null),
@@ -704,106 +705,85 @@ class _EventShortcutsWidgetState extends ConsumerState<EventShortcutsWidget> {
 
   Widget _buildQueenAvatar({
     required String imagePath,
-    required String name,
     required Color crownColor,
     required double angle,
     required VoidCallback onTap,
   }) {
     return GestureDetector(
       onTap: onTap,
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Transform.rotate(
-            angle: angle,
-            child: Container(
-              width: 58,
-              height: 72,
-              decoration: BoxDecoration(
-                borderRadius: BorderRadius.circular(14),
-                border: Border.all(
-                  color: crownColor.withValues(alpha: 0.7),
-                  width: 1.5,
-                ),
-                boxShadow: [
-                  BoxShadow(
-                    color: crownColor.withValues(alpha: 0.25),
-                    blurRadius: 10,
-                    offset: const Offset(0, 3),
-                  ),
-                ],
-              ),
-              child: ClipRRect(
-                borderRadius: BorderRadius.circular(12),
-                child: Stack(
-                  fit: StackFit.expand,
-                  children: [
-                    Image.asset(
-                      imagePath,
-                      fit: BoxFit.cover,
-                      filterQuality: FilterQuality.high,
-                      errorBuilder: (_, __, ___) => Container(
-                        color: Colors.grey[850],
-                        child: Icon(Icons.person, color: crownColor),
-                      ),
-                    ),
-                    // Subtle bottom gradient
-                    Positioned(
-                      bottom: 0,
-                      left: 0,
-                      right: 0,
-                      height: 24,
-                      child: Container(
-                        decoration: BoxDecoration(
-                          gradient: LinearGradient(
-                            begin: Alignment.topCenter,
-                            end: Alignment.bottomCenter,
-                            colors: [
-                              Colors.transparent,
-                              Colors.black.withValues(alpha: 0.8),
-                            ],
-                          ),
-                        ),
-                      ),
-                    ),
-                    // Crown icon at top corner
-                    Positioned(
-                      top: 3,
-                      right: 3,
-                      child: Container(
-                        padding: const EdgeInsets.all(2),
-                        decoration: BoxDecoration(
-                          color: Colors.black.withValues(alpha: 0.6),
-                          shape: BoxShape.circle,
-                        ),
-                        child: Icon(
-                          Icons.workspace_premium,
-                          color: crownColor,
-                          size: 11,
-                        ),
-                      ),
-                    ),
-                  ],
-                ),
-              ),
+      child: Transform.rotate(
+        angle: angle,
+        child: Container(
+          width: 58,
+          height: 72,
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(14),
+            border: Border.all(
+              color: crownColor.withValues(alpha: 0.7),
+              width: 1.5,
             ),
-          ),
-          const SizedBox(height: 4),
-          Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Text(
-                name,
-                style: TextStyle(
-                  color: crownColor,
-                  fontSize: 10,
-                  fontWeight: FontWeight.bold,
-                  letterSpacing: 0.3,
-                ),
+            boxShadow: [
+              BoxShadow(
+                color: crownColor.withValues(alpha: 0.25),
+                blurRadius: 10,
+                offset: const Offset(0, 3),
               ),
             ],
           ),
-        ],
+          child: ClipRRect(
+            borderRadius: BorderRadius.circular(12),
+            child: Stack(
+              fit: StackFit.expand,
+              children: [
+                Image.asset(
+                  imagePath,
+                  fit: BoxFit.cover,
+                  filterQuality: FilterQuality.high,
+                  errorBuilder: (_, __, ___) => Container(
+                    color: Colors.grey[850],
+                    child: Icon(Icons.person, color: crownColor),
+                  ),
+                ),
+                // Subtle bottom gradient
+                Positioned(
+                  bottom: 0,
+                  left: 0,
+                  right: 0,
+                  height: 24,
+                  child: Container(
+                    decoration: BoxDecoration(
+                      gradient: LinearGradient(
+                        begin: Alignment.topCenter,
+                        end: Alignment.bottomCenter,
+                        colors: [
+                          Colors.transparent,
+                          Colors.black.withValues(alpha: 0.8),
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
+                // Crown icon at top corner
+                Positioned(
+                  top: 3,
+                  right: 3,
+                  child: Container(
+                    padding: const EdgeInsets.all(2),
+                    decoration: BoxDecoration(
+                      color: Colors.black.withValues(alpha: 0.6),
+                      shape: BoxShape.circle,
+                    ),
+                    child: Icon(
+                      Icons.workspace_premium,
+                      color: crownColor,
+                      size: 11,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
       ),
     );
   }
@@ -904,6 +884,34 @@ class _EventShortcutsWidgetState extends ConsumerState<EventShortcutsWidget> {
     );
   }
 
+  String? _resolveConnectedGroupPic(Event event) {
+    if (event.connectedGroupPic != null &&
+        event.connectedGroupPic!.trim().isNotEmpty) {
+      return event.connectedGroupPic!.trim();
+    }
+    if (event.connectedGroupId != null &&
+        event.connectedGroupId!.trim().isNotEmpty) {
+      try {
+        final ctrl = ref.read(groupControllerProvider);
+        for (final cat in [
+          'groups_all',
+          'groups_pooja',
+          'groups_rashmika',
+          'groups_none',
+        ]) {
+          final cached = ctrl.getCachedGroups(cat);
+          for (final g in cached) {
+            if (g.groupId == event.connectedGroupId &&
+                g.groupPic.trim().isNotEmpty) {
+              return g.groupPic.trim();
+            }
+          }
+        }
+      } catch (_) {}
+    }
+    return null;
+  }
+
   Widget _buildEventCard(Event event, DateTime now) {
     final occurrence = _getEventOccurrence(event, now);
     final today = DateTime(now.year, now.month, now.day);
@@ -927,6 +935,12 @@ class _EventShortcutsWidgetState extends ConsumerState<EventShortcutsWidget> {
 
     final isBirthday = event.title.toLowerCase().contains('birth') ||
         event.title.toLowerCase().contains('bday');
+    final queendomType = QueendomBadgeHelper.detectQueendom(
+      queendom: event.connectedQueendom,
+      name: event.connectedGroupName,
+      title: event.title,
+    );
+    final groupPicUrl = _resolveConnectedGroupPic(event);
 
     return Container(
       margin: const EdgeInsets.only(bottom: 8),
@@ -956,164 +970,187 @@ class _EventShortcutsWidgetState extends ConsumerState<EventShortcutsWidget> {
           onTap: () => _navigateToCalendar(occurrence),
           child: Padding(
             padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-            child: Row(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                // Icon Avatar
-                Container(
-                  width: 38,
-                  height: 38,
-                  decoration: BoxDecoration(
-                    gradient: LinearGradient(
-                      begin: Alignment.topLeft,
-                      end: Alignment.bottomRight,
-                      colors: isBirthday
-                          ? [
-                              const Color(0xFFFF2D78),
-                              const Color(0xFFFF8E53),
-                            ]
-                          : [
-                              const Color(0xFF7928CA),
-                              const Color(0xFFFF0080),
-                            ],
-                    ),
-                    borderRadius: BorderRadius.circular(10),
-                  ),
-                  child: Center(
-                    child: Icon(
-                      isBirthday ? Icons.cake : Icons.celebration,
-                      color: Colors.white,
-                      size: 19,
-                    ),
-                  ),
-                ),
-                const SizedBox(width: 10),
-
-                // Title & Details
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Row(
-                        children: [
-                          Expanded(
-                            child: Text(
-                              event.title,
-                              style: const TextStyle(
-                                fontSize: 14,
-                                fontWeight: FontWeight.bold,
-                                color: Colors.white,
-                              ),
-                              maxLines: 2,
-                              overflow: TextOverflow.ellipsis,
-                            ),
-                          ),
-                          if (event.isRecurring)
-                            Container(
-                              margin: const EdgeInsets.only(left: 6),
-                              padding: const EdgeInsets.symmetric(
-                                  horizontal: 5, vertical: 1.5),
-                              decoration: BoxDecoration(
-                                color: accentOrange.withValues(alpha: 0.18),
-                                borderRadius: BorderRadius.circular(5),
-                              ),
-                              child: const Text(
-                                'YEARLY',
-                                style: TextStyle(
-                                  fontSize: 8.5,
-                                  fontWeight: FontWeight.bold,
-                                  color: accentOrange,
-                                ),
-                              ),
-                            ),
-                        ],
-                      ),
-                      const SizedBox(height: 3),
-                      Row(
-                        children: [
-                          Icon(
-                            Icons.access_time,
-                            size: 11,
-                            color: Colors.grey[400],
-                          ),
-                          const SizedBox(width: 3),
-                          Text(
-                            event.time.format(context),
-                            style: TextStyle(
-                              fontSize: 11,
-                              color: Colors.grey[400],
-                            ),
-                          ),
-                          const SizedBox(width: 8),
-                          Icon(
-                            Icons.calendar_today,
-                            size: 11,
-                            color: Colors.grey[400],
-                          ),
-                          const SizedBox(width: 3),
-                          Text(
-                            DateFormat('MMM dd').format(occurrence),
-                            style: TextStyle(
-                              fontSize: 11,
-                              color: Colors.grey[400],
-                            ),
-                          ),
-                        ],
-                      ),
-                      if (event.connectedGroupName != null &&
-                          event.connectedGroupId != null) ...[
-                        const SizedBox(height: 5),
-                        Row(
-                          children: [
-                            Container(
-                              padding: const EdgeInsets.symmetric(
-                                horizontal: 7,
-                                vertical: 2.5,
-                              ),
-                              decoration: BoxDecoration(
-                                color: tabColor.withValues(alpha: 0.14),
-                                borderRadius: BorderRadius.circular(6),
-                                border: Border.all(
-                                  color: tabColor.withValues(alpha: 0.35),
-                                  width: 0.8,
-                                ),
-                              ),
-                              child: Row(
-                                mainAxisSize: MainAxisSize.min,
-                                children: [
-                                  const Icon(
-                                    Icons.group_rounded,
-                                    size: 11,
-                                    color: tabColor,
+                // Top Row: Avatar on left, Title & Time/Date on right (Full width, no crowding)
+                Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    // Icon Avatar / Profile Pic with Queendom Badge
+                    Stack(
+                      clipBehavior: Clip.none,
+                      children: [
+                        Container(
+                          width: 38,
+                          height: 38,
+                          decoration: BoxDecoration(
+                            gradient: groupPicUrl != null
+                                ? null
+                                : LinearGradient(
+                                    begin: Alignment.topLeft,
+                                    end: Alignment.bottomRight,
+                                    colors: isBirthday
+                                        ? [
+                                            const Color(0xFFFF2D78),
+                                            const Color(0xFFFF8E53)
+                                          ]
+                                        : [
+                                            const Color(0xFF7928CA),
+                                            const Color(0xFFFF0080)
+                                          ],
                                   ),
-                                  const SizedBox(width: 4),
-                                  ConstrainedBox(
-                                    constraints:
-                                        const BoxConstraints(maxWidth: 130),
-                                    child: Text(
-                                      event.connectedGroupName!,
-                                      style: const TextStyle(
+                            borderRadius: BorderRadius.circular(10),
+                            border: groupPicUrl != null
+                                ? Border.all(
+                                    color: isBirthday
+                                        ? const Color(0xFFFF2D78)
+                                        : (queendomType != null
+                                            ? QueendomBadgeHelper.getAccentColor(
+                                                queendomType)
+                                            : tabColor),
+                                    width: 1.2,
+                                  )
+                                : null,
+                            boxShadow: [
+                              BoxShadow(
+                                color: (isBirthday
+                                        ? const Color(0xFFFF2D78)
+                                        : tabColor)
+                                    .withValues(alpha: 0.35),
+                                blurRadius: 6,
+                                offset: const Offset(0, 1.5),
+                              ),
+                            ],
+                          ),
+                          child: groupPicUrl != null
+                              ? ClipRRect(
+                                  borderRadius: BorderRadius.circular(8.8),
+                                  child: CachedNetworkImage(
+                                    imageUrl: groupPicUrl,
+                                    width: 38,
+                                    height: 38,
+                                    fit: BoxFit.cover,
+                                    placeholder: (_, __) => Center(
+                                      child: Icon(
+                                        isBirthday ? Icons.cake : Icons.celebration,
                                         color: Colors.white,
-                                        fontSize: 9.5,
-                                        fontWeight: FontWeight.w600,
+                                        size: 19,
                                       ),
-                                      overflow: TextOverflow.ellipsis,
+                                    ),
+                                    errorWidget: (_, __, ___) => Center(
+                                      child: Icon(
+                                        isBirthday ? Icons.cake : Icons.celebration,
+                                        color: Colors.white,
+                                        size: 19,
+                                      ),
                                     ),
                                   ),
-                                ],
-                              ),
-                            ),
-                          ],
+                                )
+                              : Center(
+                                  child: Icon(
+                                    isBirthday ? Icons.cake : Icons.celebration,
+                                    color: Colors.white,
+                                    size: 19,
+                                  ),
+                                ),
                         ),
+                        if (queendomType != null)
+                          Positioned(
+                            right: -3,
+                            bottom: -3,
+                            child: QueendomBadgeWidget(
+                              queendomType: queendomType,
+                              size: 18,
+                            ),
+                          ),
                       ],
-                    ],
-                  ),
+                    ),
+                    const SizedBox(width: 10),
+
+                    // Title & Date/Time
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Row(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Expanded(
+                                child: Text(
+                                  event.title,
+                                  style: const TextStyle(
+                                    fontSize: 14,
+                                    fontWeight: FontWeight.bold,
+                                    color: Colors.white,
+                                    height: 1.25,
+                                  ),
+                                  maxLines: 2,
+                                  overflow: TextOverflow.ellipsis,
+                                ),
+                              ),
+                              if (event.isRecurring)
+                                Container(
+                                  margin: const EdgeInsets.only(left: 6, top: 1),
+                                  padding: const EdgeInsets.symmetric(
+                                      horizontal: 5, vertical: 1.5),
+                                  decoration: BoxDecoration(
+                                    color: accentOrange.withValues(alpha: 0.18),
+                                    borderRadius: BorderRadius.circular(5),
+                                  ),
+                                  child: const Text(
+                                    'YEARLY',
+                                    style: TextStyle(
+                                      fontSize: 8.5,
+                                      fontWeight: FontWeight.bold,
+                                      color: accentOrange,
+                                    ),
+                                  ),
+                                ),
+                            ],
+                          ),
+                          const SizedBox(height: 3),
+                          Row(
+                            children: [
+                              Icon(
+                                Icons.access_time,
+                                size: 11,
+                                color: Colors.grey[400],
+                              ),
+                              const SizedBox(width: 3),
+                              Text(
+                                event.time.format(context),
+                                style: TextStyle(
+                                  fontSize: 11,
+                                  color: Colors.grey[400],
+                                ),
+                              ),
+                              const SizedBox(width: 8),
+                              Icon(
+                                Icons.calendar_today,
+                                size: 11,
+                                color: Colors.grey[400],
+                              ),
+                              const SizedBox(width: 3),
+                              Text(
+                                DateFormat('MMM dd').format(occurrence),
+                                style: TextStyle(
+                                  fontSize: 11,
+                                  color: Colors.grey[400],
+                                ),
+                              ),
+                            ],
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
                 ),
 
-                const SizedBox(width: 8),
+                const SizedBox(height: 8),
 
-                Column(
-                  mainAxisSize: MainAxisSize.min,
-                  crossAxisAlignment: CrossAxisAlignment.end,
+                // Bottom Action Bar: Countdown Badge on left, Wish Button on right
+                Row(
                   children: [
                     // Countdown badge
                     Container(
@@ -1126,17 +1163,30 @@ class _EventShortcutsWidgetState extends ConsumerState<EventShortcutsWidget> {
                           color: badgeColor.withValues(alpha: 0.4),
                         ),
                       ),
-                      child: Text(
-                        countdownText,
-                        style: TextStyle(
-                          color: badgeColor,
-                          fontSize: 10.5,
-                          fontWeight: FontWeight.bold,
-                        ),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Icon(
+                            diffDays == 0
+                                ? Icons.celebration_rounded
+                                : Icons.schedule_rounded,
+                            size: 11,
+                            color: badgeColor,
+                          ),
+                          const SizedBox(width: 4),
+                          Text(
+                            countdownText,
+                            style: TextStyle(
+                              color: badgeColor,
+                              fontSize: 10.5,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                        ],
                       ),
                     ),
-                    if (event.connectedGroupId != null) ...[
-                      const SizedBox(height: 5),
+                    const Spacer(),
+                    if (event.connectedGroupId != null)
                       InkWell(
                         onTap: () {
                           navigateToQueendomGroup(
@@ -1150,7 +1200,7 @@ class _EventShortcutsWidgetState extends ConsumerState<EventShortcutsWidget> {
                         borderRadius: BorderRadius.circular(8),
                         child: Container(
                           padding: const EdgeInsets.symmetric(
-                              horizontal: 7, vertical: 3.5),
+                              horizontal: 8, vertical: 4),
                           decoration: BoxDecoration(
                             gradient: LinearGradient(
                               colors: event.connectedQueendom == 'Queen Pooja'
@@ -1192,7 +1242,6 @@ class _EventShortcutsWidgetState extends ConsumerState<EventShortcutsWidget> {
                           ),
                         ),
                       ),
-                    ],
                   ],
                 ),
               ],

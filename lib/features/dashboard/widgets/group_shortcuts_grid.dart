@@ -1,14 +1,23 @@
+import 'dart:async';
 import 'dart:developer';
 import 'package:cached_network_image/cached_network_image.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_auth/firebase_auth.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:hive_flutter/hive_flutter.dart';
 import 'package:rxdart/rxdart.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:worship_chat/colors.dart';
 import 'package:worship_chat/features/group/controller/group_controller.dart';
 import 'package:worship_chat/features/group/screens/group_chat_screen.dart';
+import 'package:worship_chat/common/utils/app_capabilities.dart';
+import 'package:worship_chat/features/group/screens/group_gallery_screen.dart';
+import 'package:worship_chat/features/group/widgets/queendom_badge_widget.dart';
 import 'package:worship_chat/models/group.dart';
+import 'package:worship_chat/models/user_model.dart';
 
 /// A sleek, modern grid of group chat shortcuts for the Dashboard.
 ///
@@ -29,14 +38,63 @@ class GroupShortcutsGrid extends ConsumerStatefulWidget {
 }
 
 class _GroupShortcutsGridState extends ConsumerState<GroupShortcutsGrid> {
-  static const String _hiveKey = 'dashboard_group_shortcuts_order';
+  static const String _legacyHiveKey = 'dashboard_group_shortcuts_order';
   List<String> _shortcutIds = [];
   bool _hasLoadedFromStorage = false;
+  bool _isSyncingCloud = true;
+  StreamSubscription<DocumentSnapshot>? _firestoreSubscription;
+
+  String get _effectiveUid {
+    if (widget.currentUserId.trim().isNotEmpty) {
+      return widget.currentUserId.trim();
+    }
+    final authUid = FirebaseAuth.instance.currentUser?.uid;
+    if (authUid != null && authUid.isNotEmpty) {
+      return authUid;
+    }
+    try {
+      if (Hive.isBoxOpen('userBox')) {
+        final user = Hive.box<UserModel>('userBox').get('currentUser');
+        if (user?.uid != null && user!.uid!.isNotEmpty) {
+          return user.uid!;
+        }
+      }
+    } catch (_) {}
+    return '';
+  }
+
+  String get _userHiveKey {
+    final uid = _effectiveUid;
+    return uid.isNotEmpty
+        ? 'dashboard_group_shortcuts_order_$uid'
+        : _legacyHiveKey;
+  }
+
+  String get _prefKey {
+    final uid = _effectiveUid;
+    return uid.isNotEmpty
+        ? 'dashboard_group_shortcuts_order_$uid'
+        : 'dashboard_group_shortcuts_order';
+  }
 
   @override
   void initState() {
     super.initState();
     _loadSavedShortcuts();
+  }
+
+  @override
+  void didUpdateWidget(GroupShortcutsGrid oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.currentUserId != widget.currentUserId) {
+      _loadSavedShortcuts();
+    }
+  }
+
+  @override
+  void dispose() {
+    _firestoreSubscription?.cancel();
+    super.dispose();
   }
 
   Box? _getGroupsBox() {
@@ -50,21 +108,164 @@ class _GroupShortcutsGridState extends ConsumerState<GroupShortcutsGrid> {
     return null;
   }
 
-  void _loadSavedShortcuts() {
+  Future<void> _loadSavedShortcuts() async {
+    // 1. Instantly check Hive (local cache)
     final box = _getGroupsBox();
-    if (box != null && box.containsKey(_hiveKey)) {
-      final saved = box.get(_hiveKey);
-      if (saved is List) {
-        _shortcutIds = List<String>.from(saved);
-        _hasLoadedFromStorage = true;
+    final uid = _effectiveUid;
+    List<String>? localLoaded;
+
+    if (box != null) {
+      if (uid.isNotEmpty && box.containsKey(_userHiveKey)) {
+        final saved = box.get(_userHiveKey);
+        if (saved is List && saved.isNotEmpty) {
+          localLoaded = List<String>.from(saved);
+        }
+      }
+      if (localLoaded == null && box.containsKey(_legacyHiveKey)) {
+        final legacySaved = box.get(_legacyHiveKey);
+        if (legacySaved is List && legacySaved.isNotEmpty) {
+          localLoaded = List<String>.from(legacySaved);
+          if (uid.isNotEmpty) {
+            box.put(_userHiveKey, localLoaded);
+          }
+        }
       }
     }
+
+    if (localLoaded != null && localLoaded.isNotEmpty) {
+      _shortcutIds = localLoaded;
+      _hasLoadedFromStorage = true;
+    }
+
+    // 2. Check SharedPreferences if Hive had nothing (e.g. Hive cache wiped or fresh reinstall)
+    if (!_hasLoadedFromStorage || _shortcutIds.isEmpty) {
+      try {
+        final prefs = await SharedPreferences.getInstance();
+        final prefSaved = prefs.getStringList(_prefKey) ??
+            prefs.getStringList('dashboard_group_shortcuts_order');
+        if (prefSaved != null && prefSaved.isNotEmpty && mounted) {
+          setState(() {
+            _shortcutIds = List<String>.from(prefSaved);
+            _hasLoadedFromStorage = true;
+          });
+          final box = _getGroupsBox();
+          box?.put(_userHiveKey, _shortcutIds);
+        }
+      } catch (e) {
+        log('Error reading shortcuts from SharedPreferences: $e');
+      }
+    }
+
+    // 3. Connect to Firestore (survives app reinstallation & updates across devices)
+    _listenToFirestoreShortcuts();
+  }
+
+  void _listenToFirestoreShortcuts() {
+    final uid = _effectiveUid;
+    if (uid.isEmpty) {
+      if (mounted) {
+        setState(() {
+          _isSyncingCloud = false;
+        });
+      }
+      return;
+    }
+
+    _firestoreSubscription?.cancel();
+    _firestoreSubscription = FirebaseFirestore.instance
+        .collection('users')
+        .doc(uid)
+        .snapshots()
+        .listen(
+      (docSnapshot) {
+        if (!mounted) return;
+        _isSyncingCloud = false;
+
+        if (docSnapshot.exists && docSnapshot.data() != null) {
+          final data = docSnapshot.data()!;
+          final rawShortcuts =
+              data['dashboardGroupShortcuts'] ?? data['groupShortcuts'];
+          if (rawShortcuts is List && rawShortcuts.isNotEmpty) {
+            final cloudList = List<String>.from(rawShortcuts);
+            if (!listEquals(_shortcutIds, cloudList)) {
+              setState(() {
+                _shortcutIds = cloudList;
+                _hasLoadedFromStorage = true;
+              });
+              // Keep local caches updated
+              final box = _getGroupsBox();
+              box?.put(_userHiveKey, cloudList);
+              SharedPreferences.getInstance()
+                  .then((p) => p.setStringList(_prefKey, cloudList));
+            }
+            return;
+          }
+        }
+
+        // If Firestore had no shortcuts yet, but local storage had shortcuts configured,
+        // back them up to Firestore now so future reinstalls will find them!
+        if (_shortcutIds.isNotEmpty) {
+          _syncToFirestore();
+        } else {
+          if (mounted) {
+            setState(() {
+              _hasLoadedFromStorage = false;
+            });
+          }
+        }
+      },
+      onError: (e) {
+        log('Error listening to shortcuts from Firestore: $e');
+        if (mounted) {
+          setState(() {
+            _isSyncingCloud = false;
+          });
+        }
+      },
+    );
+
+    // Timeout fallback after 2.5 seconds so UI is never blocked if offline
+    Future.delayed(const Duration(milliseconds: 2500), () {
+      if (mounted && _isSyncingCloud) {
+        setState(() {
+          _isSyncingCloud = false;
+        });
+      }
+    });
   }
 
   Future<void> _saveShortcuts() async {
+    // 1. Save to Hive
     final box = _getGroupsBox();
     if (box != null) {
-      await box.put(_hiveKey, _shortcutIds);
+      await box.put(_userHiveKey, _shortcutIds);
+      await box.put(_legacyHiveKey, _shortcutIds);
+    }
+
+    // 2. Save to SharedPreferences
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setStringList(_prefKey, _shortcutIds);
+      await prefs.setStringList(
+          'dashboard_group_shortcuts_order', _shortcutIds);
+    } catch (e) {
+      log('Error saving shortcuts to SharedPreferences: $e');
+    }
+
+    // 3. Save to Firestore (Permanent cloud backup across reinstallation/update)
+    await _syncToFirestore();
+  }
+
+  Future<void> _syncToFirestore() async {
+    final uid = _effectiveUid;
+    if (uid.isEmpty) return;
+    try {
+      await FirebaseFirestore.instance.collection('users').doc(uid).set({
+        'dashboardGroupShortcuts': _shortcutIds,
+      }, SetOptions(merge: true));
+      log('✅ Synced ${_shortcutIds.length} group shortcuts to Firestore for user $uid');
+    } catch (e) {
+      log('⚠️ Error syncing shortcuts to Firestore: $e');
     }
   }
 
@@ -97,6 +298,20 @@ class _GroupShortcutsGridState extends ConsumerState<GroupShortcutsGrid> {
       accentColor = const Color(0xFFFF4081);
     }
 
+    if (!AppCapabilities.current.chatEnabled) {
+      Navigator.push(
+        context,
+        MaterialPageRoute(
+          builder: (context) => GroupGalleryScreen(
+            groupId: group.groupId,
+            groupName: group.nameWithPosition,
+            accentColor: accentColor ?? tabColor,
+          ),
+        ),
+      );
+      return;
+    }
+
     Navigator.push(
       context,
       MaterialPageRoute(
@@ -127,6 +342,7 @@ class _GroupShortcutsGridState extends ConsumerState<GroupShortcutsGrid> {
         onSaved: (updatedIds) {
           setState(() {
             _shortcutIds = updatedIds;
+            _hasLoadedFromStorage = true;
           });
           _saveShortcuts();
         },
@@ -160,7 +376,25 @@ class _GroupShortcutsGridState extends ConsumerState<GroupShortcutsGrid> {
           return const SizedBox.shrink();
         }
 
-        // Initialize defaults if first time (no saved shortcuts)
+        // If still waiting for cloud sync on a fresh install / reinstall and no local shortcuts exist yet,
+        // wait for Firestore to respond instead of prematurely overriding user's shortcuts!
+        if (_isSyncingCloud && !_hasLoadedFromStorage && _shortcutIds.isEmpty) {
+          return const SizedBox(
+            height: 110,
+            child: Center(
+              child: SizedBox(
+                width: 24,
+                height: 24,
+                child: CircularProgressIndicator(
+                  strokeWidth: 2,
+                  valueColor: AlwaysStoppedAnimation<Color>(tabColor),
+                ),
+              ),
+            ),
+          );
+        }
+
+        // Initialize defaults ONLY if first time ever (Firestore checked and has no shortcuts, local storage empty)
         if (!_hasLoadedFromStorage && _shortcutIds.isEmpty) {
           final defaultCount = allGroups.length > 8 ? 8 : allGroups.length;
           _shortcutIds = allGroups.take(defaultCount).map((g) => g.groupId).toList();
@@ -509,6 +743,23 @@ class _GroupShortcutsGridState extends ConsumerState<GroupShortcutsGrid> {
                     ),
                   ],
                 ),
+              ),
+            ),
+
+          // Queendom Royal Badge (top-left corner)
+          if (!isGhost &&
+              QueendomBadgeHelper.detectQueendom(
+                    queendom: group.queendom,
+                    name: group.name,
+                  ) !=
+                  null)
+            Positioned(
+              top: 5,
+              left: 5,
+              child: QueendomBadgeWidget(
+                queendom: group.queendom,
+                name: group.name,
+                size: 22,
               ),
             ),
         ],

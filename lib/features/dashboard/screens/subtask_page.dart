@@ -7,6 +7,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:worship_chat/colors.dart';
 import 'package:worship_chat/common/utils/utils.dart';
+import 'package:worship_chat/common/widgets/skeleton_loader.dart';
 import 'package:worship_chat/features/dashboard/controller/todo_controller.dart';
 import 'package:worship_chat/features/dashboard/providers/todo_providers.dart';
 import 'package:worship_chat/models/subtasks.dart';
@@ -1197,9 +1198,7 @@ class _SubtasksPageState extends ConsumerState<SubtasksPage> {
               ],
             );
           },
-          loading: () => const Center(
-            child: CircularProgressIndicator(color: tabColor),
-          ),
+          loading: () => const SubtasksPageSkeleton(),
           error: (error, stack) => Center(
             child: Text(
               'Error: $error',

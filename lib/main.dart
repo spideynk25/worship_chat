@@ -7,11 +7,15 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:hive_flutter/hive_flutter.dart';
 import 'package:worship_chat/colors.dart';
+import 'package:worship_chat/common/utils/app_capabilities.dart';
+import 'package:worship_chat/firebase_options.dart';
 import 'package:worship_chat/common/utils/fcm_token_manager.dart';
 import 'package:worship_chat/common/utils/firebase_notification_service.dart';
+import 'package:worship_chat/common/utils/location_service.dart';
 import 'package:worship_chat/common/utils/media_cache_service.dart';
-import 'package:worship_chat/common/widgets/error_screen.dart';
+import 'package:worship_chat/common/utils/wish_reminder_service.dart';
 import 'package:worship_chat/features/auth/screens/login_screen.dart';
+import 'package:worship_chat/features/group/services/roleplay_service.dart';
 import 'package:worship_chat/features/landing/screens/landing_screen.dart';
 import 'package:worship_chat/features/home/screens/home_screen.dart';
 import 'package:worship_chat/models/group_chat_message_model.dart';
@@ -31,37 +35,86 @@ final GlobalKey<NavigatorState> navigatorKey = GlobalKey<NavigatorState>();
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
-  await Firebase.initializeApp();
+  await AppCapabilities.initialize();
+  await Firebase.initializeApp(options: DefaultFirebaseOptions.currentPlatform);
 
-  // Initialize Android notification channels early at boot
-  await createDefaultNotificationChannels();
-
-  // Background FCM
-  FirebaseMessaging.onBackgroundMessage(_firebaseMessagingBackgroundHandler);
-
-  // Permissions
-  await FirebaseMessaging.instance.requestPermission(
-    alert: true,
-    badge: true,
-    sound: true,
-  );
+  if (AppCapabilities.current.notificationsEnabled) {
+    await createDefaultNotificationChannels();
+    FirebaseMessaging.onBackgroundMessage(_firebaseMessagingBackgroundHandler);
+  } else {
+    // Revoke any token from an older tablet installation without changing
+    // the account's phone token in Firestore.
+    await FCMTokenManager.disableForGalleryDevice();
+  }
 
   // Local cache & storage
   await MediaCacheService().init();
 
-  await Hive.initFlutter();
+  await Hive.initFlutter('worship_chat');
   Hive.registerAdapter(UserModelAdapter());
   Hive.registerAdapter(OneToOneMessageModelAdapter());
   Hive.registerAdapter(GroupChatMessageModelAdapter());
   Hive.registerAdapter(GroupGalleryImageAdapter());
-  await Hive.openBox<UserModel>('userBox');
-  await Hive.openBox('messages');
-  await Hive.openBox('contacts_cache');
-  await Hive.openBox('groups_cache');
+  await _safeOpenHiveBox<UserModel>('userBox');
+  if (AppCapabilities.current.chatEnabled) {
+    await _safeOpenHiveBox('messages');
+    await _safeOpenHiveBox('contacts_cache');
+    await _safeOpenHiveBox('roleplay_settings');
+    await _safeOpenHiveBox('displayImage');
+    unawaited(LocationService.instance.resumeActiveLiveLocationTracking());
+    unawaited(RoleplayService.instance.restoreActiveSessions());
+  }
+  await _safeOpenHiveBox('groups_cache');
 
-  await FCMTokenManager.initializeFCM();
+  if (AppCapabilities.current.notificationsEnabled) {
+    await FCMTokenManager.initializeFCM();
+    if (AppCapabilities.current.chatEnabled) {
+      WishReminderService.instance.start();
+    }
+  }
 
-  runApp(const ProviderScope(child: MyApp()));
+  // Check if launched directly from a notification on cold start
+  Widget? initialChatScreen;
+  if (AppCapabilities.current.notificationsEnabled &&
+      AppCapabilities.current.chatEnabled) {
+    try {
+      final user = FirebaseAuth.instance.currentUser;
+      if (user != null && user.emailVerified) {
+        final notifData =
+            await FirebaseNotificationService.getInitialNotificationData();
+        if (notifData != null) {
+          initialChatScreen =
+              await FirebaseNotificationService.buildChatScreenFromNotificationData(
+                notifData,
+              );
+          if (initialChatScreen != null) {
+            FirebaseNotificationService.clearPendingNotification();
+            FirebaseNotificationService.isAppReady = true;
+          }
+        }
+      }
+    } catch (e) {
+      debugPrint('⚠️ Error resolving initial notification in main: $e');
+    }
+  }
+
+  runApp(ProviderScope(child: MyApp(initialChatScreen: initialChatScreen)));
+}
+
+/// Safely opens a Hive box, handling potential lock contention on desktop/mobile
+Future<Box<T>?> _safeOpenHiveBox<T>(String boxName) async {
+  try {
+    return await Hive.openBox<T>(boxName);
+  } catch (e) {
+    debugPrint('⚠️ Initial attempt to open Hive box "$boxName" failed: $e');
+    try {
+      await Future.delayed(const Duration(milliseconds: 300));
+      return await Hive.openBox<T>(boxName);
+    } catch (retryError) {
+      debugPrint('⚠️ Retry opening Hive box "$boxName" failed: $retryError');
+      return null;
+    }
+  }
 }
 
 /// ------------------------------
@@ -70,10 +123,15 @@ Future<void> main() async {
 @pragma('vm:entry-point')
 Future<void> _firebaseMessagingBackgroundHandler(RemoteMessage message) async {
   WidgetsFlutterBinding.ensureInitialized();
+  await AppCapabilities.initialize(background: true);
+  if (!AppCapabilities.current.notificationsEnabled) return;
   try {
-    await Firebase.initializeApp();
+    await Firebase.initializeApp(
+      options: DefaultFirebaseOptions.currentPlatform,
+    );
   } catch (_) {}
   await FirebaseNotificationService.ensureStaticInitialized();
+  await FirebaseNotificationService.ensureHiveInitialized();
   await FirebaseNotificationService.showNotificationFromRemoteMessage(message);
 }
 
@@ -81,7 +139,8 @@ Future<void> _firebaseMessagingBackgroundHandler(RemoteMessage message) async {
 /// APP
 /// ------------------------------
 class MyApp extends ConsumerStatefulWidget {
-  const MyApp({super.key});
+  final Widget? initialChatScreen;
+  const MyApp({super.key, this.initialChatScreen});
 
   static ThemeData get theme => ThemeData.dark().copyWith(
     scaffoldBackgroundColor: backgroundColor,
@@ -162,13 +221,25 @@ class _MyAppState extends ConsumerState<MyApp> with WidgetsBindingObserver {
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
-    FirebaseNotificationService(navigatorKey: navigatorKey).initialize();
+    if (AppCapabilities.current.notificationsEnabled) {
+      FirebaseNotificationService(navigatorKey: navigatorKey).initialize();
+    }
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      if (AppCapabilities.current.notificationsEnabled &&
+          AppCapabilities.current.chatEnabled) {
+        WishReminderService.instance.checkReminders();
+      }
+    }
   }
 
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
-
+    WishReminderService.instance.stop();
     super.dispose();
   }
 
@@ -180,7 +251,7 @@ class _MyAppState extends ConsumerState<MyApp> with WidgetsBindingObserver {
       navigatorKey: navigatorKey,
       theme: MyApp.theme,
       onGenerateRoute: (settings) => generateRoute(settings),
-      home: const RootGate(),
+      home: widget.initialChatScreen ?? const RootGate(),
     );
   }
 }
@@ -198,53 +269,169 @@ class RootGate extends StatefulWidget {
 }
 
 class _RootGateState extends State<RootGate> {
+  bool _hasNavigated = false;
+  Timer? _watchdogTimer;
+  Widget? _destinationScreen;
+
   @override
   void initState() {
     super.initState();
+    // Safety watchdog: Guarantees the splash screen NEVER hangs or freezes.
+    // If initialization does not finish within 5s, force navigation immediately!
+    _watchdogTimer = Timer(const Duration(milliseconds: 5000), () {
+      if (!_hasNavigated && mounted) {
+        debugPrint('⏱️ Splash watchdog triggered: forcing safe navigation');
+        _navigateToDestination(_computeSafeFallbackDestination());
+      }
+    });
+
     _resolveAndNavigate();
   }
 
+  @override
+  void dispose() {
+    _watchdogTimer?.cancel();
+    super.dispose();
+  }
+
+  Widget _computeSafeFallbackDestination() {
+    try {
+      final user = FirebaseAuth.instance.currentUser;
+      if (user != null && user.emailVerified) {
+        return const HomeScreen();
+      }
+      return AppCapabilities.current.chatEnabled
+          ? const LandingScreen()
+          : LoginScreen();
+    } catch (_) {
+      return LoginScreen();
+    }
+  }
+
+  void _navigateToDestination(
+    Widget target, {
+    Duration duration = const Duration(milliseconds: 350),
+  }) {
+    if (_hasNavigated || !mounted) return;
+    _hasNavigated = true;
+    _watchdogTimer?.cancel();
+    FirebaseNotificationService.isAppReady = true;
+
+    // Fail-safe 1: Set destination screen for widget-tree fallback
+    if (mounted) {
+      setState(() {
+        _destinationScreen = target;
+      });
+    }
+
+    // Fail-safe 2: Perform smooth fade transition via navigatorKey or context
+    try {
+      final nav = navigatorKey.currentState ?? Navigator.of(context);
+      nav.pushReplacement(
+        PageRouteBuilder(
+          pageBuilder: (_, __, ___) => target,
+          transitionsBuilder: (_, animation, __, child) => FadeTransition(
+            opacity: CurvedAnimation(parent: animation, curve: Curves.easeOut),
+            child: child,
+          ),
+          transitionDuration: duration,
+        ),
+      );
+    } catch (e) {
+      debugPrint('⚠️ Push replacement error in RootGate: $e');
+    }
+
+    if (AppCapabilities.current.notificationsEnabled) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        FirebaseNotificationService.checkAndDispatchPendingNotification();
+      });
+    }
+  }
+
   Future<void> _resolveAndNavigate() async {
-    // Keep the splash visible for at least 800 ms so the animation is seen
+    // Keep the splash visible for at least 750 ms so the animation is seen
     // and we don't get a jarring instant replacement.
-    final minSplashFuture = Future.delayed(const Duration(milliseconds: 800));
+    final minSplashFuture = Future.delayed(const Duration(milliseconds: 750));
 
     Widget destination;
     Widget? directChatScreen;
 
     try {
-      User? user = FirebaseAuth.instance.currentUser;
+      User? user;
+      try {
+        user = FirebaseAuth.instance.currentUser;
+      } catch (authError) {
+        debugPrint(
+          '⚠️ Note: FirebaseAuth.currentUser error (e.g. macOS keychain access): $authError',
+        );
+        user = null;
+      }
 
       if (user != null) {
-        // Reload is CRITICAL for Android reliability
-        await user.reload();
-        user = FirebaseAuth.instance.currentUser;
-        if (user != null) {
+        try {
+          // Timeout reload to max 1.5 seconds so slow/offline networks never freeze boot
+          await user.reload().timeout(
+            const Duration(milliseconds: 1500),
+            onTimeout: () {
+              debugPrint(
+                '⚠️ user.reload timed out; continuing with cached session',
+              );
+            },
+          );
+          user = FirebaseAuth.instance.currentUser;
+        } catch (reloadError) {
+          debugPrint('⚠️ Note: FirebaseAuth reload error: $reloadError');
+        }
+
+        if (user != null && AppCapabilities.current.notificationsEnabled) {
           try {
-            await FCMTokenManager.refreshAndSaveFCMToken();
+            await FCMTokenManager.refreshAndSaveFCMToken().timeout(
+              const Duration(milliseconds: 1500),
+              onTimeout: () {
+                debugPrint('⚠️ FCMTokenManager refresh timed out');
+                return null;
+              },
+            );
           } catch (e) {
             debugPrint('Note: initial token refresh error: $e');
           }
         }
 
         if (user != null && user.emailVerified) {
-          // Pre-warm Hive user cache & check cold-start notification in parallel
-          final prewarmFuture = Future.any([
-            _prewarmUserCache(user.uid),
-            Future.delayed(const Duration(seconds: 3)),
-          ]);
+          // Pre-warm Hive user cache & check cold-start notification in parallel with timeout
+          final prewarmFuture = _prewarmUserCache(user.uid).timeout(
+            const Duration(milliseconds: 1500),
+            onTimeout: () {
+              debugPrint('⚠️ _prewarmUserCache timed out');
+            },
+          );
 
           final notificationFuture =
-              FirebaseNotificationService.getInitialNotificationData();
+              AppCapabilities.current.notificationsEnabled
+              ? FirebaseNotificationService.getInitialNotificationData()
+                    .timeout(
+                      const Duration(milliseconds: 1500),
+                      onTimeout: () => null,
+                    )
+              : Future<Map<String, dynamic>?>.value(null);
 
-          await Future.wait([prewarmFuture, notificationFuture]);
+          try {
+            await Future.wait([prewarmFuture, notificationFuture]);
+          } catch (_) {}
 
-          final notifData = await notificationFuture;
+          final notifData = await notificationFuture.catchError((_) => null);
           if (notifData != null) {
-            directChatScreen =
-                await FirebaseNotificationService.buildChatScreenFromNotificationData(
-                  notifData,
-                );
+            try {
+              directChatScreen =
+                  await FirebaseNotificationService.buildChatScreenFromNotificationData(
+                    notifData,
+                  ).timeout(
+                    const Duration(milliseconds: 1500),
+                    onTimeout: () => null,
+                  );
+            } catch (e) {
+              debugPrint('⚠️ buildChatScreenFromNotificationData error: $e');
+            }
           }
 
           destination = const HomeScreen();
@@ -252,61 +439,50 @@ class _RootGateState extends State<RootGate> {
           destination = LoginScreen();
         }
       } else {
-        destination = const LandingScreen();
+        destination = AppCapabilities.current.chatEnabled
+            ? const LandingScreen()
+            : const LoginScreen();
       }
     } catch (e) {
-      destination = ErrorScreen(error: e.toString());
+      debugPrint('⚠️ _resolveAndNavigate error: $e');
+      destination = _computeSafeFallbackDestination();
     }
 
-    // Ensure minimum splash duration before navigating
-    await minSplashFuture;
+    // Check if a pending notification was received during initialization
+    if (directChatScreen == null &&
+        AppCapabilities.current.notificationsEnabled) {
+      try {
+        final pendingData =
+            FirebaseNotificationService.getAndClearPendingNotificationData();
+        if (pendingData != null) {
+          directChatScreen =
+              await FirebaseNotificationService.buildChatScreenFromNotificationData(
+                pendingData,
+              ).timeout(
+                const Duration(milliseconds: 1000),
+                onTimeout: () => null,
+              );
+        }
+      } catch (e) {
+        debugPrint('⚠️ pending notification check error: $e');
+      }
+    }
 
-    if (!mounted) return;
+    if (!mounted || _hasNavigated) return;
 
     if (directChatScreen != null) {
       FirebaseNotificationService.clearPendingNotification();
-      FirebaseNotificationService.isAppReady = true;
-
-      // 1. Mount HomeScreen underneath with zero transition so back navigation returns to HomeScreen
-      Navigator.of(context).pushReplacement(
-        PageRouteBuilder(
-          pageBuilder: (_, __, ___) => const HomeScreen(),
-          transitionDuration: Duration.zero,
-        ),
+      _navigateToDestination(
+        directChatScreen,
+        duration: const Duration(milliseconds: 150),
       );
-
-      // 2. Mount the chat screen directly on top with smooth fade transition
-      Navigator.of(context).push(
-        PageRouteBuilder(
-          pageBuilder: (_, __, ___) => directChatScreen!,
-          transitionsBuilder: (_, animation, __, child) => FadeTransition(
-            opacity: CurvedAnimation(parent: animation, curve: Curves.easeOut),
-            child: child,
-          ),
-          transitionDuration: const Duration(milliseconds: 300),
-        ),
-      );
-    } else {
-      FirebaseNotificationService.isAppReady = true;
-
-      // Use pushReplacement + fade so the SplashScreen is cleanly replaced.
-      // This avoids the blank-screen race that setState rebuilds can cause.
-      Navigator.of(context).pushReplacement(
-        PageRouteBuilder(
-          pageBuilder: (_, __, ___) => destination,
-          transitionsBuilder: (_, animation, __, child) => FadeTransition(
-            opacity: CurvedAnimation(parent: animation, curve: Curves.easeOut),
-            child: child,
-          ),
-          transitionDuration: const Duration(milliseconds: 400),
-        ),
-      );
-
-      // If a notification was tapped right as the app finished booting, dispatch it
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        FirebaseNotificationService.checkAndDispatchPendingNotification();
-      });
+      return;
     }
+
+    // Ensure minimum splash duration ONLY for normal launcher launch
+    await minSplashFuture;
+
+    _navigateToDestination(destination);
   }
 
   Future<void> _prewarmUserCache(String uid) async {
@@ -330,7 +506,9 @@ class _RootGateState extends State<RootGate> {
 
   @override
   Widget build(BuildContext context) {
-    // Always show SplashScreen — navigation is handled imperatively above.
+    if (_destinationScreen != null) {
+      return _destinationScreen!;
+    }
     return const SplashScreen();
   }
 }

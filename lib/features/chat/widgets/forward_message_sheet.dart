@@ -142,9 +142,17 @@ class ForwardTarget {
 }
 
 class ForwardMessageSheet extends ConsumerStatefulWidget {
-  final ForwardMessagePayload payload;
+  final List<ForwardMessagePayload> payloads;
 
-  const ForwardMessageSheet({super.key, required this.payload});
+  ForwardMessageSheet({
+    super.key,
+    ForwardMessagePayload? payload,
+    List<ForwardMessagePayload>? payloads,
+  }) : payloads = payloads ?? (payload != null ? [payload] : const []);
+
+  ForwardMessagePayload get payload => payloads.isNotEmpty
+      ? payloads.first
+      : const ForwardMessagePayload(text: '', messageType: 'text');
 
   static Future<void> show(
     BuildContext context,
@@ -156,6 +164,19 @@ class ForwardMessageSheet extends ConsumerStatefulWidget {
       backgroundColor: Colors.transparent,
       barrierColor: Colors.black.withValues(alpha: 0.65),
       builder: (ctx) => ForwardMessageSheet(payload: payload),
+    );
+  }
+
+  static Future<void> showMultiple(
+    BuildContext context,
+    List<ForwardMessagePayload> payloads,
+  ) {
+    return showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      barrierColor: Colors.black.withValues(alpha: 0.65),
+      builder: (ctx) => ForwardMessageSheet(payloads: payloads),
     );
   }
 
@@ -172,7 +193,7 @@ class _ForwardMessageSheetState extends ConsumerState<ForwardMessageSheet>
   String _searchQuery = '';
   bool _isSending = false;
 
-  bool get _hasGalleryTab => widget.payload.isImage;
+  bool get _hasGalleryTab => widget.payloads.any((p) => p.isImage);
 
   @override
   void initState() {
@@ -208,17 +229,6 @@ class _ForwardMessageSheetState extends ConsumerState<ForwardMessageSheet>
     final messenger = ScaffoldMessenger.of(context);
 
     try {
-      final payload = widget.payload;
-      final mediaUrl = payload.effectiveMediaUrl;
-      final cleanText = payload.text;
-      final effectiveFile = mediaUrl.isNotEmpty
-          ? mediaUrl
-          : (!payload.isText &&
-                  (payload.text.startsWith('http://') ||
-                      payload.text.startsWith('https://'))
-              ? payload.text
-              : null);
-
       UserModel? userData;
       try {
         userData = await ref.read(userDataAuthProvider.future);
@@ -232,79 +242,95 @@ class _ForwardMessageSheetState extends ConsumerState<ForwardMessageSheet>
           FirebaseAuth.instance.currentUser?.displayName ??
           'User';
 
-      int successCount = 0;
+      int totalItemsSent = 0;
 
       for (final target in _selectedTargets) {
         if (!mounted) break;
-        try {
-          switch (target.type) {
-            case ForwardTargetType.directChat:
-              final contact = target.data as ChatContact;
-              if (contact.uid.isEmpty) continue;
-              await ref.read(chatControllerProvider).sendTextMessage(
-                    context,
-                    cleanText,
-                    contact.uid,
-                    payload.messageType,
-                    effectiveFile,
-                    contact.fcmToken ?? '',
-                    true,
-                    contact.chatBackgroundUrl,
-                    "chat",
-                    clearReply: true,
-                  );
-              successCount++;
-              break;
+        for (final payload in widget.payloads) {
+          if (!mounted) break;
+          try {
+            final mediaUrl = payload.effectiveMediaUrl;
+            final cleanText = payload.text;
+            final effectiveFile = mediaUrl.isNotEmpty
+                ? mediaUrl
+                : (!payload.isText &&
+                        (payload.text.startsWith('http://') ||
+                            payload.text.startsWith('https://'))
+                    ? payload.text
+                    : null);
 
-            case ForwardTargetType.groupChat:
-              final group = target.data as GroupModel;
-              if (group.groupId.isEmpty) continue;
-              await ref.read(groupControllerProvider).sendTextMessage(
-                    context,
-                    cleanText,
-                    group.groupId,
-                    payload.messageType,
-                    effectiveFile,
-                    group.fcmTokens,
-                    group.membersUid,
-                    group.name,
-                    "group",
-                    clearReply: true,
-                  );
-              successCount++;
-              break;
-
-            case ForwardTargetType.groupGallery:
-              final group = target.data as GroupModel;
-              if (group.groupId.isEmpty) continue;
-              final imageToSave =
-                  mediaUrl.isNotEmpty ? mediaUrl : payload.text;
-              if (imageToSave.isNotEmpty) {
-                final ok = await ref
-                    .read(groupGalleryControllerProvider)
-                    .addGalleryImageFromUrl(
-                      groupId: group.groupId,
-                      imageUrl: imageToSave,
-                      uploaderName: uploaderName,
-                      caption: payload.caption ??
-                          (cleanText.isNotEmpty && cleanText != imageToSave
-                              ? cleanText
-                              : null),
+            switch (target.type) {
+              case ForwardTargetType.directChat:
+                final contact = target.data as ChatContact;
+                if (contact.uid.isEmpty) continue;
+                await ref.read(chatControllerProvider).sendTextMessage(
+                      context,
+                      cleanText,
+                      contact.uid,
+                      payload.messageType,
+                      effectiveFile,
+                      contact.fcmToken ?? '',
+                      true,
+                      contact.chatBackgroundUrl,
+                      "chat",
+                      clearReply: true,
                     );
-                if (ok) successCount++;
-              }
-              break;
+                totalItemsSent++;
+                break;
+
+              case ForwardTargetType.groupChat:
+                final group = target.data as GroupModel;
+                if (group.groupId.isEmpty) continue;
+                await ref.read(groupControllerProvider).sendTextMessage(
+                      context,
+                      cleanText,
+                      group.groupId,
+                      payload.messageType,
+                      effectiveFile,
+                      group.fcmTokens,
+                      group.membersUid,
+                      group.name,
+                      "group",
+                      clearReply: true,
+                    );
+                totalItemsSent++;
+                break;
+
+              case ForwardTargetType.groupGallery:
+                final group = target.data as GroupModel;
+                if (group.groupId.isEmpty) continue;
+                if (!payload.isImage) continue;
+                final imageToSave =
+                    mediaUrl.isNotEmpty ? mediaUrl : payload.text;
+                if (imageToSave.isNotEmpty) {
+                  final ok = await ref
+                      .read(groupGalleryControllerProvider)
+                      .addGalleryImageFromUrl(
+                        groupId: group.groupId,
+                        imageUrl: imageToSave,
+                        uploaderName: uploaderName,
+                        caption: payload.caption ??
+                            (cleanText.isNotEmpty && cleanText != imageToSave
+                                ? cleanText
+                                : null),
+                      );
+                  if (ok) totalItemsSent++;
+                }
+                break;
+            }
+          } catch (e) {
+            log('❌ Error forwarding item to ${target.name}: $e');
           }
-        } catch (e) {
-          log('❌ Error forwarding to ${target.name}: $e');
         }
       }
 
       if (!mounted) return;
 
-      final successMsg =
-          'Forwarded to $successCount destination${successCount > 1 ? 's' : ''}';
-      final hasSuccess = successCount > 0;
+      final successCount = _selectedTargets.length;
+      final successMsg = widget.payloads.length > 1
+          ? 'Forwarded ${widget.payloads.length} items to $successCount destination${successCount > 1 ? 's' : ''}'
+          : 'Forwarded to $successCount destination${successCount > 1 ? 's' : ''}';
+      final hasSuccess = totalItemsSent > 0;
 
       Navigator.pop(context);
 
@@ -573,7 +599,7 @@ class _ForwardMessageSheetState extends ConsumerState<ForwardMessageSheet>
                   ),
                   if (_hasGalleryTab)
                     _GalleriesTab(
-                      payload: widget.payload,
+                      payloads: widget.payloads,
                       searchQuery: _searchQuery,
                       selectedTargets: _selectedTargets,
                       onToggleTarget: _toggleTarget,
@@ -597,6 +623,139 @@ class _ForwardMessageSheetState extends ConsumerState<ForwardMessageSheet>
   }
 
   Widget _buildMessagePreviewBanner() {
+    if (widget.payloads.isEmpty) return const SizedBox.shrink();
+
+    if (widget.payloads.length > 1) {
+      final count = widget.payloads.length;
+      final first = widget.payloads.first;
+      final firstMediaUrl = first.effectiveMediaUrl;
+      final hasVideos = widget.payloads.any((p) => p.isVideo);
+      final hasPhotos = widget.payloads.any((p) => p.isImage);
+
+      String summaryLabel;
+      if (hasPhotos && !hasVideos) {
+        summaryLabel = '$count photos';
+      } else if (hasVideos && !hasPhotos) {
+        summaryLabel = '$count videos';
+      } else {
+        summaryLabel = '$count items';
+      }
+
+      final sourceGroup = first.sourceGroupName;
+
+      return Container(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+        decoration: BoxDecoration(
+          color: const Color(0xFF1A1628),
+          borderRadius: BorderRadius.circular(14),
+          border: Border.all(color: Colors.white.withValues(alpha: 0.08)),
+        ),
+        child: Row(
+          children: [
+            // Media thumbnail with stack indicator badge
+            Stack(
+              clipBehavior: Clip.none,
+              children: [
+                if (first.isImage && firstMediaUrl.isNotEmpty)
+                  ClipRRect(
+                    borderRadius: BorderRadius.circular(8),
+                    child: Image.network(
+                      firstMediaUrl,
+                      width: 42,
+                      height: 42,
+                      fit: BoxFit.cover,
+                      errorBuilder: (_, __, ___) => Container(
+                        width: 42,
+                        height: 42,
+                        color: tabColor.withValues(alpha: 0.2),
+                        child: const Icon(Icons.collections_rounded,
+                            color: Colors.white, size: 20),
+                      ),
+                    ),
+                  )
+                else
+                  Container(
+                    width: 42,
+                    height: 42,
+                    decoration: BoxDecoration(
+                      color: tabColor.withValues(alpha: 0.18),
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    child: const Icon(Icons.collections_rounded,
+                        color: Colors.white, size: 22),
+                  ),
+                Positioned(
+                  right: -4,
+                  bottom: -4,
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 5, vertical: 1.5),
+                    decoration: BoxDecoration(
+                      color: tabColor,
+                      borderRadius: BorderRadius.circular(10),
+                      border: Border.all(
+                        color: const Color(0xFF1A1628),
+                        width: 1.5,
+                      ),
+                    ),
+                    child: Text(
+                      '$count',
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontSize: 9.5,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Row(
+                    children: [
+                      const Icon(Icons.forward_rounded,
+                          color: tabColor, size: 14),
+                      const SizedBox(width: 4),
+                      Expanded(
+                        child: Text(
+                          sourceGroup != null
+                              ? 'Forward from $sourceGroup'
+                              : 'Forward multiple items',
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(
+                            color: tabColor,
+                            fontSize: 11,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 2),
+                  Text(
+                    summaryLabel,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                      color: Colors.white,
+                      fontSize: 13,
+                      fontWeight: FontWeight.w500,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      );
+    }
+
     final payload = widget.payload;
     final mediaUrl = payload.effectiveMediaUrl;
 
@@ -1234,13 +1393,13 @@ class _GroupsTabState extends ConsumerState<_GroupsTab>
 // ─────────────────────────────────────────────────────────────────────────────
 
 class _GalleriesTab extends ConsumerStatefulWidget {
-  final ForwardMessagePayload payload;
+  final List<ForwardMessagePayload> payloads;
   final String searchQuery;
   final Set<ForwardTarget> selectedTargets;
   final ValueChanged<ForwardTarget> onToggleTarget;
 
   const _GalleriesTab({
-    required this.payload,
+    required this.payloads,
     required this.searchQuery,
     required this.selectedTargets,
     required this.onToggleTarget,
@@ -1370,9 +1529,13 @@ class _GalleriesTabState extends ConsumerState<_GalleriesTab>
     }
 
     final query = widget.searchQuery.toLowerCase();
+    final sourceGroupIds = widget.payloads
+        .where((p) => p.isFromGallery && p.sourceGroupId != null)
+        .map((p) => p.sourceGroupId!)
+        .toSet();
+
     final allMatching = _groups.where((g) {
-      if (widget.payload.isFromGallery &&
-          widget.payload.sourceGroupId == g.groupId) {
+      if (sourceGroupIds.contains(g.groupId)) {
         return false;
       }
       if (query.isEmpty) return true;

@@ -1,7 +1,9 @@
+import 'dart:developer';
 import 'dart:io';
 import 'dart:ui';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:image_picker/image_picker.dart';
 import 'package:video_player/video_player.dart';
 import 'package:worship_chat/colors.dart';
 import 'package:worship_chat/common/utils/utils.dart';
@@ -18,7 +20,9 @@ class ConfirmStatusScreen extends ConsumerStatefulWidget {
 }
 
 class _ConfirmStatusScreenState extends ConsumerState<ConfirmStatusScreen> {
-  File? _file;
+  List<File> _files = [];
+  int _currentIndex = 0;
+  late final PageController _pageController;
   bool _isVideo = false;
   bool _argsLoaded = false;
 
@@ -26,6 +30,13 @@ class _ConfirmStatusScreenState extends ConsumerState<ConfirmStatusScreen> {
   bool _videoReady = false;
   bool _muted = false;
   bool _isUploading = false;
+  int _uploadProgressIndex = 0;
+
+  @override
+  void initState() {
+    super.initState();
+    _pageController = PageController();
+  }
 
   @override
   void didChangeDependencies() {
@@ -37,15 +48,22 @@ class _ConfirmStatusScreenState extends ConsumerState<ConfirmStatusScreen> {
         ModalRoute.of(context)?.settings.arguments as Map<String, dynamic>?;
     if (args == null) return;
 
-    _file = args['file'] as File;
+    if (args['files'] is List<File>) {
+      _files = List<File>.from(args['files'] as List<File>);
+    } else if (args['files'] is List) {
+      _files = (args['files'] as List).whereType<File>().toList();
+    } else if (args['file'] is File) {
+      _files = [args['file'] as File];
+    }
     _isVideo = args['isVideo'] as bool? ?? false;
 
-    if (_isVideo) _initVideo();
+    if (_isVideo && _files.isNotEmpty) {
+      _initVideo(_files.first);
+    }
   }
 
-  Future<void> _initVideo() async {
-    if (_file == null) return;
-    final controller = VideoPlayerController.file(_file!);
+  Future<void> _initVideo(File file) async {
+    final controller = VideoPlayerController.file(file);
     _videoController = controller;
     await controller.initialize();
     if (!mounted) return;
@@ -60,13 +78,43 @@ class _ConfirmStatusScreenState extends ConsumerState<ConfirmStatusScreen> {
     _videoController?.setVolume(_muted ? 0 : 1);
   }
 
+  Future<void> _pickMorePhotos() async {
+    try {
+      final pickedList = await ImagePicker().pickMultiImage(imageQuality: 90);
+      if (pickedList.isNotEmpty && mounted) {
+        setState(() {
+          _files.addAll(pickedList.map((x) => File(x.path)));
+        });
+      }
+    } catch (e) {
+      log('Error picking more photos: $e');
+    }
+  }
+
+  void _removePhoto(int index) {
+    if (_files.length <= 1) {
+      Navigator.pop(context);
+      return;
+    }
+    setState(() {
+      _files.removeAt(index);
+      if (_currentIndex >= _files.length) {
+        _currentIndex = _files.length - 1;
+      }
+    });
+    if (_pageController.hasClients) {
+      _pageController.jumpToPage(_currentIndex);
+    }
+  }
+
   Future<void> _upload() async {
-    if (_file == null) return;
-    setState(() => _isUploading = true);
+    if (_files.isEmpty) return;
+    setState(() {
+      _isUploading = true;
+      _uploadProgressIndex = 0;
+    });
     _videoController?.pause();
 
-    // FIX: watch instead of read so we always get the latest value.
-    // If still loading, wait up to 5 seconds for the user data to arrive.
     var userAsync = ref.read(userDataAuthProvider);
     if (userAsync.value == null) {
       for (int i = 0; i < 10; i++) {
@@ -86,27 +134,38 @@ class _ConfirmStatusScreenState extends ConsumerState<ConfirmStatusScreen> {
       return;
     }
 
-    await ref.read(statusControllerProvider).uploadStatus(
+    await ref.read(statusControllerProvider).uploadMultipleStatuses(
           userName: user.name ?? '',
           profilePic: user.profilePic ?? '',
           email: user.email ?? '',
-          statusFile: _file!,
+          statusFiles: _files,
           isVideo: _isVideo,
           context: context,
+          onProgress: (current, total) {
+            if (mounted) {
+              setState(() {
+                _uploadProgressIndex = current;
+              });
+            }
+          },
         );
 
-    if (mounted) Navigator.pop(context);
+    if (mounted) {
+      Navigator.pop(context);
+      AppSnackBar.success(context, "Story shared successfully!");
+    }
   }
 
   @override
   void dispose() {
+    _pageController.dispose();
     _videoController?.dispose();
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
-    if (_file == null) {
+    if (_files.isEmpty) {
       return const Scaffold(
         backgroundColor: Colors.black,
         body: Center(child: CircularProgressIndicator(color: Colors.white)),
@@ -114,21 +173,21 @@ class _ConfirmStatusScreenState extends ConsumerState<ConfirmStatusScreen> {
     }
 
     final size = MediaQuery.of(context).size;
+    final currentFile = _files[_currentIndex.clamp(0, _files.length - 1)];
 
     return Scaffold(
       backgroundColor: Colors.black,
       body: Stack(
         fit: StackFit.expand,
         children: [
-
           // ── Full-screen blurred background ─────────────────────────
           if (!_isVideo)
             ImageFiltered(
               imageFilter: ImageFilter.blur(sigmaX: 28, sigmaY: 28),
               child: Image.file(
-                _file!,
+                currentFile,
                 fit: BoxFit.cover,
-                color: Colors.black.withOpacity(0.35),
+                color: Colors.black.withValues(alpha: 0.35),
                 colorBlendMode: BlendMode.darken,
               ),
             )
@@ -137,19 +196,24 @@ class _ConfirmStatusScreenState extends ConsumerState<ConfirmStatusScreen> {
 
           // ── Media preview centered ──────────────────────────────────
           Center(
-            child: _isVideo ? _buildVideoPreview() : _buildImagePreview(size),
+            child: _isVideo
+                ? _buildVideoPreview()
+                : _buildMultiImagePreview(size),
           ),
 
           // ── Top gradient scrim ──────────────────────────────────────
           Positioned(
-            top: 0, left: 0, right: 0, height: 130,
+            top: 0,
+            left: 0,
+            right: 0,
+            height: 130,
             child: DecoratedBox(
               decoration: BoxDecoration(
                 gradient: LinearGradient(
                   begin: Alignment.topCenter,
                   end: Alignment.bottomCenter,
                   colors: [
-                    Colors.black.withOpacity(0.75),
+                    Colors.black.withValues(alpha: 0.75),
                     Colors.transparent,
                   ],
                 ),
@@ -157,10 +221,10 @@ class _ConfirmStatusScreenState extends ConsumerState<ConfirmStatusScreen> {
             ),
           ),
 
-          // ── Back button ─────────────────────────────────────────────
+          // ── Header (Back button, counter badge, action icon) ─────────
           SafeArea(
             child: Padding(
-              padding: const EdgeInsets.only(left: 8, top: 8),
+              padding: const EdgeInsets.only(left: 12, right: 12, top: 8),
               child: Row(
                 children: [
                   _GlassIcon(
@@ -168,16 +232,43 @@ class _ConfirmStatusScreenState extends ConsumerState<ConfirmStatusScreen> {
                     onTap: () => Navigator.pop(context),
                   ),
                   const Spacer(),
-                  if (_isVideo)
-                    Padding(
-                      padding: const EdgeInsets.only(right: 12),
-                      child: _GlassIcon(
-                        icon: _muted
-                            ? Icons.volume_off_rounded
-                            : Icons.volume_up_rounded,
-                        onTap: _toggleMute,
+                  if (!_isVideo && _files.length > 1)
+                    Container(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 14,
+                        vertical: 6,
+                      ),
+                      decoration: BoxDecoration(
+                        color: Colors.black.withValues(alpha: 0.55),
+                        borderRadius: BorderRadius.circular(20),
+                        border: Border.all(
+                          color: Colors.white.withValues(alpha: 0.25),
+                        ),
+                      ),
+                      child: Text(
+                        '${_currentIndex + 1} / ${_files.length}',
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontWeight: FontWeight.w700,
+                          fontSize: 13,
+                        ),
                       ),
                     ),
+                  const Spacer(),
+                  if (_isVideo)
+                    _GlassIcon(
+                      icon: _muted
+                          ? Icons.volume_off_rounded
+                          : Icons.volume_up_rounded,
+                      onTap: _toggleMute,
+                    )
+                  else if (_files.length > 1)
+                    _GlassIcon(
+                      icon: Icons.delete_outline_rounded,
+                      onTap: () => _removePhoto(_currentIndex),
+                    )
+                  else
+                    const SizedBox(width: 40),
                 ],
               ),
             ),
@@ -185,14 +276,17 @@ class _ConfirmStatusScreenState extends ConsumerState<ConfirmStatusScreen> {
 
           // ── Bottom gradient scrim ───────────────────────────────────
           Positioned(
-            bottom: 0, left: 0, right: 0, height: 140,
+            bottom: 0,
+            left: 0,
+            right: 0,
+            height: _files.length > 1 && !_isVideo ? 210 : 140,
             child: DecoratedBox(
               decoration: BoxDecoration(
                 gradient: LinearGradient(
                   begin: Alignment.bottomCenter,
                   end: Alignment.topCenter,
                   colors: [
-                    Colors.black.withOpacity(0.85),
+                    Colors.black.withValues(alpha: 0.9),
                     Colors.transparent,
                   ],
                 ),
@@ -200,10 +294,22 @@ class _ConfirmStatusScreenState extends ConsumerState<ConfirmStatusScreen> {
             ),
           ),
 
+          // ── Horizontal thumbnail strip for multiple photos ──────────
+          if (!_isVideo && _files.length > 1 && !_isUploading)
+            Positioned(
+              bottom: 84,
+              left: 0,
+              right: 0,
+              height: 58,
+              child: _buildThumbnailStrip(),
+            ),
+
           // ── Bottom action buttons ───────────────────────────────────
           if (!_isUploading)
             Positioned(
-              bottom: 0, left: 0, right: 0,
+              bottom: 0,
+              left: 0,
+              right: 0,
               child: SafeArea(
                 child: Padding(
                   padding: const EdgeInsets.fromLTRB(20, 0, 20, 20),
@@ -218,24 +324,33 @@ class _ConfirmStatusScreenState extends ConsumerState<ConfirmStatusScreen> {
                             onTap: () => Navigator.pop(context),
                             child: Container(
                               padding: const EdgeInsets.symmetric(
-                                  horizontal: 22, vertical: 14),
+                                horizontal: 22,
+                                vertical: 14,
+                              ),
                               decoration: BoxDecoration(
-                                color: Colors.white.withOpacity(0.12),
+                                color: Colors.white.withValues(alpha: 0.12),
                                 borderRadius: BorderRadius.circular(50),
                                 border: Border.all(
-                                    color: Colors.white.withOpacity(0.2)),
+                                  color: Colors.white.withValues(alpha: 0.2),
+                                ),
                               ),
                               child: const Row(
                                 mainAxisSize: MainAxisSize.min,
                                 children: [
-                                  Icon(Icons.close_rounded,
-                                      color: Colors.white, size: 18),
+                                  Icon(
+                                    Icons.close_rounded,
+                                    color: Colors.white,
+                                    size: 18,
+                                  ),
                                   SizedBox(width: 6),
-                                  Text("Discard",
-                                      style: TextStyle(
-                                          color: Colors.white,
-                                          fontWeight: FontWeight.w600,
-                                          fontSize: 14)),
+                                  Text(
+                                    "Discard",
+                                    style: TextStyle(
+                                      color: Colors.white,
+                                      fontWeight: FontWeight.w600,
+                                      fontSize: 14,
+                                    ),
+                                  ),
                                 ],
                               ),
                             ),
@@ -248,27 +363,34 @@ class _ConfirmStatusScreenState extends ConsumerState<ConfirmStatusScreen> {
                         onTap: _upload,
                         child: Container(
                           padding: const EdgeInsets.symmetric(
-                              horizontal: 28, vertical: 14),
+                            horizontal: 26,
+                            vertical: 14,
+                          ),
                           decoration: BoxDecoration(
                             color: tabColor,
                             borderRadius: BorderRadius.circular(50),
                             boxShadow: [
                               BoxShadow(
-                                color: tabColor.withOpacity(0.4),
+                                color: tabColor.withValues(alpha: 0.4),
                                 blurRadius: 16,
                                 offset: const Offset(0, 4),
                               ),
                             ],
                           ),
-                          child: const Row(
+                          child: Row(
                             mainAxisSize: MainAxisSize.min,
                             children: [
-                              Icon(Icons.send_rounded,
-                                  color: Colors.white, size: 18),
-                              SizedBox(width: 8),
+                              const Icon(
+                                Icons.send_rounded,
+                                color: Colors.white,
+                                size: 18,
+                              ),
+                              const SizedBox(width: 8),
                               Text(
-                                "Share to Story",
-                                style: TextStyle(
+                                _files.length > 1
+                                    ? "Share (${_files.length}) to Story"
+                                    : "Share to Story",
+                                style: const TextStyle(
                                   color: Colors.white,
                                   fontWeight: FontWeight.w700,
                                   fontSize: 14,
@@ -289,17 +411,23 @@ class _ConfirmStatusScreenState extends ConsumerState<ConfirmStatusScreen> {
             BackdropFilter(
               filter: ImageFilter.blur(sigmaX: 6, sigmaY: 6),
               child: Container(
-                color: Colors.black.withOpacity(0.55),
-                child: const Center(
+                color: Colors.black.withValues(alpha: 0.65),
+                child: Center(
                   child: Column(
                     mainAxisSize: MainAxisSize.min,
                     children: [
-                      CircularProgressIndicator(
-                          color: Colors.white, strokeWidth: 2),
-                      SizedBox(height: 18),
+                      const CircularProgressIndicator(
+                        color: Colors.white,
+                        strokeWidth: 2.5,
+                      ),
+                      const SizedBox(height: 18),
                       Text(
-                        "Sharing to story...",
-                        style: TextStyle(
+                        _files.length > 1
+                            ? "Sharing ${_uploadProgressIndex + 1} of ${_files.length} to story..."
+                            : (_isVideo
+                                ? "Sharing video to story..."
+                                : "Sharing to story..."),
+                        style: const TextStyle(
                           color: Colors.white,
                           fontSize: 15,
                           fontWeight: FontWeight.w600,
@@ -316,13 +444,93 @@ class _ConfirmStatusScreenState extends ConsumerState<ConfirmStatusScreen> {
     );
   }
 
-  // ── Image preview ──────────────────────────────────────────────────────────
+  // ── Multi-image preview with PageView ───────────────────────────────────────
 
-  Widget _buildImagePreview(Size size) {
-    return SizedBox(
-      width: size.width,
-      height: size.height,
-      child: Image.file(_file!, fit: BoxFit.contain),
+  Widget _buildMultiImagePreview(Size size) {
+    if (_files.length == 1) {
+      return SizedBox(
+        width: size.width,
+        height: size.height,
+        child: Image.file(_files.first, fit: BoxFit.contain),
+      );
+    }
+
+    return PageView.builder(
+      controller: _pageController,
+      itemCount: _files.length,
+      onPageChanged: (idx) {
+        setState(() => _currentIndex = idx);
+      },
+      itemBuilder: (context, index) {
+        return SizedBox(
+          width: size.width,
+          height: size.height,
+          child: Image.file(_files[index], fit: BoxFit.contain),
+        );
+      },
+    );
+  }
+
+  // ── Horizontal thumbnail strip ─────────────────────────────────────────────
+
+  Widget _buildThumbnailStrip() {
+    return ListView.separated(
+      scrollDirection: Axis.horizontal,
+      padding: const EdgeInsets.symmetric(horizontal: 20),
+      itemCount: _files.length + 1,
+      separatorBuilder: (_, __) => const SizedBox(width: 8),
+      itemBuilder: (context, i) {
+        if (i == _files.length) {
+          // Add more photos tile
+          return GestureDetector(
+            onTap: _pickMorePhotos,
+            child: Container(
+              width: 52,
+              height: 52,
+              decoration: BoxDecoration(
+                color: Colors.white.withValues(alpha: 0.12),
+                borderRadius: BorderRadius.circular(10),
+                border: Border.all(
+                  color: Colors.white.withValues(alpha: 0.25),
+                ),
+              ),
+              child: const Icon(
+                Icons.add_photo_alternate_rounded,
+                color: Colors.white,
+                size: 22,
+              ),
+            ),
+          );
+        }
+
+        final isSelected = i == _currentIndex;
+        return GestureDetector(
+          onTap: () {
+            setState(() => _currentIndex = i);
+            if (_pageController.hasClients) {
+              _pageController.jumpToPage(i);
+            }
+          },
+          child: Container(
+            width: 52,
+            height: 52,
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(10),
+              border: Border.all(
+                color: isSelected ? tabColor : Colors.white.withValues(alpha: 0.25),
+                width: isSelected ? 2.5 : 1,
+              ),
+            ),
+            child: ClipRRect(
+              borderRadius: BorderRadius.circular(8),
+              child: Image.file(
+                _files[i],
+                fit: BoxFit.cover,
+              ),
+            ),
+          ),
+        );
+      },
     );
   }
 
@@ -331,7 +539,9 @@ class _ConfirmStatusScreenState extends ConsumerState<ConfirmStatusScreen> {
   Widget _buildVideoPreview() {
     if (!_videoReady || _videoController == null) {
       return const CircularProgressIndicator(
-          color: Colors.white, strokeWidth: 2);
+        color: Colors.white,
+        strokeWidth: 2,
+      );
     }
     return GestureDetector(
       onTap: () => setState(() {
@@ -352,24 +562,31 @@ class _ConfirmStatusScreenState extends ConsumerState<ConfirmStatusScreen> {
                 opacity: value.isPlaying ? 0.0 : 1.0,
                 duration: const Duration(milliseconds: 200),
                 child: Container(
-                  width: 60, height: 60,
+                  width: 60,
+                  height: 60,
                   decoration: BoxDecoration(
-                    color: Colors.black.withOpacity(0.5),
+                    color: Colors.black.withValues(alpha: 0.5),
                     shape: BoxShape.circle,
                   ),
-                  child: const Icon(Icons.play_arrow_rounded,
-                      color: Colors.white, size: 34),
+                  child: const Icon(
+                    Icons.play_arrow_rounded,
+                    color: Colors.white,
+                    size: 34,
+                  ),
                 ),
               ),
             ),
             // Duration chip
             Positioned(
-              bottom: 10, right: 10,
+              bottom: 10,
+              right: 10,
               child: ValueListenableBuilder<VideoPlayerValue>(
                 valueListenable: _videoController!,
                 builder: (_, value, __) => Container(
                   padding: const EdgeInsets.symmetric(
-                      horizontal: 10, vertical: 4),
+                    horizontal: 10,
+                    vertical: 4,
+                  ),
                   decoration: BoxDecoration(
                     color: Colors.black54,
                     borderRadius: BorderRadius.circular(20),
@@ -377,9 +594,10 @@ class _ConfirmStatusScreenState extends ConsumerState<ConfirmStatusScreen> {
                   child: Text(
                     '${_fmt(value.position)} / ${_fmt(value.duration)}',
                     style: const TextStyle(
-                        color: Colors.white,
-                        fontSize: 11,
-                        fontWeight: FontWeight.w600),
+                      color: Colors.white,
+                      fontSize: 11,
+                      fontWeight: FontWeight.w600,
+                    ),
                   ),
                 ),
               ),
@@ -413,12 +631,15 @@ class _GlassIcon extends StatelessWidget {
         child: BackdropFilter(
           filter: ImageFilter.blur(sigmaX: 10, sigmaY: 10),
           child: Container(
-            width: 40, height: 40,
+            width: 40,
+            height: 40,
             decoration: BoxDecoration(
-              color: Colors.white.withOpacity(0.15),
+              color: Colors.white.withValues(alpha: 0.15),
               shape: BoxShape.circle,
-              border:
-                  Border.all(color: Colors.white.withOpacity(0.2), width: 1),
+              border: Border.all(
+                color: Colors.white.withValues(alpha: 0.2),
+                width: 1,
+              ),
             ),
             child: Icon(icon, color: Colors.white, size: 18),
           ),

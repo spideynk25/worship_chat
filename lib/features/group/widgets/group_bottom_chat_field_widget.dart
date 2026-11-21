@@ -5,12 +5,15 @@ import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:uuid/uuid.dart';
 import 'package:worship_chat/colors.dart';
 import 'package:worship_chat/common/providers/message_reply_provider.dart';
+import 'package:worship_chat/common/providers/message_edit_provider.dart';
 import 'package:worship_chat/common/utils/utils.dart';
 import 'package:worship_chat/common/widgets/camera_screen.dart';
 import 'package:worship_chat/features/chat/widgets/camera_permission_handler.dart';
 import 'package:worship_chat/features/chat/widgets/message_reply_preview.dart';
+import 'package:worship_chat/features/chat/widgets/message_edit_preview.dart';
 import 'package:worship_chat/features/group/controller/group_controller.dart';
 
 class GroupBottomChatFieldWidget extends ConsumerStatefulWidget {
@@ -43,6 +46,11 @@ class _BottomChatFieldState extends ConsumerState<GroupBottomChatFieldWidget> {
   final FocusNode _focusNode = FocusNode();
   dynamic imageFile;
   String messageType = "text";
+
+  // Multi-file media group (images or videos)
+  List<File> _mediaFiles = [];
+  String _mediaGroupType = ''; // 'image' or 'video'
+
   Timer? _typingTimer;
   bool _isTyping = false;
   bool _hasText = false;
@@ -68,6 +76,12 @@ class _BottomChatFieldState extends ConsumerState<GroupBottomChatFieldWidget> {
       ref
           .read(groupControllerProvider)
           .setGroupTypingStatus(widget.groupId, false);
+    }
+    final currentEdit = ref.read(messageEditProvider);
+    if (currentEdit != null &&
+        currentEdit.chatType == 'group' &&
+        currentEdit.groupId == widget.groupId) {
+      ref.read(messageEditProvider.notifier).state = null;
     }
     super.dispose();
   }
@@ -112,45 +126,80 @@ class _BottomChatFieldState extends ConsumerState<GroupBottomChatFieldWidget> {
     }
   }
 
-  void sendTextMessage() {
-    if (_messageController.text.trim().isNotEmpty || imageFile != null) {
-      log(_messageController.text.trim());
+  void sendTextMessage() async {
+    final hasMedia = _mediaFiles.isNotEmpty || imageFile != null;
+    if (_messageController.text.trim().isEmpty && !hasMedia) {
+      return;
+    }
 
-      // Stop typing indicator
-      if (_isTyping) {
-        _isTyping = false;
-        _typingTimer?.cancel();
-        ref
-            .read(groupControllerProvider)
-            .setGroupTypingStatus(widget.groupId, false);
-      }
-
-      String textToSend = _messageController.text.trim();
-      if (messageType == 'document' &&
-          textToSend.isEmpty &&
-          imageFile is File) {
-        textToSend = (imageFile as File).path.split(Platform.pathSeparator).last;
-      }
-
+    // Stop typing indicator
+    if (_isTyping) {
+      _isTyping = false;
+      _typingTimer?.cancel();
       ref
           .read(groupControllerProvider)
-          .sendTextMessage(
-            context,
-            textToSend,
-            widget.groupId,
-            messageType,
-            imageFile,
-            widget.fcmToken,
-            widget.receiverIds,
-            widget.groupName,
-            widget.type
-          );
-      setState(() {
-        messageType = "text";
-        imageFile = null;
-        _hasText = false;
-        _messageController.clear();
-      });
+          .setGroupTypingStatus(widget.groupId, false);
+    }
+
+    final messageText = _messageController.text.trim();
+    final currentImageFile = imageFile;
+    var currentMessageType = messageType;
+    final currentMediaFiles = List<File>.from(_mediaFiles);
+    final currentMediaGroupType = _mediaGroupType;
+
+    if (messageText.isEmpty && currentImageFile == null && currentMediaFiles.isEmpty) {
+      return;
+    }
+
+    var textToSend = messageText;
+    if (currentMessageType == 'document' &&
+        textToSend.isEmpty &&
+        currentImageFile is File) {
+      textToSend = currentImageFile.path.split(Platform.pathSeparator).last;
+    }
+
+    // Clear UI immediately
+    setState(() {
+      messageType = "text";
+      imageFile = null;
+      _mediaFiles = [];
+      _mediaGroupType = '';
+      _hasText = false;
+    });
+    _messageController.clear();
+
+    try {
+      if (currentMediaFiles.isNotEmpty) {
+        final mediaGroupId = const Uuid().v1();
+        for (int i = 0; i < currentMediaFiles.length; i++) {
+          await ref.read(groupControllerProvider).sendTextMessage(
+                context,
+                i == 0 ? messageText : '',
+                widget.groupId,
+                currentMediaGroupType,
+                currentMediaFiles[i],
+                widget.fcmToken,
+                widget.receiverIds,
+                widget.groupName,
+                widget.type,
+                mediaGroupId: mediaGroupId,
+              );
+        }
+      } else {
+        await ref.read(groupControllerProvider).sendTextMessage(
+              context,
+              textToSend,
+              widget.groupId,
+              currentMessageType,
+              currentImageFile,
+              widget.fcmToken,
+              widget.receiverIds,
+              widget.groupName,
+              widget.type,
+            );
+      }
+    } catch (e) {
+      log("Error sending group message: $e");
     }
   }
 
@@ -181,6 +230,8 @@ class _BottomChatFieldState extends ConsumerState<GroupBottomChatFieldWidget> {
       setState(() {
         messageType = "text";
         imageFile = null;
+        _mediaFiles = [];
+        _mediaGroupType = '';
         _hasText = false;
         _messageController.clear();
       });
@@ -188,21 +239,39 @@ class _BottomChatFieldState extends ConsumerState<GroupBottomChatFieldWidget> {
   }
 
   void selectImage() async {
-    File? image = await pickImageFromGallery(context);
-    if (image != null) {
+    final files = await pickMultipleImagesFromGallery(context);
+    if (files.isNotEmpty) {
       setState(() {
-        imageFile = image;
-        messageType = "image";
+        if (files.length == 1) {
+          imageFile = files.first;
+          messageType = "image";
+          _mediaFiles = [];
+          _mediaGroupType = '';
+        } else {
+          _mediaFiles = files;
+          _mediaGroupType = 'image';
+          imageFile = null;
+          messageType = 'text';
+        }
       });
     }
   }
 
   void selectVideo() async {
-    File? video = await pickVideoFromGallery(context);
-    if (video != null) {
+    final files = await pickMultipleVideosFromGallery(context);
+    if (files.isNotEmpty) {
       setState(() {
-        imageFile = video;
-        messageType = "video";
+        if (files.length == 1) {
+          imageFile = files.first;
+          messageType = "video";
+          _mediaFiles = [];
+          _mediaGroupType = '';
+        } else {
+          _mediaFiles = files;
+          _mediaGroupType = 'video';
+          imageFile = null;
+          messageType = 'text';
+        }
       });
     }
   }
@@ -409,6 +478,138 @@ class _BottomChatFieldState extends ConsumerState<GroupBottomChatFieldWidget> {
   }
 
   Widget _buildAttachedMediaPreview() {
+    // ── Multi-file grid preview ───────────────────────────────────────────────
+    if (_mediaFiles.isNotEmpty) {
+      return Container(
+        margin: const EdgeInsets.only(left: 10, right: 10, bottom: 8),
+        padding: const EdgeInsets.all(8),
+        decoration: BoxDecoration(
+          color: const Color(0xFF161524),
+          borderRadius: BorderRadius.circular(16),
+          border: Border.all(color: Colors.white.withValues(alpha: 0.08)),
+          boxShadow: [
+            BoxShadow(
+              color: Colors.black.withValues(alpha: 0.25),
+              blurRadius: 8,
+              offset: const Offset(0, 2),
+            ),
+          ],
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Icon(
+                  _mediaGroupType == 'video'
+                      ? Icons.videocam_rounded
+                      : Icons.photo_library_rounded,
+                  color: tabColor,
+                  size: 18,
+                ),
+                const SizedBox(width: 6),
+                Text(
+                  '${_mediaFiles.length} ${_mediaGroupType == 'video' ? 'videos' : 'photos'} selected',
+                  style: const TextStyle(
+                    color: textColor,
+                    fontSize: 13,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+                const Spacer(),
+                GestureDetector(
+                  onTap: () => setState(() {
+                    _mediaFiles = [];
+                    _mediaGroupType = '';
+                  }),
+                  child: Container(
+                    padding: const EdgeInsets.all(5),
+                    decoration: BoxDecoration(
+                      color: Colors.white.withValues(alpha: 0.08),
+                      shape: BoxShape.circle,
+                    ),
+                    child: const Icon(
+                      Icons.close_rounded,
+                      size: 16,
+                      color: greyColor,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 8),
+            SizedBox(
+              height: 72,
+              child: ListView.separated(
+                scrollDirection: Axis.horizontal,
+                itemCount: _mediaFiles.length,
+                separatorBuilder: (_, __) => const SizedBox(width: 6),
+                itemBuilder: (context, idx) {
+                  final file = _mediaFiles[idx];
+                  return Stack(
+                    children: [
+                      ClipRRect(
+                        borderRadius: BorderRadius.circular(8),
+                        child: SizedBox(
+                          width: 72,
+                          height: 72,
+                          child: _mediaGroupType == 'image'
+                              ? Image.file(file, fit: BoxFit.cover)
+                              : Container(
+                                  color: const Color(0xFF222034),
+                                  child: const Icon(
+                                    Icons.videocam_rounded,
+                                    color: greyColor,
+                                    size: 28,
+                                  ),
+                                ),
+                        ),
+                      ),
+                      if (_mediaGroupType == 'video')
+                        const Positioned(
+                          bottom: 4,
+                          right: 4,
+                          child: Icon(
+                            Icons.play_circle_filled,
+                            color: Colors.white70,
+                            size: 18,
+                          ),
+                        ),
+                      // Remove individual file button
+                      Positioned(
+                        top: 2,
+                        right: 2,
+                        child: GestureDetector(
+                          onTap: () {
+                            setState(() {
+                              _mediaFiles.removeAt(idx);
+                              if (_mediaFiles.isEmpty) _mediaGroupType = '';
+                            });
+                          },
+                          child: Container(
+                            padding: const EdgeInsets.all(2),
+                            decoration: const BoxDecoration(
+                              color: Colors.black54,
+                              shape: BoxShape.circle,
+                            ),
+                            child: const Icon(
+                              Icons.close,
+                              size: 12,
+                              color: Colors.white,
+                            ),
+                          ),
+                        ),
+                      ),
+                    ],
+                  );
+                },
+              ),
+            ),
+          ],
+        ),
+      );
+    }
+
     if (imageFile == null) return const SizedBox.shrink();
 
     return Container(
@@ -578,8 +779,11 @@ class _BottomChatFieldState extends ConsumerState<GroupBottomChatFieldWidget> {
     );
   }
 
-  Widget _buildSendButton() {
-    final hasContent = _hasText || imageFile != null;
+  Widget _buildSendButton({
+    required bool isEditing,
+    MessageEdit? messageEdit,
+  }) {
+    final hasContent = _hasText || imageFile != null || _mediaFiles.isNotEmpty || isEditing;
 
     return GestureDetector(
       onTapDown: (_) => setState(() => _isSendPressed = true),
@@ -587,6 +791,20 @@ class _BottomChatFieldState extends ConsumerState<GroupBottomChatFieldWidget> {
       onTapCancel: () => setState(() => _isSendPressed = false),
       onTap: () {
         HapticFeedback.lightImpact();
+        if (isEditing && messageEdit != null) {
+          final updatedText = _messageController.text.trim();
+          if (updatedText.isNotEmpty) {
+            ref.read(groupControllerProvider).editGroupMessage(
+              groupId: widget.groupId,
+              messageId: messageEdit.messageId,
+              newText: updatedText,
+            );
+          }
+          ref.read(messageEditProvider.notifier).state = null;
+          _messageController.clear();
+          _focusNode.unfocus();
+          return;
+        }
         sendTextMessage();
       },
       child: AnimatedScale(
@@ -599,19 +817,21 @@ class _BottomChatFieldState extends ConsumerState<GroupBottomChatFieldWidget> {
           decoration: BoxDecoration(
             shape: BoxShape.circle,
             gradient: LinearGradient(
-              colors: hasContent
-                  ? const [tabColor, accentOrange]
-                  : [
-                      tabColor.withValues(alpha: 0.55),
-                      accentOrange.withValues(alpha: 0.55),
-                    ],
+              colors: isEditing
+                  ? const [Color(0xFF00C853), Color(0xFF64DD17)]
+                  : (hasContent
+                      ? const [tabColor, accentOrange]
+                      : [
+                          tabColor.withValues(alpha: 0.55),
+                          accentOrange.withValues(alpha: 0.55),
+                        ]),
               begin: Alignment.topLeft,
               end: Alignment.bottomRight,
             ),
             boxShadow: hasContent
                 ? [
                     BoxShadow(
-                      color: tabColor.withValues(alpha: 0.45),
+                      color: (isEditing ? const Color(0xFF00C853) : tabColor).withValues(alpha: 0.45),
                       blurRadius: 12,
                       spreadRadius: 1,
                       offset: const Offset(0, 3),
@@ -631,10 +851,10 @@ class _BottomChatFieldState extends ConsumerState<GroupBottomChatFieldWidget> {
               transitionBuilder: (child, animation) =>
                   ScaleTransition(scale: animation, child: child),
               child: Icon(
-                Icons.send_rounded,
-                key: ValueKey<bool>(hasContent),
+                isEditing ? Icons.check_rounded : Icons.send_rounded,
+                key: ValueKey<String>(isEditing ? 'edit_check' : hasContent.toString()),
                 color: Colors.white,
-                size: 21,
+                size: isEditing ? 24 : 21,
               ),
             ),
           ),
@@ -646,6 +866,23 @@ class _BottomChatFieldState extends ConsumerState<GroupBottomChatFieldWidget> {
   @override
   Widget build(BuildContext context) {
     log("checking token id in bottom field ${widget.fcmToken}");
+    final messageEdit = ref.watch(messageEditProvider);
+    final isEditing = messageEdit != null &&
+        messageEdit.chatType == 'group' &&
+        messageEdit.groupId == widget.groupId;
+
+    ref.listen<MessageEdit?>(messageEditProvider, (previous, next) {
+      if (next != null &&
+          next.chatType == 'group' &&
+          next.groupId == widget.groupId) {
+        _messageController.text = next.text;
+        _messageController.selection = TextSelection.fromPosition(
+          TextPosition(offset: _messageController.text.length),
+        );
+        _focusNode.requestFocus();
+      }
+    });
+
     final messageReply = ref.watch(messageReplyProvider);
     final isShowMessageReply = messageReply != null;
 
@@ -655,8 +892,18 @@ class _BottomChatFieldState extends ConsumerState<GroupBottomChatFieldWidget> {
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
-          if (isShowMessageReply) const MessageReplyPreview(),
-          _buildAttachedMediaPreview(),
+          if (isEditing)
+            MessageEditPreview(
+              text: messageEdit.text,
+              onCancel: () {
+                ref.read(messageEditProvider.notifier).state = null;
+                _messageController.clear();
+                _focusNode.unfocus();
+              },
+            )
+          else if (isShowMessageReply)
+            const MessageReplyPreview(),
+          if (!isEditing) _buildAttachedMediaPreview(),
           Padding(
             padding: const EdgeInsets.only(
               left: 10,
@@ -712,9 +959,11 @@ class _BottomChatFieldState extends ConsumerState<GroupBottomChatFieldWidget> {
                             cursorWidth: 2.0,
                             cursorRadius: const Radius.circular(2),
                             decoration: InputDecoration(
-                              hintText: imageFile != null
-                                  ? 'Add a caption...'
-                                  : 'Type a message...',
+                              hintText: isEditing
+                                  ? 'Edit message...'
+                                  : ((imageFile != null || _mediaFiles.isNotEmpty)
+                                      ? 'Add a caption...'
+                                      : 'Type a message...'),
                               hintStyle: TextStyle(
                                 color: greyColor.withValues(alpha: 0.5),
                                 fontSize: 15,
@@ -748,90 +997,95 @@ class _BottomChatFieldState extends ConsumerState<GroupBottomChatFieldWidget> {
                                 ),
                           ),
                         ),
-                        // Attachment button
-                        Material(
-                          color: Colors.transparent,
-                          child: InkWell(
-                            onTap: showMediaOptions,
-                            borderRadius: BorderRadius.circular(20),
-                            child: Padding(
-                              padding: const EdgeInsets.all(7),
-                              child: Icon(
-                                Icons.attach_file_rounded,
-                                color: _focusNode.hasFocus
-                                    ? tabColor.withValues(alpha: 0.85)
-                                    : greyColor,
-                                size: 21,
-                              ),
-                            ),
-                          ),
-                        ),
-                        // Direct camera shortcut
-                        Material(
-                          color: Colors.transparent,
-                          child: InkWell(
-                            onTap: openCamera,
-                            borderRadius: BorderRadius.circular(20),
-                            child: const Padding(
-                              padding: EdgeInsets.all(7),
-                              child: Icon(
-                                Icons.camera_alt_rounded,
-                                color: greyColor,
-                                size: 20,
-                              ),
-                            ),
-                          ),
-                        ),
-                        // Quick wish button if applicable
-                        if (widget.wish != null &&
-                            widget.wish!.trim().isNotEmpty)
+                        if (!isEditing) ...[
+                          // Attachment button
                           Material(
                             color: Colors.transparent,
                             child: InkWell(
-                              onTap: () {
-                                HapticFeedback.lightImpact();
-                                _sendWish();
-                              },
-                              borderRadius: BorderRadius.circular(14),
-                              child: Container(
-                                padding: const EdgeInsets.symmetric(
-                                  horizontal: 8,
-                                  vertical: 5,
-                                ),
-                                margin: const EdgeInsets.only(left: 3, right: 3),
-                                decoration: BoxDecoration(
-                                  gradient: const LinearGradient(
-                                    colors: [
-                                      Color(0xFFFF9F43),
-                                      Color(0xFFFF6B2D),
-                                    ],
-                                    begin: Alignment.topLeft,
-                                    end: Alignment.bottomRight,
-                                  ),
-                                  borderRadius: BorderRadius.circular(12),
-                                  boxShadow: [
-                                    BoxShadow(
-                                      color: const Color(
-                                        0xFFFF6B2D,
-                                      ).withValues(alpha: 0.35),
-                                      blurRadius: 6,
-                                      offset: const Offset(0, 2),
-                                    ),
-                                  ],
-                                ),
-                                child: const Text(
-                                  "🙇🏻‍♂️",
-                                  style: TextStyle(fontSize: 16),
+                              onTap: showMediaOptions,
+                              borderRadius: BorderRadius.circular(20),
+                              child: Padding(
+                                padding: const EdgeInsets.all(7),
+                                child: Icon(
+                                  Icons.attach_file_rounded,
+                                  color: _focusNode.hasFocus
+                                      ? tabColor.withValues(alpha: 0.85)
+                                      : greyColor,
+                                  size: 21,
                                 ),
                               ),
                             ),
                           ),
+                          // Direct camera shortcut
+                          Material(
+                            color: Colors.transparent,
+                            child: InkWell(
+                              onTap: openCamera,
+                              borderRadius: BorderRadius.circular(20),
+                              child: const Padding(
+                                padding: EdgeInsets.all(7),
+                                child: Icon(
+                                  Icons.camera_alt_rounded,
+                                  color: greyColor,
+                                  size: 20,
+                                ),
+                              ),
+                            ),
+                          ),
+                          // Quick wish button if applicable
+                          if (widget.wish != null &&
+                              widget.wish!.trim().isNotEmpty)
+                            Material(
+                              color: Colors.transparent,
+                              child: InkWell(
+                                onTap: () {
+                                  HapticFeedback.lightImpact();
+                                  _sendWish();
+                                },
+                                borderRadius: BorderRadius.circular(14),
+                                child: Container(
+                                  padding: const EdgeInsets.symmetric(
+                                    horizontal: 8,
+                                    vertical: 5,
+                                  ),
+                                  margin: const EdgeInsets.only(left: 3, right: 3),
+                                  decoration: BoxDecoration(
+                                    gradient: const LinearGradient(
+                                      colors: [
+                                        Color(0xFFFF9F43),
+                                        Color(0xFFFF6B2D),
+                                      ],
+                                      begin: Alignment.topLeft,
+                                      end: Alignment.bottomRight,
+                                    ),
+                                    borderRadius: BorderRadius.circular(12),
+                                    boxShadow: [
+                                      BoxShadow(
+                                        color: const Color(
+                                          0xFFFF6B2D,
+                                        ).withValues(alpha: 0.35),
+                                        blurRadius: 6,
+                                        offset: const Offset(0, 2),
+                                      ),
+                                    ],
+                                  ),
+                                  child: const Text(
+                                    "🙇🏻‍♂️",
+                                    style: TextStyle(fontSize: 16),
+                                  ),
+                                ),
+                              ),
+                            ),
+                        ],
                       ],
                     ),
                   ),
                 ),
                 const SizedBox(width: 8),
-                _buildSendButton(),
+                _buildSendButton(
+                  isEditing: isEditing,
+                  messageEdit: messageEdit,
+                ),
               ],
             ),
           ),

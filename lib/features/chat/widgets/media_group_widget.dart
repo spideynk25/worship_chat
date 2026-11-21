@@ -1,11 +1,9 @@
 import 'dart:convert';
-import 'dart:developer';
 import 'dart:io';
 
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
 import 'package:path_provider/path_provider.dart';
-import 'package:worship_chat/colors.dart';
 import 'package:worship_chat/common/utils/media_cache_service.dart';
 import 'package:worship_chat/common/utils/utils.dart';
 import 'package:worship_chat/features/chat/widgets/display_messages.dart';
@@ -404,26 +402,52 @@ class _MediaThumbState extends State<_MediaThumb> {
   Widget build(BuildContext context) {
     if (widget.type == 'video') {
       return Container(
-        color: const Color(0xFF1A1A2E),
+        decoration: const BoxDecoration(
+          gradient: LinearGradient(
+            colors: [Color(0xFF1E1C30), Color(0xFF12111E)],
+            begin: Alignment.topLeft,
+            end: Alignment.bottomRight,
+          ),
+        ),
         child: Stack(
           alignment: Alignment.center,
           children: [
-            if (_localPath != null)
-              Image.file(
-                File(_localPath!),
-                fit: BoxFit.cover,
-                gaplessPlayback: true,
-                errorBuilder: (_, __, ___) => _errWidget(),
-              )
-            else
-              const Icon(Icons.movie_outlined, color: Colors.white12, size: 48),
+            const Icon(Icons.movie_outlined, color: Colors.white24, size: 44),
             Container(
-              padding: const EdgeInsets.all(8),
+              padding: const EdgeInsets.all(10),
               decoration: BoxDecoration(
-                color: Colors.black.withValues(alpha: 0.5),
+                color: Colors.black.withValues(alpha: 0.6),
                 shape: BoxShape.circle,
+                border: Border.all(color: Colors.white24, width: 1),
               ),
-              child: const Icon(Icons.play_arrow_rounded, color: Colors.white, size: 28),
+              child: const Icon(Icons.play_arrow_rounded, color: Colors.white, size: 30),
+            ),
+            Positioned(
+              bottom: 6,
+              left: 6,
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 2),
+                decoration: BoxDecoration(
+                  color: Colors.black.withValues(alpha: 0.6),
+                  borderRadius: BorderRadius.circular(4),
+                ),
+                child: const Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(Icons.videocam_rounded, color: Colors.white70, size: 12),
+                    SizedBox(width: 3),
+                    Text(
+                      'VIDEO',
+                      style: TextStyle(
+                        color: Colors.white,
+                        fontSize: 9,
+                        fontWeight: FontWeight.w600,
+                        letterSpacing: 0.5,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
             ),
           ],
         ),
@@ -434,6 +458,7 @@ class _MediaThumbState extends State<_MediaThumb> {
       return Image.file(
         File(_localPath!),
         fit: BoxFit.cover,
+        alignment: Alignment.topCenter,
         gaplessPlayback: true,
         errorBuilder: (_, __, ___) => _errWidget(),
       );
@@ -442,6 +467,7 @@ class _MediaThumbState extends State<_MediaThumb> {
     return CachedNetworkImage(
       imageUrl: widget.url,
       fit: BoxFit.cover,
+      alignment: Alignment.topCenter,
       fadeInDuration: Duration.zero,
       fadeOutDuration: Duration.zero,
       placeholder: (_, __) => Container(color: const Color(0xFF1A1A2E)),

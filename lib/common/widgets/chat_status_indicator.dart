@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:intl/intl.dart';
 import 'package:worship_chat/colors.dart';
 import 'package:worship_chat/common/widgets/user_avatar.dart';
 
@@ -219,19 +220,50 @@ class _PulsingOnlineDotState extends State<PulsingOnlineDot>
 
 /// ─────────────────────────────────────────────────────────────────────────────
 /// APP BAR STATUS SUBTITLE (1-ON-1 CHAT)
-/// Smoothly transitions between Typing, Online, and Offline states.
+/// Smoothly transitions between Typing, Online, and Offline / Last Seen states.
 /// ─────────────────────────────────────────────────────────────────────────────
 class AppBarStatusSubtitle extends StatelessWidget {
   final bool isTyping;
   final bool isOnline;
+  final DateTime? lastSeen;
   final Color accentColor;
 
   const AppBarStatusSubtitle({
     super.key,
     required this.isTyping,
     required this.isOnline,
+    this.lastSeen,
     this.accentColor = tabColor,
   });
+
+  /// Formats a [lastSeen] DateTime in authentic WhatsApp style:
+  /// - Today: "last seen today at 10:15 pm"
+  /// - Yesterday: "last seen yesterday at 9:30 pm"
+  /// - Same year: "last seen 24/10/26 at 4:15 pm"
+  /// - Older year: "last seen 24/10/2025 at 4:15 pm"
+  static String formatLastSeen(DateTime lastSeen) {
+    final localLastSeen = lastSeen.toLocal();
+    final now = DateTime.now();
+
+    final today = DateTime(now.year, now.month, now.day);
+    final yesterday = today.subtract(const Duration(days: 1));
+    final seenDate =
+        DateTime(localLastSeen.year, localLastSeen.month, localLastSeen.day);
+
+    final timeStr = DateFormat('h:mm a').format(localLastSeen).toLowerCase();
+
+    if (seenDate.isAtSameMomentAs(today) || seenDate.isAfter(today)) {
+      return 'last seen today at $timeStr';
+    } else if (seenDate.isAtSameMomentAs(yesterday)) {
+      return 'last seen yesterday at $timeStr';
+    } else if (localLastSeen.year == now.year) {
+      final dateStr = DateFormat('dd/MM/yy').format(localLastSeen);
+      return 'last seen $dateStr at $timeStr';
+    } else {
+      final dateStr = DateFormat('dd/MM/yyyy').format(localLastSeen);
+      return 'last seen $dateStr at $timeStr';
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -300,26 +332,35 @@ class AppBarStatusSubtitle extends StatelessWidget {
       );
     }
 
+    final String text =
+        lastSeen != null ? formatLastSeen(lastSeen!) : 'Offline';
+
     return Row(
-      key: const ValueKey('offline_state'),
+      key: ValueKey('offline_state_$text'),
       mainAxisSize: MainAxisSize.min,
       children: [
-        Container(
-          width: 5.5,
-          height: 5.5,
-          decoration: const BoxDecoration(
-            shape: BoxShape.circle,
-            color: Colors.white38,
+        if (lastSeen == null) ...[
+          Container(
+            width: 5.5,
+            height: 5.5,
+            decoration: const BoxDecoration(
+              shape: BoxShape.circle,
+              color: Colors.white38,
+            ),
           ),
-        ),
-        const SizedBox(width: 5),
-        const Text(
-          'Offline',
-          style: TextStyle(
-            fontSize: 12.0,
-            fontWeight: FontWeight.normal,
-            color: Colors.white54,
-            letterSpacing: 0.1,
+          const SizedBox(width: 5),
+        ],
+        Flexible(
+          child: Text(
+            text,
+            style: TextStyle(
+              fontSize: lastSeen != null ? 11.5 : 12.0,
+              fontWeight: FontWeight.normal,
+              color: lastSeen != null ? Colors.white70 : Colors.white54,
+              letterSpacing: 0.1,
+            ),
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
           ),
         ),
       ],
@@ -411,13 +452,17 @@ class GroupAppBarStatusSubtitle extends StatelessWidget {
                   color: Colors.white54,
                 ),
                 const SizedBox(width: 4),
-                Text(
-                  '$memberCount members',
-                  style: const TextStyle(
-                    fontSize: 12.0,
-                    fontWeight: FontWeight.normal,
-                    color: Colors.white54,
-                    letterSpacing: 0.1,
+                Flexible(
+                  child: Text(
+                    '$memberCount members',
+                    style: const TextStyle(
+                      fontSize: 12.0,
+                      fontWeight: FontWeight.normal,
+                      color: Colors.white54,
+                      letterSpacing: 0.1,
+                    ),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
                   ),
                 ),
               ],

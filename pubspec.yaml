@@ -54,6 +54,7 @@ dependencies:
   font_awesome_flutter: ^11.0.0
   image_cropper: ^8.0.2
   image: ^4.2.0
+  archive: ^4.0.2
   path_provider: ^2.1.5
   extended_image: ^8.0.2
   path: ^1.9.0
@@ -77,6 +78,8 @@ dependencies:
   latlong2: ^0.10.1
   google_mlkit_selfie_segmentation: ^0.12.1
   google_mlkit_text_recognition: ^0.17.1
+  crypto: ^3.0.7
+  google_fonts: ^8.2.1
   
   
  
@@ -95,9 +98,21 @@ dev_dependencies:
   flutter_launcher_icons: "^0.14.4"
   build_runner: 2.4.13
 
+dependency_overrides:
+  gallery_saver_plus:
+    path: plugins/gallery_saver_plus
+  share_handler_android:
+    path: plugins/share_handler_android
+
 flutter_launcher_icons:
   android: "launcher_icon"
   ios: true
+  macos:
+    generate: true
+    image_path: "assets/app icons/app_icon.jpg"
+  windows:
+    generate: true
+    image_path: "assets/app icons/app_icon.jpg"
   adaptive_icon_background: "#000000"
   adaptive_icon_foreground: "assets/app icons/app_icon.jpg"
   image_path: "assets/app icons/app_icon.jpg"
@@ -107,6 +122,8 @@ flutter_launcher_icons:
 
 # The following section is specific to Flutter packages.
 flutter:
+  config:
+    enable-swift-package-manager: false
 
   # The following line ensures that the Material Icons font is
   # included with your application, so that you can use the icons in

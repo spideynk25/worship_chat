@@ -24,13 +24,14 @@ class GroupGalleryImageAdapter extends TypeAdapter<GroupGalleryImage> {
       uploadedByName: fields[4] as String,
       uploadedAt: fields[5] as DateTime,
       caption: fields[6] as String?,
+      mediaType: (fields[7] as String?) ?? 'image',
     );
   }
 
   @override
   void write(BinaryWriter writer, GroupGalleryImage obj) {
     writer
-      ..writeByte(7)
+      ..writeByte(8)
       ..writeByte(0)
       ..write(obj.imageId)
       ..writeByte(1)
@@ -44,7 +45,9 @@ class GroupGalleryImageAdapter extends TypeAdapter<GroupGalleryImage> {
       ..writeByte(5)
       ..write(obj.uploadedAt)
       ..writeByte(6)
-      ..write(obj.caption);
+      ..write(obj.caption)
+      ..writeByte(7)
+      ..write(obj.mediaType);
   }
 
   @override

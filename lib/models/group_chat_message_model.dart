@@ -54,6 +54,18 @@ class GroupChatMessageModel {
   @HiveField(13)
   final Map<String, String> reactions; // userId -> emoji
 
+  @HiveField(14)
+  final bool? _isEdited;
+  bool get isEdited => _isEdited ?? false;
+
+  @HiveField(15)
+  final bool? _isDeleted;
+  bool get isDeleted => _isDeleted ?? false;
+
+  @HiveField(16)
+  final List<String>? _deletedFor;
+  List<String> get deletedFor => _deletedFor ?? const [];
+
   GroupChatMessageModel({
     required this.senderId,
     required this.receiverIds,
@@ -70,10 +82,16 @@ class GroupChatMessageModel {
     required this.repliedMessageType,
     required this.groupId,
     Map<String, String>? reactions,
+    bool? isEdited,
+    bool? isDeleted,
+    List<String>? deletedFor,
   })  : _isSeen = isSeen ?? false,
         _isDelivered = isDelivered ?? false,
         _isSending = isSending ?? false,
-        reactions = reactions ?? const {};
+        reactions = reactions ?? const {},
+        _isEdited = isEdited ?? false,
+        _isDeleted = isDeleted ?? false,
+        _deletedFor = deletedFor ?? const [];
 
   Map<String, dynamic> toMap() {
     return <String, dynamic>{
@@ -91,6 +109,9 @@ class GroupChatMessageModel {
       'repliedMessageType': repliedMessageType,
       'groupId': groupId,
       'reactions': reactions,
+      'isEdited': isEdited,
+      'isDeleted': isDeleted,
+      'deletedFor': deletedFor,
     };
   }
 
@@ -140,6 +161,12 @@ class GroupChatMessageModel {
       repliedMessageType: map['repliedMessageType']?.toString() ?? 'text',
       groupId: map['groupId']?.toString() ?? '',
       reactions: parsedReactions,
+      isEdited: map['isEdited'] as bool? ?? false,
+      isDeleted: map['isDeleted'] as bool? ?? false,
+      deletedFor: (map['deletedFor'] as List<dynamic>?)
+              ?.map((e) => e.toString())
+              .toList() ??
+          const [],
     );
   }
 
@@ -160,6 +187,9 @@ class GroupChatMessageModel {
     String? repliedTo,
     String? repliedMessageType,
     Map<String, String>? reactions,
+    bool? isEdited,
+    bool? isDeleted,
+    List<String>? deletedFor,
   }) {
     return GroupChatMessageModel(
       senderId: senderId ?? this.senderId,
@@ -177,6 +207,9 @@ class GroupChatMessageModel {
       repliedTo: repliedTo ?? this.repliedTo,
       repliedMessageType: repliedMessageType ?? this.repliedMessageType,
       reactions: reactions ?? this.reactions,
+      isEdited: isEdited ?? this.isEdited,
+      isDeleted: isDeleted ?? this.isDeleted,
+      deletedFor: deletedFor ?? this.deletedFor,
     );
   }
 }

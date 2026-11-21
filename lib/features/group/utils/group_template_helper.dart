@@ -1,3 +1,5 @@
+import 'package:worship_chat/features/settings/providers/queendom_customization_provider.dart';
+
 class GroupTemplateResult {
   final String livingPlace;
   final String wish;
@@ -23,6 +25,9 @@ class GroupTemplateHelper {
   /// Check whether a category position has multiple families or not
   static bool categoryHasOtherFamilies(String position) {
     if (position == 'None' || position.isEmpty) return false;
+    if (QueendomCustomizationService.instance.hasCategory(position)) {
+      return QueendomCustomizationService.instance.categoryHasOtherFamilies(position);
+    }
     return !positionsWithoutOtherFamilies.contains(position);
   }
 
@@ -390,7 +395,21 @@ class GroupTemplateHelper {
         }
 
       default:
-        return cleanName;
+        if (cleanFamily != null) {
+          final prefix = '$cleanFamily $effectivePosition';
+          if (cleanName.toLowerCase().startsWith(prefix.toLowerCase())) {
+            return cleanName;
+          }
+          if (cleanName.toLowerCase().startsWith('${effectivePosition.toLowerCase()} ')) {
+            cleanName = cleanName.substring(effectivePosition.length).trim();
+          }
+          return '$prefix $cleanName';
+        } else {
+          if (cleanName.toLowerCase().startsWith('${effectivePosition.toLowerCase()} ')) {
+            return cleanName;
+          }
+          return '$effectivePosition $cleanName';
+        }
     }
   }
 
@@ -558,10 +577,20 @@ class GroupTemplateHelper {
         }
 
       default:
-        return GroupTemplateResult(
-          livingPlace: upperName,
-          wish: '',
-        );
+        final cat = QueendomCustomizationService.instance.state.getCategoryByPosition(position);
+        final emoji = cat?.emoji ?? '👑';
+        final upperPosition = position.toUpperCase();
+        if (!isMainOrNoneFamily) {
+          return GroupTemplateResult(
+            livingPlace: 'SANCTUM OF $emoji $upperFamily $upperPosition $upperName',
+            wish: '🙇‍♀️🙇‍♀️ Hail $cleanFamily $position $wishName 🙇‍♀️🙇‍♀️',
+          );
+        } else {
+          return GroupTemplateResult(
+            livingPlace: 'SANCTUM OF $emoji $upperPosition $upperName',
+            wish: '🙇‍♀️🙇‍♀️ Hail $position $wishName 🙇‍♀️🙇‍♀️',
+          );
+        }
     }
   }
 }

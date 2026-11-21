@@ -25,6 +25,9 @@ class GroupGalleryImage extends HiveObject {
   @HiveField(6)
   final String? caption;
 
+  @HiveField(7)
+  final String mediaType; // 'image' or 'video'
+
   GroupGalleryImage({
     required this.imageId,
     required this.groupId,
@@ -33,7 +36,20 @@ class GroupGalleryImage extends HiveObject {
     required this.uploadedByName,
     required this.uploadedAt,
     this.caption,
+    this.mediaType = 'image',
   });
+
+  bool get isVideo =>
+      mediaType == 'video' ||
+      imageUrl.contains('/video/upload') ||
+      imageUrl.toLowerCase().endsWith('.mp4') ||
+      imageUrl.toLowerCase().endsWith('.mov') ||
+      imageUrl.toLowerCase().endsWith('.webm') ||
+      imageUrl.toLowerCase().endsWith('.m4v') ||
+      imageUrl.toLowerCase().endsWith('.avi') ||
+      imageUrl.toLowerCase().endsWith('.mkv');
+
+  bool get isImage => !isVideo;
 
   Map<String, dynamic> toMap() {
     return {
@@ -44,20 +60,29 @@ class GroupGalleryImage extends HiveObject {
       'uploadedByName': uploadedByName,
       'uploadedAt': uploadedAt.millisecondsSinceEpoch,
       'caption': caption,
+      'mediaType': mediaType,
     };
   }
 
   factory GroupGalleryImage.fromMap(Map<String, dynamic> map) {
+    final url = map['imageUrl'] as String? ?? '';
+    final detectedIsVideo = url.contains('/video/upload') ||
+        url.toLowerCase().endsWith('.mp4') ||
+        url.toLowerCase().endsWith('.mov') ||
+        url.toLowerCase().endsWith('.webm') ||
+        url.toLowerCase().endsWith('.m4v');
+
     return GroupGalleryImage(
       imageId: map['imageId'] ?? '',
       groupId: map['groupId'] ?? '',
-      imageUrl: map['imageUrl'] ?? '',
+      imageUrl: url,
       uploadedBy: map['uploadedBy'] ?? '',
       uploadedByName: map['uploadedByName'] ?? '',
       uploadedAt: map['uploadedAt'] != null
           ? DateTime.fromMillisecondsSinceEpoch(map['uploadedAt'])
           : DateTime.now(),
       caption: map['caption'],
+      mediaType: map['mediaType'] ?? (detectedIsVideo ? 'video' : 'image'),
     );
   }
 
@@ -69,6 +94,7 @@ class GroupGalleryImage extends HiveObject {
     String? uploadedByName,
     DateTime? uploadedAt,
     String? caption,
+    String? mediaType,
   }) {
     return GroupGalleryImage(
       imageId: imageId ?? this.imageId,
@@ -78,6 +104,7 @@ class GroupGalleryImage extends HiveObject {
       uploadedByName: uploadedByName ?? this.uploadedByName,
       uploadedAt: uploadedAt ?? this.uploadedAt,
       caption: caption ?? this.caption,
+      mediaType: mediaType ?? this.mediaType,
     );
   }
 }

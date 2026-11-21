@@ -10,12 +10,14 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:uuid/uuid.dart';
 import 'package:worship_chat/colors.dart';
 import 'package:worship_chat/common/providers/message_reply_provider.dart';
+import 'package:worship_chat/common/providers/message_edit_provider.dart';
 import 'package:worship_chat/common/utils/utils.dart';
 import 'package:worship_chat/common/widgets/camera_screen.dart';
 import 'package:worship_chat/features/chat/controller/chat_controller.dart';
 import 'package:worship_chat/features/chat/widgets/camera_permission_handler.dart';
 import 'package:worship_chat/features/chat/widgets/location_picker_sheet.dart';
 import 'package:worship_chat/features/chat/widgets/message_reply_preview.dart';
+import 'package:worship_chat/features/chat/widgets/message_edit_preview.dart';
 
 class OneToOneBottomChatFieldWidget extends ConsumerStatefulWidget {
   final String receiverUserId;
@@ -74,6 +76,12 @@ class _BottomChatFieldState
       ref
           .read(chatControllerProvider)
           .setTypingStatus(widget.receiverUserId, false);
+    }
+    final currentEdit = ref.read(messageEditProvider);
+    if (currentEdit != null &&
+        currentEdit.chatType == 'one_to_one' &&
+        currentEdit.receiverUserId == widget.receiverUserId) {
+      ref.read(messageEditProvider.notifier).state = null;
     }
     super.dispose();
   }
@@ -823,8 +831,11 @@ class _BottomChatFieldState
     );
   }
 
-  Widget _buildSendButton() {
-    final hasContent = _hasText || imageFile != null || _mediaFiles.isNotEmpty;
+  Widget _buildSendButton({
+    required bool isEditing,
+    MessageEdit? messageEdit,
+  }) {
+    final hasContent = _hasText || imageFile != null || _mediaFiles.isNotEmpty || isEditing;
 
     return GestureDetector(
       onTapDown: (_) => setState(() => _isSendPressed = true),
@@ -832,6 +843,20 @@ class _BottomChatFieldState
       onTapCancel: () => setState(() => _isSendPressed = false),
       onTap: () {
         HapticFeedback.lightImpact();
+        if (isEditing && messageEdit != null) {
+          final updatedText = _messageController.text.trim();
+          if (updatedText.isNotEmpty) {
+            ref.read(chatControllerProvider).editMessage(
+              messageId: messageEdit.messageId,
+              receiverUserId: widget.receiverUserId,
+              newText: updatedText,
+            );
+          }
+          ref.read(messageEditProvider.notifier).state = null;
+          _messageController.clear();
+          _focusNode.unfocus();
+          return;
+        }
         sendTextMessage();
       },
       child: AnimatedScale(
@@ -844,19 +869,21 @@ class _BottomChatFieldState
           decoration: BoxDecoration(
             shape: BoxShape.circle,
             gradient: LinearGradient(
-              colors: hasContent
-                  ? const [tabColor, accentOrange]
-                  : [
-                      tabColor.withValues(alpha: 0.55),
-                      accentOrange.withValues(alpha: 0.55),
-                    ],
+              colors: isEditing
+                  ? const [Color(0xFF00C853), Color(0xFF64DD17)]
+                  : (hasContent
+                      ? const [tabColor, accentOrange]
+                      : [
+                          tabColor.withValues(alpha: 0.55),
+                          accentOrange.withValues(alpha: 0.55),
+                        ]),
               begin: Alignment.topLeft,
               end: Alignment.bottomRight,
             ),
             boxShadow: hasContent
                 ? [
                     BoxShadow(
-                      color: tabColor.withValues(alpha: 0.45),
+                      color: (isEditing ? const Color(0xFF00C853) : tabColor).withValues(alpha: 0.45),
                       blurRadius: 12,
                       spreadRadius: 1,
                       offset: const Offset(0, 3),
@@ -876,10 +903,10 @@ class _BottomChatFieldState
               transitionBuilder: (child, animation) =>
                   ScaleTransition(scale: animation, child: child),
               child: Icon(
-                Icons.send_rounded,
-                key: ValueKey<bool>(hasContent),
+                isEditing ? Icons.check_rounded : Icons.send_rounded,
+                key: ValueKey<String>(isEditing ? 'edit_check' : hasContent.toString()),
                 color: Colors.white,
-                size: 21,
+                size: isEditing ? 24 : 21,
               ),
             ),
           ),
@@ -891,6 +918,23 @@ class _BottomChatFieldState
   @override
   Widget build(BuildContext context) {
     log("checking token id in bottom field ${widget.fcmToken}");
+    final messageEdit = ref.watch(messageEditProvider);
+    final isEditing = messageEdit != null &&
+        messageEdit.chatType == 'one_to_one' &&
+        messageEdit.receiverUserId == widget.receiverUserId;
+
+    ref.listen<MessageEdit?>(messageEditProvider, (previous, next) {
+      if (next != null &&
+          next.chatType == 'one_to_one' &&
+          next.receiverUserId == widget.receiverUserId) {
+        _messageController.text = next.text;
+        _messageController.selection = TextSelection.fromPosition(
+          TextPosition(offset: _messageController.text.length),
+        );
+        _focusNode.requestFocus();
+      }
+    });
+
     final messageReply = ref.watch(messageReplyProvider);
     final isShowMessageReply = messageReply != null;
 
@@ -900,8 +944,18 @@ class _BottomChatFieldState
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
-          if (isShowMessageReply) const MessageReplyPreview(),
-          _buildAttachedMediaPreview(),
+          if (isEditing)
+            MessageEditPreview(
+              text: messageEdit.text,
+              onCancel: () {
+                ref.read(messageEditProvider.notifier).state = null;
+                _messageController.clear();
+                _focusNode.unfocus();
+              },
+            )
+          else if (isShowMessageReply)
+            const MessageReplyPreview(),
+          if (!isEditing) _buildAttachedMediaPreview(),
           Padding(
             padding: const EdgeInsets.only(
               left: 10,
@@ -957,9 +1011,11 @@ class _BottomChatFieldState
                             cursorWidth: 2.0,
                             cursorRadius: const Radius.circular(2),
                             decoration: InputDecoration(
-                              hintText: imageFile != null
-                                  ? 'Add a caption...'
-                                  : 'Type a message...',
+                              hintText: isEditing
+                                  ? 'Edit message...'
+                                  : (imageFile != null
+                                      ? 'Add a caption...'
+                                      : 'Type a message...'),
                               hintStyle: TextStyle(
                                 color: greyColor.withValues(alpha: 0.5),
                                 fontSize: 15,
@@ -993,46 +1049,51 @@ class _BottomChatFieldState
                                 ),
                           ),
                         ),
-                        // Attachment button
-                        Material(
-                          color: Colors.transparent,
-                          child: InkWell(
-                            onTap: showMediaOptions,
-                            borderRadius: BorderRadius.circular(20),
-                            child: Padding(
-                              padding: const EdgeInsets.all(7),
-                              child: Icon(
-                                Icons.attach_file_rounded,
-                                color: _focusNode.hasFocus
-                                    ? tabColor.withValues(alpha: 0.85)
-                                    : greyColor,
-                                size: 21,
+                        if (!isEditing) ...[
+                          // Attachment button
+                          Material(
+                            color: Colors.transparent,
+                            child: InkWell(
+                              onTap: showMediaOptions,
+                              borderRadius: BorderRadius.circular(20),
+                              child: Padding(
+                                padding: const EdgeInsets.all(7),
+                                child: Icon(
+                                  Icons.attach_file_rounded,
+                                  color: _focusNode.hasFocus
+                                      ? tabColor.withValues(alpha: 0.85)
+                                      : greyColor,
+                                  size: 21,
+                                ),
                               ),
                             ),
                           ),
-                        ),
-                        // Direct camera shortcut
-                        Material(
-                          color: Colors.transparent,
-                          child: InkWell(
-                            onTap: openCamera,
-                            borderRadius: BorderRadius.circular(20),
-                            child: const Padding(
-                              padding: EdgeInsets.all(7),
-                              child: Icon(
-                                Icons.camera_alt_rounded,
-                                color: greyColor,
-                                size: 20,
+                          // Direct camera shortcut
+                          Material(
+                            color: Colors.transparent,
+                            child: InkWell(
+                              onTap: openCamera,
+                              borderRadius: BorderRadius.circular(20),
+                              child: const Padding(
+                                padding: EdgeInsets.all(7),
+                                child: Icon(
+                                  Icons.camera_alt_rounded,
+                                  color: greyColor,
+                                  size: 20,
+                                ),
                               ),
                             ),
                           ),
-                        ),
+                        ],
                       ],
                     ),
                   ),
                 ),
                 const SizedBox(width: 8),
-                _buildSendButton(),
+                _buildSendButton(
+                  isEditing: isEditing,
+                  messageEdit: messageEdit,
+                ),
               ],
             ),
           ),

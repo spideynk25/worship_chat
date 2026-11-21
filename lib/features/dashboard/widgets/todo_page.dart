@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:intl/intl.dart';
 import 'package:worship_chat/colors.dart';
 import 'package:worship_chat/common/utils/utils.dart';
+import 'package:worship_chat/common/widgets/skeleton_loader.dart';
 import 'package:worship_chat/features/dashboard/controller/todo_controller.dart';
 import 'package:worship_chat/features/dashboard/providers/todo_providers.dart';
 import 'package:worship_chat/features/dashboard/screens/subtask_page.dart';
@@ -716,9 +717,7 @@ class _TodoPageState extends ConsumerState<TodoPage> {
             },
           );
         },
-        loading: () => const Center(
-          child: CircularProgressIndicator(color: tabColor),
-        ),
+        loading: () => const TaskPageSkeleton(),
         error: (error, stack) => Center(
           child: Text('Error: $error', style: const TextStyle(color: Colors.red)),
         ),

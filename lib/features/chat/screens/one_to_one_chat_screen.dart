@@ -1,11 +1,18 @@
+import 'dart:async';
 import 'dart:developer';
 import 'dart:io';
+import 'package:cached_network_image/cached_network_image.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:hive_flutter/adapters.dart';
 import 'package:image_cropper/image_cropper.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:worship_chat/colors.dart';
+import 'package:worship_chat/common/utils/app_capabilities.dart';
+import 'package:worship_chat/common/widgets/chat_unavailable_screen.dart';
 import 'package:worship_chat/common/utils/active_chat_notifier.dart';
 import 'package:worship_chat/common/utils/file_messages.dart';
 import 'package:worship_chat/common/utils/firebase_notification_service.dart';
@@ -17,10 +24,11 @@ import 'package:worship_chat/features/auth/controller/auth_controller.dart';
 import 'package:worship_chat/features/chat/controller/chat_controller.dart';
 import 'package:worship_chat/features/chat/screens/user_info_screen.dart';
 import 'package:worship_chat/features/chat/widgets/one_to_one_bottom_chat_field_widget.dart';
+import 'package:worship_chat/features/home/screens/home_screen.dart';
 import 'package:worship_chat/models/user_model.dart';
 import 'package:worship_chat/features/chat/widgets/one_to_one_chat_list_widget.dart';
 
-final displayImageProvider = StateProvider<bool>((ref) => false);
+final displayImageProvider = StateProvider<bool>((ref) => true);
 
 class OneToOneChatScreen extends ConsumerStatefulWidget {
   static const String routeName = '/mobile-chat-screen';
@@ -52,10 +60,15 @@ class _OneToOneChatScreenState extends ConsumerState<OneToOneChatScreen>
   // Calling ref.watch(chatControllerProvider) in build() re-runs the full
   // build whenever a message is sent, causing the whole screen to blink.
   Stream<bool> _typingStream = Stream.value(false);
+  StreamSubscription<DocumentSnapshot<Map<String, dynamic>>>? _backgroundSubscription;
+  String? _currentChatBackgroundUrl;
 
   @override
   void initState() {
     super.initState();
+    _currentChatBackgroundUrl = widget.chatBackgroundUrl;
+    _loadCachedBackground();
+    if (!AppCapabilities.current.chatEnabled) return;
     WidgetsBinding.instance.addObserver(this);
     ActiveChatNotifier.instance.enter(widget.uid, chatName: widget.name);
     FirebaseNotificationService.cancelNotificationsForChat(
@@ -67,7 +80,33 @@ class _OneToOneChatScreenState extends ConsumerState<OneToOneChatScreen>
     // chatControllerProvider notifications will NOT trigger build().
     _typingStream = ref.read(chatControllerProvider).getTypingStatus(widget.uid);
     displayOrHideImage();
+
+    final currentUserId = FirebaseAuth.instance.currentUser?.uid;
+    if (currentUserId != null) {
+      _backgroundSubscription = FirebaseFirestore.instance
+          .collection('users')
+          .doc(currentUserId)
+          .collection('chats')
+          .doc(widget.uid)
+          .snapshots()
+          .listen((snapshot) {
+            if (snapshot.exists && mounted) {
+              final data = snapshot.data();
+              final bg = data?['chatBackgroundUrl']?.toString();
+              if (bg != null && bg.isNotEmpty && bg != _currentChatBackgroundUrl) {
+                setState(() {
+                  _currentChatBackgroundUrl = bg;
+                });
+                SharedPreferences.getInstance().then((prefs) {
+                  prefs.setString('chat_bg_${widget.uid}', bg);
+                }).catchError((_) {});
+              }
+            }
+          });
+    }
+
     WidgetsBinding.instance.addPostFrameCallback((_) {
+      ref.read(authControllerProvider).setUserState(true);
       FirebaseNotificationService.cancelNotificationsForChat(
         widget.uid,
         chatName: widget.name,
@@ -78,10 +117,30 @@ class _OneToOneChatScreenState extends ConsumerState<OneToOneChatScreen>
     });
   }
 
+  Future<void> _loadCachedBackground() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final cachedBg = prefs.getString('chat_bg_${widget.uid}');
+      if (cachedBg != null && cachedBg.isNotEmpty && mounted) {
+        if (_currentChatBackgroundUrl == null || _currentChatBackgroundUrl!.isEmpty) {
+          setState(() {
+            _currentChatBackgroundUrl = cachedBg;
+          });
+        }
+      } else if (widget.chatBackgroundUrl != null && widget.chatBackgroundUrl!.isNotEmpty) {
+        prefs.setString('chat_bg_${widget.uid}', widget.chatBackgroundUrl!);
+      }
+    } catch (e) {
+      log('Error loading cached chat background: $e');
+    }
+  }
+
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     super.didChangeAppLifecycleState(state);
+    if (!AppCapabilities.current.chatEnabled) return;
     if (state == AppLifecycleState.resumed) {
+      ref.read(authControllerProvider).setUserState(true);
       ActiveChatNotifier.instance.enter(widget.uid, chatName: widget.name);
       FirebaseNotificationService.cancelNotificationsForChat(
         widget.uid,
@@ -90,11 +149,21 @@ class _OneToOneChatScreenState extends ConsumerState<OneToOneChatScreen>
       if (mounted) {
         ref.read(chatControllerProvider).markChatAsSeen(widget.uid);
       }
+    } else if (state == AppLifecycleState.inactive ||
+        state == AppLifecycleState.paused ||
+        state == AppLifecycleState.detached ||
+        state == AppLifecycleState.hidden) {
+      ref.read(authControllerProvider).setUserState(false);
     }
   }
 
   @override
   void dispose() {
+    _backgroundSubscription?.cancel();
+    if (!AppCapabilities.current.chatEnabled) {
+      super.dispose();
+      return;
+    }
     WidgetsBinding.instance.removeObserver(this);
     ActiveChatNotifier.instance.leave();
     FirebaseNotificationService.cancelNotificationsForChat(
@@ -147,10 +216,9 @@ class _OneToOneChatScreenState extends ConsumerState<OneToOneChatScreen>
             lockAspectRatio: false,
             hideBottomControls: true,
             showCropGrid: true,
-            statusBarColor: appBarColor,
-            dimmedLayerColor: Colors.black.withOpacity(0.8),
+            dimmedLayerColor: Colors.black.withValues(alpha: 0.8),
             cropFrameColor: Colors.white,
-            cropGridColor: Colors.white.withOpacity(0.5),
+            cropGridColor: Colors.white.withValues(alpha: 0.5),
             cropFrameStrokeWidth: 2,
             cropGridRowCount: 3,
             cropGridColumnCount: 3,
@@ -200,6 +268,22 @@ class _OneToOneChatScreenState extends ConsumerState<OneToOneChatScreen>
       if (mounted) Navigator.pop(context);
 
       if (imageUrl != null) {
+        setState(() {
+          _currentChatBackgroundUrl = imageUrl;
+        });
+        SharedPreferences.getInstance().then((prefs) {
+          prefs.setString('chat_bg_${widget.uid}', imageUrl);
+        }).catchError((_) {});
+
+        // Automatically ensure background is visible when user sets a new wallpaper
+        if (!ref.read(displayImageProvider)) {
+          Box displayImageBox = Hive.isBoxOpen('displayImage')
+              ? Hive.box('displayImage')
+              : await Hive.openBox('displayImage');
+          await displayImageBox.put('displayImage', true);
+          ref.read(displayImageProvider.notifier).state = true;
+        }
+
         await ref
             .read(chatControllerProvider)
             .updateChatBackground(widget.uid, imageUrl);
@@ -249,36 +333,53 @@ class _OneToOneChatScreenState extends ConsumerState<OneToOneChatScreen>
     );
   }
 
+  void _handleBack() {
+    if (Navigator.of(context).canPop()) {
+      Navigator.of(context).pop();
+    } else {
+      Navigator.of(context).pushReplacement(
+        MaterialPageRoute(builder: (_) => const HomeScreen()),
+      );
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(
-        toolbarHeight: 64,
-        elevation: 0,
-        scrolledUnderElevation: 0,
-        backgroundColor: appBarColor,
-        automaticallyImplyLeading: false,
-        leadingWidth: 0,
-        titleSpacing: 0,
-        bottom: PreferredSize(
-          preferredSize: const Size.fromHeight(0.6),
-          child: Container(
-            color: dividerColor.withValues(alpha: 0.5),
-            height: 0.6,
+    if (!AppCapabilities.current.chatEnabled) return const ChatUnavailableScreen();
+    return PopScope(
+      canPop: false,
+      onPopInvokedWithResult: (didPop, result) {
+        if (didPop) return;
+        _handleBack();
+      },
+      child: Scaffold(
+        appBar: AppBar(
+          toolbarHeight: 64,
+          elevation: 0,
+          scrolledUnderElevation: 0,
+          backgroundColor: appBarColor,
+          automaticallyImplyLeading: false,
+          leadingWidth: 0,
+          titleSpacing: 0,
+          bottom: PreferredSize(
+            preferredSize: const Size.fromHeight(0.6),
+            child: Container(
+              color: dividerColor.withValues(alpha: 0.5),
+              height: 0.6,
+            ),
           ),
-        ),
-        title: Padding(
-          padding: const EdgeInsets.only(left: 4, right: 4),
-          child: Row(
-            children: [
-              IconButton(
-                alignment: Alignment.centerLeft,
-                onPressed: () => Navigator.pop(context),
-                icon: const Icon(CupertinoIcons.back, size: 24),
-                padding: const EdgeInsets.only(left: 6, right: 4),
-                constraints: const BoxConstraints(minWidth: 36, minHeight: 44),
-                tooltip: 'Back',
-              ),
+          title: Padding(
+            padding: const EdgeInsets.only(left: 4, right: 4),
+            child: Row(
+              children: [
+                IconButton(
+                  alignment: Alignment.centerLeft,
+                  onPressed: _handleBack,
+                  icon: const Icon(CupertinoIcons.back, size: 24),
+                  padding: const EdgeInsets.only(left: 6, right: 4),
+                  constraints: const BoxConstraints(minWidth: 36, minHeight: 44),
+                  tooltip: 'Back',
+                ),
               Expanded(
                 child: StreamBuilder<UserModel>(
                   stream:
@@ -380,6 +481,7 @@ class _OneToOneChatScreenState extends ConsumerState<OneToOneChatScreen>
                                     return AppBarStatusSubtitle(
                                       isTyping: isTyping,
                                       isOnline: user?.isOnline == true,
+                                      lastSeen: user?.lastSeen,
                                       accentColor: tabColor,
                                     );
                                   },
@@ -540,13 +642,17 @@ class _OneToOneChatScreenState extends ConsumerState<OneToOneChatScreen>
           Consumer(
             builder: (context, ref, child) {
               final displayImage = ref.watch(displayImageProvider);
-              return widget.chatBackgroundUrl != null && displayImage
+              final activeBackgroundUrl =
+                  _currentChatBackgroundUrl ?? widget.chatBackgroundUrl;
+              return activeBackgroundUrl != null &&
+                      activeBackgroundUrl.isNotEmpty &&
+                      displayImage
                   ? Container(
                       width: double.infinity,
                       height: double.infinity,
                       decoration: BoxDecoration(
                         image: DecorationImage(
-                          image: NetworkImage(widget.chatBackgroundUrl!),
+                          image: CachedNetworkImageProvider(activeBackgroundUrl),
                           fit: BoxFit.cover,
                         ),
                       ),
@@ -579,12 +685,13 @@ class _OneToOneChatScreenState extends ConsumerState<OneToOneChatScreen>
                 receiverUserId: widget.uid,
                 fcmToken: widget.fcmToken,
                 unseenCount: widget.unseenCount,
-                chatBackgroundUrl: widget.chatBackgroundUrl,
+                chatBackgroundUrl: _currentChatBackgroundUrl ?? widget.chatBackgroundUrl,
               ),
             ],
           ),
         ],
       ),
-    );
-  }
+    ),
+  );
+}
 }

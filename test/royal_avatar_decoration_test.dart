@@ -159,7 +159,7 @@ void main() {
         position: 'Aura Elixiria Goddess',
         accentColor: const Color(0xFFFFD700),
         size: 16.0,
-        overlayWidget: Container(
+        overlayWidget: SizedBox(
           key: const ValueKey('unread_indicator'),
           width: 8,
           height: 8,
@@ -197,7 +197,7 @@ void main() {
         family: 'Aura',
         accentColor: const Color(0xFFFFD700),
         size: 16.0,
-        overlayWidget: Container(
+        overlayWidget: SizedBox(
           key: const ValueKey('unread_family_dot'),
           width: 8,
           height: 8,
@@ -227,6 +227,55 @@ void main() {
       expect(find.byKey(const ValueKey('unread_family_dot')), findsOneWidget);
       expect(find.byType(Image), findsWidgets);
     });
+
+    testWidgets('RoyalAvatarDecoration never renders crown for Wife or Fuck Toy',
+        (tester) async {
+      await tester.pumpWidget(
+        const MaterialApp(
+          home: Scaffold(
+            body: Column(
+              children: [
+                // Wife with explicit isWifeOrFuckToy flag
+                RoyalAvatarDecoration(
+                  position: 'Queen',
+                  isWifeOrFuckToy: true,
+                  avatarRadius: 28,
+                  child: CircleAvatar(radius: 28, child: Text('W1')),
+                ),
+                // Wife detected from livingPlace
+                RoyalAvatarDecoration(
+                  livingPlace: 'Wife of Queen Pooja - Samantha',
+                  avatarRadius: 28,
+                  child: CircleAvatar(radius: 28, child: Text('W2')),
+                ),
+                // Fuck Toy detected from livingPlace
+                RoyalAvatarDecoration(
+                  livingPlace: 'Fuck Toy of Queen Pooja - Samantha',
+                  avatarRadius: 28,
+                  child: CircleAvatar(radius: 28, child: Text('FT1')),
+                ),
+                // Fuck Toy with position
+                RoyalAvatarDecoration(
+                  position: 'Fuck Toy',
+                  avatarRadius: 28,
+                  child: CircleAvatar(radius: 28, child: Text('FT2')),
+                ),
+              ],
+            ),
+          ),
+        ),
+      );
+
+      // Verify all circle avatars are present
+      expect(find.text('W1'), findsOneWidget);
+      expect(find.text('W2'), findsOneWidget);
+      expect(find.text('FT1'), findsOneWidget);
+      expect(find.text('FT2'), findsOneWidget);
+
+      // Zero crown images should be rendered
+      expect(find.byType(Image), findsNothing);
+    });
   });
 }
+
 

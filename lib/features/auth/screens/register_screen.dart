@@ -38,10 +38,21 @@ class _RegisterScreenState extends ConsumerState<RegisterScreen> {
           .read(authControllerProvider)
           .registerWithEmail(context, name, userName, email, password);
 
+      if (!mounted) return;
       setState(() {
         _isLoading = false;
       });
     }
+  }
+
+  @override
+  void dispose() {
+    _nameController.dispose();
+    _userNameController.dispose();
+    _emailController.dispose();
+    _passwordController.dispose();
+    _confirmPasswordController.dispose();
+    super.dispose();
   }
 
   @override
@@ -62,8 +73,9 @@ class _RegisterScreenState extends ConsumerState<RegisterScreen> {
           SafeArea(
             child: Center(
               child: SingleChildScrollView(
-                padding: const EdgeInsets.symmetric(horizontal: 24.0),
+                padding: const EdgeInsets.symmetric(horizontal: 24.0, vertical: 16),
                 child: Container(
+                  constraints: const BoxConstraints(maxWidth: 480),
                   padding: const EdgeInsets.all(25),
                   decoration: BoxDecoration(
                     color: Colors.black.withValues(alpha: 0.3),
@@ -322,8 +334,9 @@ class _RegisterScreenState extends ConsumerState<RegisterScreen> {
                         const SizedBox(height: 10),
 
                         // Navigate to Login
-                        Row(
-                          mainAxisAlignment: MainAxisAlignment.center,
+                        Wrap(
+                          alignment: WrapAlignment.center,
+                          crossAxisAlignment: WrapCrossAlignment.center,
                           children: [
                             const Text(
                               "Already have an account?",

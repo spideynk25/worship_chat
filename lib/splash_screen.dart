@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
-import 'dart:math' as math;
+import 'package:worship_chat/colors.dart';
 
+/// A modern, tier-1 splash screen for Worship Chat with coordinated entrance animations,
+/// ambient breathing glow, and platform-aligned branding.
 class SplashScreen extends StatefulWidget {
   const SplashScreen({super.key});
 
@@ -10,413 +12,375 @@ class SplashScreen extends StatefulWidget {
 
 class _SplashScreenState extends State<SplashScreen>
     with TickerProviderStateMixin {
-  late AnimationController _logoController;
-  late AnimationController _textController;
-  late AnimationController _particlesController;
-  late AnimationController _pulseController;
-  late AnimationController _rotationController;
+  late final AnimationController _entranceController;
+  late final AnimationController _pulseController;
 
-  late Animation<double> _logoScale;
-  late Animation<double> _logoOpacity;
-  late Animation<double> _textOpacity;
-  late Animation<Offset> _textSlide;
-  late Animation<double> _pulseAnimation;
-  late Animation<double> _rotation;
+  late final Animation<double> _logoScale;
+  late final Animation<double> _logoOpacity;
+  late final Animation<double> _textOpacity;
+  late final Animation<Offset> _textSlide;
+  late final Animation<double> _glowScale;
+  late final Animation<double> _glowOpacity;
+  late final Animation<double> _bottomOpacity;
 
   @override
   void initState() {
     super.initState();
 
-    // Logo animation controller
-    _logoController = AnimationController(
+    // Coordinated entrance: completes smoothly within 700ms
+    _entranceController = AnimationController(
       vsync: this,
-      duration: const Duration(milliseconds: 1500),
+      duration: const Duration(milliseconds: 700),
     );
 
-    // Text animation controller
-    _textController = AnimationController(
-      vsync: this,
-      duration: const Duration(milliseconds: 1000),
-    );
-
-    // Particles animation controller
-    _particlesController = AnimationController(
-      vsync: this,
-      duration: const Duration(seconds: 3),
-    )..repeat();
-
-    // Pulse animation controller
+    // Subtle breathing ambient pulse (non-blocking)
     _pulseController = AnimationController(
       vsync: this,
-      duration: const Duration(milliseconds: 1500),
+      duration: const Duration(milliseconds: 1800),
     )..repeat(reverse: true);
 
-    // Rotation animation controller
-    _rotationController = AnimationController(
-      vsync: this,
-      duration: const Duration(milliseconds: 2000),
-    );
-
-    // Logo animations
-    _logoScale = Tween<double>(begin: 0.0, end: 1.0).animate(
-      CurvedAnimation(parent: _logoController, curve: Curves.elasticOut),
+    _logoScale = Tween<double>(begin: 0.82, end: 1.0).animate(
+      CurvedAnimation(
+        parent: _entranceController,
+        curve: const Interval(0.0, 0.75, curve: Curves.easeOutCubic),
+      ),
     );
 
     _logoOpacity = Tween<double>(begin: 0.0, end: 1.0).animate(
-      CurvedAnimation(parent: _logoController, curve: const Interval(0.0, 0.5)),
+      CurvedAnimation(
+        parent: _entranceController,
+        curve: const Interval(0.0, 0.55, curve: Curves.easeOut),
+      ),
     );
 
-    _rotation = Tween<double>(begin: 0.0, end: 2 * math.pi).animate(
-      CurvedAnimation(parent: _rotationController, curve: Curves.easeInOut),
+    _textOpacity = Tween<double>(begin: 0.0, end: 1.0).animate(
+      CurvedAnimation(
+        parent: _entranceController,
+        curve: const Interval(0.25, 0.85, curve: Curves.easeOut),
+      ),
     );
 
-    // Pulse animation
-    _pulseAnimation = Tween<double>(begin: 1.0, end: 1.08).animate(
-      CurvedAnimation(parent: _pulseController, curve: Curves.easeInOut),
+    _textSlide = Tween<Offset>(
+      begin: const Offset(0, 0.25),
+      end: Offset.zero,
+    ).animate(
+      CurvedAnimation(
+        parent: _entranceController,
+        curve: const Interval(0.25, 0.85, curve: Curves.easeOutCubic),
+      ),
     );
 
-    // Text animations
-    _textOpacity = Tween<double>(
-      begin: 0.0,
-      end: 1.0,
-    ).animate(CurvedAnimation(parent: _textController, curve: Curves.easeIn));
+    _bottomOpacity = Tween<double>(begin: 0.0, end: 1.0).animate(
+      CurvedAnimation(
+        parent: _entranceController,
+        curve: const Interval(0.45, 1.0, curve: Curves.easeOut),
+      ),
+    );
 
-    _textSlide = Tween<Offset>(begin: const Offset(0, 0.5), end: Offset.zero)
-        .animate(
-          CurvedAnimation(parent: _textController, curve: Curves.easeOutCubic),
-        );
+    _glowScale = Tween<double>(begin: 0.95, end: 1.06).animate(
+      CurvedAnimation(
+        parent: _pulseController,
+        curve: Curves.easeInOut,
+      ),
+    );
 
-    // Start animations
-    _startAnimations();
-  }
+    _glowOpacity = Tween<double>(begin: 0.35, end: 0.65).animate(
+      CurvedAnimation(
+        parent: _pulseController,
+        curve: Curves.easeInOut,
+      ),
+    );
 
-  void _startAnimations() async {
-    await _rotationController.forward();
-    await _logoController.forward();
-    await _textController.forward();
+    _entranceController.forward();
   }
 
   @override
   void dispose() {
-    _logoController.dispose();
-    _textController.dispose();
-    _particlesController.dispose();
+    _entranceController.dispose();
     _pulseController.dispose();
-    _rotationController.dispose();
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      body: Container(
-        decoration: BoxDecoration(
-          gradient: LinearGradient(
-            begin: Alignment.topLeft,
-            end: Alignment.bottomRight,
-            colors: [Color(0xFF0A0A0F), Color(0xFF12121C), Color(0xFF1A0A18)],
-          ),
-        ),
-        child: Stack(
-          children: [
-            // Animated background particles
-            AnimatedBuilder(
-              animation: _particlesController,
-              builder: (context, child) {
-                return CustomPaint(
-                  painter: ParticlesPainter(_particlesController.value),
-                  size: Size.infinite,
-                );
-              },
-            ),
+    final size = MediaQuery.sizeOf(context);
 
-            // Main content
-            Center(
-              child: Column(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  // Animated logo with pulse effect and your image
-                  AnimatedBuilder(
-                    animation: Listenable.merge([
-                      _logoController,
-                      _pulseController,
-                      _rotationController,
-                    ]),
-                    builder: (context, child) {
-                      return Transform.scale(
-                        scale: _logoScale.value * _pulseAnimation.value,
-                        child: Transform.rotate(
-                          angle: _rotation.value,
+    return Scaffold(
+      backgroundColor: backgroundColor,
+      body: Stack(
+        fit: StackFit.expand,
+        children: [
+          // ── Background Ambient Radial Gradient ──
+          Positioned.fill(
+            child: DecoratedBox(
+              decoration: BoxDecoration(
+                gradient: RadialGradient(
+                  center: const Alignment(0, -0.15),
+                  radius: 1.0,
+                  colors: [
+                    tabColor.withValues(alpha: 0.16),
+                    accentOrange.withValues(alpha: 0.06),
+                    backgroundColor,
+                  ],
+                  stops: const [0.0, 0.5, 1.0],
+                ),
+              ),
+            ),
+          ),
+
+          // ── Center Content: App Emblem, Title & Tagline ──
+          Center(
+            child: SingleChildScrollView(
+              physics: const NeverScrollableScrollPhysics(),
+              child: Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 24),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    // Animated Logo with Breathing Ambient Glow
+                    AnimatedBuilder(
+                      animation: Listenable.merge([
+                        _entranceController,
+                        _pulseController,
+                      ]),
+                      builder: (context, child) {
+                        return Transform.scale(
+                          scale: _logoScale.value,
                           child: Opacity(
                             opacity: _logoOpacity.value,
-                            child: Container(
-                              width: 180,
-                              height: 180,
-                              decoration: BoxDecoration(
-                                shape: BoxShape.circle,
-                                boxShadow: [
-                                  BoxShadow(
-                                    color: Color(0xFFFF2D78).withOpacity(0.6),
-                                    blurRadius: 40,
-                                    spreadRadius: 15,
-                                  ),
-                                  BoxShadow(
-                                    color: Color(0xFFFF7AAF).withOpacity(0.4),
-                                    blurRadius: 60,
-                                    spreadRadius: 25,
-                                  ),
-                                ],
-                              ),
-                              child: ClipRRect(
-                                borderRadius: BorderRadius.circular(90),
-                                child: Builder(
-                                  builder: (context) {
-                                    // Try to load the image
-                                    try {
-                                      return Image.asset(
-                                        'assets/app icons/app_icon.jpg',
-                                        fit: BoxFit.cover,
-                                        filterQuality: FilterQuality.high,
-                                        errorBuilder: (context, error, stackTrace) {
-                                          print(
-                                            '❌ Error loading splash image: $error',
-                                          );
-                                          print(
-                                            '📂 Attempted path: assets/app icons/app_icon.jpg',
-                                          );
-                                          print(
-                                            '💡 Make sure you ran: flutter clean && flutter pub get',
-                                          );
-
-                                          // Beautiful fallback
-                                          return Container(
-                                            decoration: BoxDecoration(
-                                              shape: BoxShape.circle,
-                                              gradient: LinearGradient(
-                                                begin: Alignment.topLeft,
-                                                end: Alignment.bottomRight,
-                                                colors: [
-                                                  Color(0xFFFF2D78),
-                                                  Color(0xFFFF7AAF),
-                                                ],
-                                              ),
-                                            ),
-                                            child: Icon(
-                                              Icons.chat_bubble_rounded,
-                                              size: 90,
-                                              color: Colors.white,
-                                            ),
-                                          );
-                                        },
-                                      );
-                                    } catch (e) {
-                                      print('❌ Exception loading image: $e');
-                                      return Container(
-                                        decoration: BoxDecoration(
-                                          shape: BoxShape.circle,
-                                          gradient: LinearGradient(
-                                            begin: Alignment.topLeft,
-                                            end: Alignment.bottomRight,
-                                            colors: [
-                                              Color(0xFFFF2D78),
-                                              Color(0xFFFF7AAF),
-                                            ],
+                            child: Stack(
+                              alignment: Alignment.center,
+                              children: [
+                                // Ambient soft glow ring
+                                Transform.scale(
+                                  scale: _glowScale.value,
+                                  child: Container(
+                                    width: 130,
+                                    height: 130,
+                                    decoration: BoxDecoration(
+                                      shape: BoxShape.circle,
+                                      boxShadow: [
+                                        BoxShadow(
+                                          color: tabColor.withValues(
+                                            alpha: _glowOpacity.value * 0.45,
                                           ),
+                                          blurRadius: 48,
+                                          spreadRadius: 8,
                                         ),
+                                        BoxShadow(
+                                          color: accentOrange.withValues(
+                                            alpha: _glowOpacity.value * 0.25,
+                                          ),
+                                          blurRadius: 64,
+                                          spreadRadius: 16,
+                                        ),
+                                      ],
+                                    ),
+                                  ),
+                                ),
+
+                                // Squircle Icon Container
+                                Container(
+                                  width: 112,
+                                  height: 112,
+                                  decoration: BoxDecoration(
+                                    borderRadius: BorderRadius.circular(26),
+                                    gradient: LinearGradient(
+                                      begin: Alignment.topLeft,
+                                      end: Alignment.bottomRight,
+                                      colors: [
+                                        tabColor.withValues(alpha: 0.3),
+                                        Colors.white.withValues(alpha: 0.08),
+                                      ],
+                                    ),
+                                    border: Border.all(
+                                      color: Colors.white.withValues(alpha: 0.22),
+                                      width: 1.5,
+                                    ),
+                                    boxShadow: [
+                                      BoxShadow(
+                                        color: Colors.black.withValues(alpha: 0.5),
+                                        blurRadius: 20,
+                                        offset: const Offset(0, 8),
+                                      ),
+                                    ],
+                                  ),
+                                  clipBehavior: Clip.antiAlias,
+                                  child: Image.asset(
+                                    'assets/app icons/app_icon.jpg',
+                                    fit: BoxFit.cover,
+                                    filterQuality: FilterQuality.high,
+                                    errorBuilder: (_, __, ___) => Container(
+                                      decoration: const BoxDecoration(
+                                        gradient: LinearGradient(
+                                          colors: [tabColor, accentOrange],
+                                          begin: Alignment.topLeft,
+                                          end: Alignment.bottomRight,
+                                        ),
+                                      ),
+                                      child: const Center(
                                         child: Icon(
                                           Icons.chat_bubble_rounded,
-                                          size: 90,
                                           color: Colors.white,
+                                          size: 52,
                                         ),
-                                      );
-                                    }
-                                  },
+                                      ),
+                                    ),
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        );
+                      },
+                    ),
+
+                    const SizedBox(height: 32),
+
+                    // App Title & Tagline with Smooth Slide & Fade
+                    SlideTransition(
+                      position: _textSlide,
+                      child: FadeTransition(
+                        opacity: _textOpacity,
+                        child: Column(
+                          children: [
+                            ShaderMask(
+                              shaderCallback: (bounds) => const LinearGradient(
+                                colors: [
+                                  Colors.white,
+                                  Color(0xFFFFF0F5),
+                                  Color(0xFFFFD4E2),
+                                ],
+                                begin: Alignment.topCenter,
+                                end: Alignment.bottomCenter,
+                              ).createShader(bounds),
+                              child: const Text(
+                                'Worship Chat',
+                                style: TextStyle(
+                                  fontSize: 30,
+                                  fontWeight: FontWeight.w800,
+                                  color: Colors.white,
+                                  letterSpacing: 1.4,
                                 ),
                               ),
                             ),
-                          ),
+                          ],
                         ),
-                      );
-                    },
-                  ),
-
-                  const SizedBox(height: 50),
-
-                  // Animated app name
-                  SlideTransition(
-                    position: _textSlide,
-                    child: FadeTransition(
-                      opacity: _textOpacity,
-                      child: Column(
-                        children: [
-                          ShaderMask(
-                            shaderCallback: (bounds) => LinearGradient(
-                              colors: [
-                                Color(0xFFFF2D78),
-                                Color(0xFFFF7AAF),
-                                Color(0xFFFF6B2D),
-                              ],
-                            ).createShader(bounds),
-                            child: Text(
-                              'Worship Chat',
-                              style: TextStyle(
-                                fontSize: 38,
-                                fontWeight: FontWeight.bold,
-                                color: Colors.white,
-                                letterSpacing: 2,
-                              ),
-                            ),
-                          ),
-                          const SizedBox(height: 12),
-                          Text(
-                            'Connect • Share • Inspire',
-                            style: TextStyle(
-                              fontSize: 16,
-                              color: Colors.white.withOpacity(0.8),
-                              letterSpacing: 1.5,
-                              fontWeight: FontWeight.w300,
-                            ),
-                          ),
-                        ],
                       ),
                     ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+
+          // ── Bottom Branding & Discreet Activity Indicator ──
+          Positioned(
+            left: 0,
+            right: 0,
+            bottom: size.height > 600 ? 44 : 24,
+            child: FadeTransition(
+              opacity: _bottomOpacity,
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  // Subtle smooth shimmer loading line
+                  const _SleekBootLoader(),
+                  const SizedBox(height: 20),
+                  Text(
+                    'from',
+                    style: TextStyle(
+                      color: Colors.white.withValues(alpha: 0.32),
+                      fontSize: 11,
+                      letterSpacing: 1.2,
+                    ),
                   ),
-
-                  const SizedBox(height: 60),
-
-                  // Animated loading dots
-                  FadeTransition(
-                    opacity: _textOpacity,
-                    child: _AnimatedLoadingDots(),
+                  const SizedBox(height: 4),
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      Icon(
+                        Icons.favorite_rounded,
+                        size: 13,
+                        color: tabColor.withValues(alpha: 0.85),
+                      ),
+                      const SizedBox(width: 6),
+                      Text(
+                        'WORSHIP',
+                        style: TextStyle(
+                          color: Colors.white.withValues(alpha: 0.82),
+                          fontSize: 12.5,
+                          fontWeight: FontWeight.w800,
+                          letterSpacing: 3.2,
+                        ),
+                      ),
+                    ],
                   ),
                 ],
               ),
             ),
-
-            // Bottom text
-            Positioned(
-              bottom: 40,
-              left: 0,
-              right: 0,
-              child: FadeTransition(
-                opacity: _textOpacity,
-                child: Center(
-                  child: Text(
-                    'Made with ❤️',
-                    style: TextStyle(
-                      color: Colors.white.withOpacity(0.5),
-                      fontSize: 14,
-                      letterSpacing: 1,
-                    ),
-                  ),
-                ),
-              ),
-            ),
-          ],
-        ),
+          ),
+        ],
       ),
     );
   }
 }
 
-// Animated loading dots widget
-class _AnimatedLoadingDots extends StatefulWidget {
+/// A compact, elegant loading indicator for splash initialization.
+class _SleekBootLoader extends StatefulWidget {
+  const _SleekBootLoader();
+
   @override
-  State<_AnimatedLoadingDots> createState() => _AnimatedLoadingDotsState();
+  State<_SleekBootLoader> createState() => _SleekBootLoaderState();
 }
 
-class _AnimatedLoadingDotsState extends State<_AnimatedLoadingDots>
+class _SleekBootLoaderState extends State<_SleekBootLoader>
     with SingleTickerProviderStateMixin {
-  late AnimationController _controller;
+  late final AnimationController _ctrl;
 
   @override
   void initState() {
     super.initState();
-    _controller = AnimationController(
+    _ctrl = AnimationController(
       vsync: this,
-      duration: const Duration(milliseconds: 1200),
+      duration: const Duration(milliseconds: 1400),
     )..repeat();
   }
 
   @override
   void dispose() {
-    _controller.dispose();
+    _ctrl.dispose();
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
     return AnimatedBuilder(
-      animation: _controller,
-      builder: (context, child) {
-        return Row(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: List.generate(3, (index) {
-            final delay = index * 0.2;
-            final value = (_controller.value - delay) % 1.0;
-            final scale = (math.sin(value * math.pi) * 0.5 + 0.5);
-
-            return Container(
-              margin: const EdgeInsets.symmetric(horizontal: 4),
-              child: Transform.scale(
-                scale: 0.5 + scale,
-                child: Container(
-                  width: 12,
-                  height: 12,
-                  decoration: BoxDecoration(
-                    shape: BoxShape.circle,
-                    gradient: LinearGradient(
-                      colors: [Color(0xFFFF2D78), Color(0xFFFF7AAF)],
-                    ),
-                    boxShadow: [
-                      BoxShadow(
-                        color: Color(0xFFFF2D78).withOpacity(0.5),
-                        blurRadius: 8,
-                        spreadRadius: 2,
-                      ),
-                    ],
-                  ),
+      animation: _ctrl,
+      builder: (context, _) {
+        return Container(
+          width: 48,
+          height: 3,
+          decoration: BoxDecoration(
+            color: Colors.white.withValues(alpha: 0.08),
+            borderRadius: BorderRadius.circular(2),
+          ),
+          clipBehavior: Clip.antiAlias,
+          child: Align(
+            alignment: Alignment(-1.5 + (_ctrl.value * 3.0), 0),
+            child: Container(
+              width: 24,
+              height: 3,
+              decoration: BoxDecoration(
+                borderRadius: BorderRadius.circular(2),
+                gradient: const LinearGradient(
+                  colors: [tabColor, accentOrange],
                 ),
               ),
-            );
-          }),
+            ),
+          ),
         );
       },
     );
-  }
-}
-
-// Custom painter for animated background particles
-class ParticlesPainter extends CustomPainter {
-  final double animationValue;
-
-  ParticlesPainter(this.animationValue);
-
-  @override
-  void paint(Canvas canvas, Size size) {
-    final paint = Paint()
-      ..style = PaintingStyle.fill
-      ..maskFilter = MaskFilter.blur(BlurStyle.normal, 3);
-
-    // Generate particles
-    for (int i = 0; i < 50; i++) {
-      final random = math.Random(i);
-      final x = random.nextDouble() * size.width;
-      final baseY = random.nextDouble() * size.height;
-
-      // Animate particles moving up
-      final y = (baseY + (animationValue * size.height * 0.5)) % size.height;
-
-      final opacity = (math.sin(animationValue * 2 * math.pi + i) + 1) / 2;
-      final size_particle = random.nextDouble() * 3 + 1;
-
-      paint.color = Color(0xFFFF2D78).withOpacity(opacity * 0.3);
-      canvas.drawCircle(Offset(x, y), size_particle, paint);
-    }
-  }
-
-  @override
-  bool shouldRepaint(ParticlesPainter oldDelegate) {
-    return animationValue != oldDelegate.animationValue;
   }
 }

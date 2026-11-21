@@ -1,4 +1,7 @@
 import 'package:flutter/material.dart';
+import 'package:worship_chat/features/group/widgets/royal_3d_crown_widget.dart';
+import 'package:worship_chat/features/settings/providers/queendom_customization_provider.dart';
+export 'package:worship_chat/features/group/widgets/royal_3d_crown_widget.dart';
 
 /// Helper and widgets for rendering custom Queendom royal emblems instead of
 /// generic Unicode phone emojis.
@@ -9,14 +12,18 @@ class QueendomEmblemHelper {
     'Aura Goddesses': 'assets/emojis/aura_elixiria.png',
     'Core Supreme': 'assets/emojis/core_supreme.png',
     'Core Supreme Goddess': 'assets/emojis/core_supreme.png',
+    'Core Supreme Goddesses': 'assets/emojis/core_supreme.png',
     'Supreme': 'assets/emojis/supreme_goddess.png',
     'Supreme Goddess': 'assets/emojis/supreme_goddess.png',
+    'Supreme Goddesses': 'assets/emojis/supreme_goddess.png',
     'Golden Blossom': 'assets/emojis/golden_blossom.png',
     'Golden Blossom Goddess': 'assets/emojis/golden_blossom.png',
+    'Golden Blossom Goddesses': 'assets/emojis/golden_blossom.png',
     'Goddesses': 'assets/emojis/goddess.png',
     'Goddess': 'assets/emojis/goddess.png',
     'Demi': 'assets/emojis/demi_goddess.png',
     'Demi Goddess': 'assets/emojis/demi_goddess.png',
+    'Demi Goddesses': 'assets/emojis/demi_goddess.png',
     'Dark Angels': 'assets/emojis/dark_angel.png',
     'Dark Angel': 'assets/emojis/dark_angel.png',
     'Queens': 'assets/emojis/queen.png',
@@ -47,8 +54,73 @@ class QueendomEmblemHelper {
     '🌼': 'assets/emojis/third_born_princess.png',
   };
 
+  /// Checks whether a given position, category, or title represents a Wife or Fuck Toy role.
+  static bool isWifeOrFuckToy(String? text) {
+    if (text == null || text.trim().isEmpty) return false;
+    final lower = text.trim().toLowerCase();
+    if (lower == 'wife' ||
+        lower == 'fuck toy' ||
+        lower == 'fucktoy' ||
+        lower == 'fuck_toy' ||
+        lower == 'fuck toys' ||
+        lower == 'fucktoys' ||
+        lower == 'wives') {
+      return true;
+    }
+    if (lower.startsWith('wife of ') ||
+        lower.startsWith('wife ') ||
+        lower.contains(' - wife') ||
+        lower.contains('wife of ')) {
+      return true;
+    }
+    if (lower.startsWith('fuck toy of ') ||
+        lower.startsWith('fuck toy ') ||
+        lower.startsWith('fucktoy of ') ||
+        lower.startsWith('fucktoy ') ||
+        lower.contains(' - fuck toy') ||
+        lower.contains(' - fucktoy') ||
+        lower.contains('fuck toy of ') ||
+        lower.contains('fucktoy of ')) {
+      return true;
+    }
+    return false;
+  }
+
+  /// Checks whether a given text specifically represents a Fuck Toy role.
+  static bool isFuckToy(String? text) {
+    if (text == null || text.trim().isEmpty) return false;
+    final lower = text.trim().toLowerCase();
+    return lower == 'fuck toy' ||
+        lower == 'fucktoy' ||
+        lower == 'fuck_toy' ||
+        lower == 'fuck toys' ||
+        lower == 'fucktoys' ||
+        lower.startsWith('fuck toy of ') ||
+        lower.startsWith('fuck toy ') ||
+        lower.startsWith('fucktoy of ') ||
+        lower.startsWith('fucktoy ') ||
+        lower.contains(' - fuck toy') ||
+        lower.contains(' - fucktoy') ||
+        lower.contains('fuck toy of ') ||
+        lower.contains('fucktoy of ');
+  }
+
+  /// Checks whether a given text specifically represents a Wife role.
+  static bool isWife(String? text) {
+    if (text == null || text.trim().isEmpty) return false;
+    if (isFuckToy(text)) return false;
+    final lower = text.trim().toLowerCase();
+    return lower == 'wife' ||
+        lower == 'wives' ||
+        lower.startsWith('wife of ') ||
+        lower.startsWith('wife ') ||
+        lower.contains(' - wife') ||
+        lower.contains('wife of ');
+  }
+
   /// Returns the asset path for a position name or emoji, if found.
   static String? getAsset({String? position, String? emoji}) {
+    if (isWifeOrFuckToy(position)) return null;
     if (position != null && _positionToAsset.containsKey(position)) {
       return _positionToAsset[position];
     }
@@ -61,6 +133,7 @@ class QueendomEmblemHelper {
 
   /// Extracts the matching emblem asset from a living place string (e.g. 'PALACE OF 🌺 FIRST BORN PRINCESS ...')
   static String? getAssetFromLivingPlace(String text) {
+    if (isWifeOrFuckToy(text)) return null;
     final emojiRegex =
         RegExp(r'[☀️🌟🏮🍂🪷🏵🪻👑🍁🍀🌺🌸🌼]\uFE0F?', unicode: true);
     final match = emojiRegex.firstMatch(text);
@@ -75,6 +148,7 @@ class QueendomEmblemHelper {
   /// Extracts the matching emblem asset from a text string by checking living place,
   /// position names, and emoji codes.
   static String? getAssetFromText(String text) {
+    if (isWifeOrFuckToy(text)) return null;
     final fromLivingPlace = getAssetFromLivingPlace(text);
     if (fromLivingPlace != null) return fromLivingPlace;
     for (final entry in _positionToAsset.entries) {
@@ -95,6 +169,9 @@ class QueendomEmblemHelper {
     double size = 16.0,
     Widget? overlayWidget,
   }) {
+    if (isWifeOrFuckToy(position) || isWifeOrFuckToy(livingPlace)) {
+      return null;
+    }
     String? asset = getAsset(position: position, emoji: emoji);
     if (asset == null && livingPlace != null && livingPlace.isNotEmpty) {
       asset = getAssetFromLivingPlace(livingPlace) ?? getAssetFromText(livingPlace);
@@ -301,6 +378,8 @@ class QueendomEmblemWidget extends StatelessWidget {
   final String? emoji;
   final double size;
   final Widget? fallback;
+  final bool interactive3d;
+  final bool enableInspect;
 
   const QueendomEmblemWidget({
     super.key,
@@ -308,15 +387,37 @@ class QueendomEmblemWidget extends StatelessWidget {
     this.emoji,
     this.size = 24.0,
     this.fallback,
+    this.interactive3d = false,
+    this.enableInspect = false,
   });
 
   @override
   Widget build(BuildContext context) {
-    final asset = QueendomEmblemHelper.getAsset(position: position, emoji: emoji);
+    if (QueendomEmblemHelper.isWifeOrFuckToy(position)) {
+      return fallback ?? const SizedBox.shrink();
+    }
+
+    if (interactive3d) {
+      return Royal3dCrownWidget(
+        position: position,
+        emoji: emoji,
+        size: size,
+        fallback: fallback,
+        enableInspect: enableInspect,
+      );
+    }
+
+    final pos = position;
+    final effectiveEmoji = emoji ??
+        (pos != null
+            ? QueendomCustomizationService.instance.state.getCategoryByPosition(pos)?.emoji
+            : null);
+
+    final asset = QueendomEmblemHelper.getAsset(position: position, emoji: effectiveEmoji);
     if (asset == null) {
       return fallback ??
-          (emoji != null
-              ? Text(emoji!, style: TextStyle(fontSize: size * 0.8))
+          (effectiveEmoji != null
+              ? Text(effectiveEmoji, style: TextStyle(fontSize: size * 0.8))
               : const SizedBox.shrink());
     }
 
@@ -327,8 +428,8 @@ class QueendomEmblemWidget extends StatelessWidget {
       fit: BoxFit.contain,
       errorBuilder: (_, __, ___) =>
           fallback ??
-          (emoji != null
-              ? Text(emoji!, style: TextStyle(fontSize: size * 0.8))
+          (effectiveEmoji != null
+              ? Text(effectiveEmoji, style: TextStyle(fontSize: size * 0.8))
               : const SizedBox.shrink()),
     );
   }
@@ -392,7 +493,9 @@ class QueendomFamilyEmblemHelper {
   }) {
     String? asset = getAsset(family);
     if (asset == null && fallbackText != null && fallbackText.isNotEmpty) {
-      asset = getAssetFromText(fallbackText);
+      if (!QueendomEmblemHelper.isWifeOrFuckToy(fallbackText)) {
+        asset = getAssetFromText(fallbackText);
+      }
     }
     if (asset == null) return null;
 
@@ -462,6 +565,14 @@ class QueendomFamilyEmblemWidget extends StatelessWidget {
   Widget build(BuildContext context) {
     final asset = QueendomFamilyEmblemHelper.getAsset(family);
     if (asset == null) {
+      if (family != null && family!.isNotEmpty && family != 'None') {
+        return fallback ??
+            Icon(
+              Icons.shield_rounded,
+              size: size,
+              color: const Color(0xFFFFD700),
+            );
+      }
       return fallback ?? const SizedBox.shrink();
     }
 

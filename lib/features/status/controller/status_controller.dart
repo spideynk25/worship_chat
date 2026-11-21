@@ -14,9 +14,29 @@ final statusStreamProvider = StreamProvider((ref) {
 
 class StatusController {
   final StatusRepository statusRepository;
-  final ProviderRef ref;
+  final Ref ref;
 
   StatusController({required this.statusRepository, required this.ref});
+
+  Future<void> uploadMultipleStatuses({
+    required String userName,
+    required String profilePic,
+    required String email,
+    required List<File> statusFiles,
+    required bool isVideo,
+    required BuildContext context,
+    void Function(int current, int total)? onProgress,
+  }) async {
+    await statusRepository.uploadMultipleStatuses(
+      userName: userName,
+      profilePic: profilePic,
+      email: email,
+      statusFiles: statusFiles,
+      isVideo: isVideo,
+      context: context,
+      onProgress: onProgress,
+    );
+  }
 
   Future<void> uploadStatus({
     required String userName,

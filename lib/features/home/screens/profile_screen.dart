@@ -10,6 +10,7 @@ import 'package:worship_chat/common/utils/utils.dart';
 import 'package:worship_chat/features/auth/controller/auth_controller.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:worship_chat/common/widgets/user_avatar.dart';
+import 'package:worship_chat/features/settings/screens/settings_screen.dart';
 import 'package:worship_chat/models/user_model.dart';
 
 class ProfileScreen extends ConsumerStatefulWidget {
@@ -85,10 +86,13 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
   Future<void> _pickImage() async {
     try {
       final pickedImage = await pickImageFromGallery(context);
+      if (!mounted) return;
       if (pickedImage != null) {
         final cropped = await _cropImage(pickedImage);
+        if (!mounted) return;
         if (cropped != null) {
           final resized = await _resizeImage(cropped);
+          if (!mounted) return;
           if (resized != null) {
             setState(() {
               _selectedImage = resized;
@@ -157,6 +161,16 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
               icon: const Icon(Icons.arrow_back, color: Colors.white),
               onPressed: () => Navigator.pop(context),
             ),
+            actions: [
+              IconButton(
+                icon: const Icon(Icons.settings_outlined, color: Colors.white),
+                tooltip: 'Settings',
+                onPressed: () => Navigator.push(
+                  context,
+                  MaterialPageRoute(builder: (_) => const SettingsScreen()),
+                ),
+              ),
+            ],
           ),
           body: Container(
             decoration: const BoxDecoration(
@@ -171,7 +185,11 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
             ),
             child: SafeArea(
               top: false,
-              child: SingleChildScrollView(
+              child: Align(
+                alignment: Alignment.topCenter,
+                child: ConstrainedBox(
+                  constraints: const BoxConstraints(maxWidth: 480),
+                  child: SingleChildScrollView(
                 padding: const EdgeInsets.all(16),
                 child: Column(
                 children: [
@@ -187,7 +205,7 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
                               shape: BoxShape.circle,
                               boxShadow: [
                                 BoxShadow(
-                                  color: Colors.black.withOpacity(0.3),
+                                  color: Colors.black.withValues(alpha: 0.3),
                                   blurRadius: 8,
                                   spreadRadius: 2,
                                 ),
@@ -288,8 +306,55 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
                             ),
                     ),
                   ),
+                  const SizedBox(height: 20),
+                  Card(
+                    elevation: 3,
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                    color: mobileChatBoxColor,
+                    child: ListTile(
+                      leading: Container(
+                        padding: const EdgeInsets.all(7),
+                        decoration: BoxDecoration(
+                          color: const Color(0xFF00D2D3).withValues(alpha: 0.15),
+                          borderRadius: BorderRadius.circular(8),
+                        ),
+                        child: const Icon(
+                          Icons.settings_rounded,
+                          color: Color(0xFF00D2D3),
+                          size: 20,
+                        ),
+                      ),
+                      title: const Text(
+                        'Display & App Settings',
+                        style: TextStyle(
+                          color: Colors.white,
+                          fontWeight: FontWeight.w600,
+                          fontSize: 14,
+                        ),
+                      ),
+                      subtitle: const Text(
+                        'Chat bubble transparency, presets & display',
+                        style: TextStyle(color: Colors.white54, fontSize: 11.5),
+                      ),
+                      trailing: const Icon(
+                        Icons.arrow_forward_ios_rounded,
+                        color: Colors.white38,
+                        size: 14,
+                      ),
+                      onTap: () => Navigator.push(
+                        context,
+                        MaterialPageRoute(
+                          builder: (_) => const SettingsScreen(),
+                        ),
+                      ),
+                    ),
+                  ),
                 ],
               ),
+            ),
+            ),
             ),
           ),
         ),
@@ -330,7 +395,7 @@ class CropImageScreen extends StatefulWidget {
   const CropImageScreen({super.key, required this.imageFile});
 
   @override
-  _CropImageScreenState createState() => _CropImageScreenState();
+  State<CropImageScreen> createState() => _CropImageScreenState();
 }
 
 class _CropImageScreenState extends State<CropImageScreen> {
@@ -388,11 +453,11 @@ class _CropImageScreenState extends State<CropImageScreen> {
                 cornerColor: tabColor,
                 cornerSize: const Size(40.0, 40.0), // Larger corners
                 hitTestSize: 50.0, // Larger hit area for dragging
-                lineColor: Colors.white.withOpacity(
-                  0.8,
+                lineColor: Colors.white.withValues(
+                  alpha: 0.8,
                 ), // Clearer crop box outline
                 editorMaskColorHandler: (context, pointerDown) =>
-                    Colors.black.withOpacity(pointerDown ? 0.6 : 0.4),
+                    Colors.black.withValues(alpha: pointerDown ? 0.6 : 0.4),
               );
             },
             initGestureConfigHandler: (state) {

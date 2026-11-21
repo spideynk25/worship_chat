@@ -1,7 +1,6 @@
 import 'dart:developer';
 import 'dart:io';
 import 'package:firebase_auth/firebase_auth.dart';
-import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter/widgets.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:hive_flutter/hive_flutter.dart';
@@ -165,6 +164,7 @@ class GroupController {
     List<String> receiverIds,
     String groupName,
     String type, {
+    String? mediaGroupId,
     MessageReply? messageReplyOverride,
     bool clearReply = false,
   }) async {
@@ -173,10 +173,12 @@ class GroupController {
           ? null
           : (messageReplyOverride ?? ref.read(messageReplyProvider));
 
-      UserModel? userDataAsync = await ref.read(userDataAuthProvider.future);
-      if (userDataAsync == null && Hive.isBoxOpen('userBox')) {
+      // Check local Hive cache synchronously (0ms) so cold start doesn't freeze the first message
+      UserModel? userDataAsync;
+      if (Hive.isBoxOpen('userBox')) {
         userDataAsync = Hive.box<UserModel>('userBox').get('currentUser');
       }
+      userDataAsync ??= ref.read(userDataAuthProvider).asData?.value;
       if (userDataAsync == null) {
         final authUser = FirebaseAuth.instance.currentUser;
         if (authUser != null) {
@@ -188,9 +190,17 @@ class GroupController {
             isOnline: true,
             email: authUser.email ?? '',
             groupId: [],
-            fcmToken: await FirebaseMessaging.instance.getToken(),
+            fcmToken: null,
           );
         }
+      }
+      if (userDataAsync == null) {
+        try {
+          userDataAsync = await ref.read(userDataAuthProvider.future).timeout(
+            const Duration(milliseconds: 1500),
+            onTimeout: () => null,
+          );
+        } catch (_) {}
       }
 
       if (userDataAsync == null) {
@@ -210,6 +220,7 @@ class GroupController {
         receiverIds: receiverIds,
         groupName: groupName,
         type: type,
+        mediaGroupId: mediaGroupId,
       );
 
       // ✅ Use .notifier.state instead of deprecated .state provider
@@ -272,5 +283,55 @@ class GroupController {
       messageId: messageId,
       emoji: emoji,
     );
+  }
+
+  void editGroupMessage({
+    required String groupId,
+    required String messageId,
+    required String newText,
+  }) {
+    groupRepository.editGroupMessage(
+      groupId: groupId,
+      messageId: messageId,
+      newText: newText,
+    );
+  }
+
+  void deleteGroupMessageForMe({
+    required String groupId,
+    required String messageId,
+  }) {
+    groupRepository.deleteGroupMessageForMe(
+      groupId: groupId,
+      messageId: messageId,
+    );
+  }
+
+  void deleteGroupMessageForEveryone({
+    required String groupId,
+    required String messageId,
+  }) {
+    groupRepository.deleteGroupMessageForEveryone(
+      groupId: groupId,
+      messageId: messageId,
+    );
+  }
+
+  Future<void> sendRoleplayMessage({
+    required String groupId,
+    required String imageUrl,
+    String? caption,
+    required List<String> receiverIds,
+  }) async {
+    try {
+      await groupRepository.sendRoleplayMessage(
+        groupId: groupId,
+        imageUrl: imageUrl,
+        caption: caption,
+        receiverIds: receiverIds,
+      );
+    } catch (e) {
+      log('error in sendRoleplayMessage: $e');
+    }
   }
 }

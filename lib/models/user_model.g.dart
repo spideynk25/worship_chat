@@ -25,13 +25,14 @@ class UserModelAdapter extends TypeAdapter<UserModel> {
       email: fields[5] as String?,
       groupId: (fields[6] as List?)?.cast<String>(),
       fcmToken: fields[7] as String?,
+      lastSeen: fields[8] as DateTime?,
     );
   }
 
   @override
   void write(BinaryWriter writer, UserModel obj) {
     writer
-      ..writeByte(8)
+      ..writeByte(9)
       ..writeByte(0)
       ..write(obj.userName)
       ..writeByte(1)
@@ -47,7 +48,9 @@ class UserModelAdapter extends TypeAdapter<UserModel> {
       ..writeByte(6)
       ..write(obj.groupId)
       ..writeByte(7)
-      ..write(obj.fcmToken);
+      ..write(obj.fcmToken)
+      ..writeByte(8)
+      ..write(obj.lastSeen);
   }
 
   @override

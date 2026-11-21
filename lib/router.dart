@@ -1,4 +1,6 @@
 import 'package:flutter/material.dart';
+import 'package:worship_chat/common/utils/app_capabilities.dart';
+import 'package:worship_chat/common/widgets/chat_unavailable_screen.dart';
 import 'package:worship_chat/common/widgets/error_screen.dart';
 import 'package:worship_chat/features/auth/screens/forget_password_screen.dart';
 import 'package:worship_chat/features/auth/screens/login_screen.dart';
@@ -11,8 +13,21 @@ import 'package:worship_chat/features/status/screens/confirm_status_screen.dart'
 import 'package:worship_chat/features/status/screens/view_status_screen.dart';
 import 'package:worship_chat/features/dashboard/widgets/todo_page.dart';
 import 'package:worship_chat/features/dashboard/screens/event_calender_page.dart';
+import 'package:worship_chat/features/settings/screens/settings_screen.dart';
+import 'package:worship_chat/features/settings/screens/display_settings_screen.dart';
+import 'package:worship_chat/features/settings/screens/queendom_management_screen.dart';
 
 Route<dynamic> generateRoute(RouteSettings settings) {
+  const phoneOnlyRoutes = {
+    AllUserScreen.routeName,
+    OneToOneChatScreen.routeName,
+    CreateGroupScreen.routeName,
+    ConfirmStatusScreen.routeName,
+    ViewStatusesScreen.routeName,
+  };
+  if (!AppCapabilities.current.chatEnabled && phoneOnlyRoutes.contains(settings.name)) {
+    return MaterialPageRoute(settings: settings, builder: (_) => const ChatUnavailableScreen());
+  }
   switch (settings.name) {
     case LoginScreen.routeName:
       return MaterialPageRoute(builder: (context) => const LoginScreen());
@@ -21,7 +36,7 @@ Route<dynamic> generateRoute(RouteSettings settings) {
       return MaterialPageRoute(builder: (context) => const RegisterScreen());
 
     case ForgetPasswordScreen.routeName:
-      return MaterialPageRoute(builder: (context) => const LoginScreen());
+      return MaterialPageRoute(builder: (context) => const ForgetPasswordScreen());
 
     case UserInformationScreen.routeName:
       return MaterialPageRoute(
@@ -77,6 +92,15 @@ Route<dynamic> generateRoute(RouteSettings settings) {
       return MaterialPageRoute(
         builder: (context) => EventsCalendarPage(initialSelectedDay: initialDate),
       );
+
+    case SettingsScreen.routeName:
+      return MaterialPageRoute(builder: (context) => const SettingsScreen());
+
+    case DisplaySettingsScreen.routeName:
+      return MaterialPageRoute(builder: (context) => const DisplaySettingsScreen());
+
+    case QueendomManagementScreen.routeName:
+      return MaterialPageRoute(builder: (context) => const QueendomManagementScreen());
 
     default:
       return MaterialPageRoute(

@@ -18,6 +18,10 @@ class GroupGalleryController {
     return repository.getGalleryStream(groupId);
   }
 
+  Future<List<GroupGalleryImage>> getMultiGalleryImages(List<String> groupIds) {
+    return repository.getMultiGalleryImages(groupIds);
+  }
+
   Future<int> uploadImages({
     required String groupId,
     required List<File> imageFiles,
@@ -35,6 +39,27 @@ class GroupGalleryController {
       );
     } catch (e) {
       log('❌ GroupGalleryController.uploadImages error: $e');
+      return 0;
+    }
+  }
+
+  Future<int> uploadVideos({
+    required String groupId,
+    required List<File> videoFiles,
+    required String uploaderName,
+    String? caption,
+    void Function(int uploaded, int total)? onProgress,
+  }) async {
+    try {
+      return await repository.uploadVideos(
+        groupId: groupId,
+        videoFiles: videoFiles,
+        uploaderName: uploaderName,
+        caption: caption,
+        onProgress: onProgress,
+      );
+    } catch (e) {
+      log('❌ GroupGalleryController.uploadVideos error: $e');
       return 0;
     }
   }

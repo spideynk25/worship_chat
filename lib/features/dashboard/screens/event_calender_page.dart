@@ -7,7 +7,9 @@ import 'package:worship_chat/colors.dart';
 import 'package:worship_chat/common/utils/utils.dart';
 import 'package:worship_chat/common/widgets/skeleton_loader.dart';
 import 'package:worship_chat/features/dashboard/controller/event_controller.dart';
+import 'package:worship_chat/features/group/controller/group_controller.dart';
 import 'package:worship_chat/features/group/utils/queendom_group_helper.dart';
+import 'package:worship_chat/features/group/widgets/queendom_badge_widget.dart';
 import 'package:worship_chat/models/event.dart';
 import 'package:worship_chat/models/group.dart';
 
@@ -445,7 +447,8 @@ class _EventsCalendarPageState extends ConsumerState<EventsCalendarPage> {
                     time: selectedTime,
                     isRecurring: isRecurring,
                     connectedGroupId: selectedQueendomGroup?.groupId,
-                    connectedGroupName: selectedQueendomGroup?.name,
+                    connectedGroupName: selectedQueendomGroup?.nameWithPosition ??
+                        selectedQueendomGroup?.name,
                     connectedGroupPic: selectedQueendomGroup?.groupPic,
                     connectedQueendom: selectedQueendomGroup?.queendom,
                   );
@@ -754,7 +757,7 @@ class _EventsCalendarPageState extends ConsumerState<EventsCalendarPage> {
                           if (group != null) {
                             setDialogState(() {
                               connectedGroupId = group.groupId;
-                              connectedGroupName = group.name;
+                              connectedGroupName = group.nameWithPosition;
                               connectedGroupPic = group.groupPic;
                               connectedQueendom = group.queendom;
                               groupDisconnected = false;
@@ -1293,6 +1296,45 @@ class _EventsCalendarPageState extends ConsumerState<EventsCalendarPage> {
                               children: eventList.take(3).map((event) {
                                 final isBday = event.title.toLowerCase().contains('birth') ||
                                     event.title.toLowerCase().contains('bday');
+                                final groupPic = _resolveConnectedGroupPic(event);
+
+                                if (groupPic != null && groupPic.isNotEmpty) {
+                                  return Container(
+                                    margin: const EdgeInsets.symmetric(horizontal: 1.2),
+                                    width: 12,
+                                    height: 12,
+                                    decoration: BoxDecoration(
+                                      shape: BoxShape.circle,
+                                      border: Border.all(
+                                        color: isBday
+                                            ? const Color(0xFFFF2D78)
+                                            : tabColor,
+                                        width: 1.0,
+                                      ),
+                                      boxShadow: [
+                                        BoxShadow(
+                                          color: (isBday
+                                                  ? const Color(0xFFFF2D78)
+                                                  : tabColor)
+                                              .withValues(alpha: 0.6),
+                                          blurRadius: 3,
+                                        ),
+                                      ],
+                                    ),
+                                    child: ClipOval(
+                                      child: CachedNetworkImage(
+                                        imageUrl: groupPic,
+                                        fit: BoxFit.cover,
+                                        errorWidget: (_, __, ___) => Container(
+                                          color: isBday
+                                              ? const Color(0xFFFF2D78)
+                                              : tabColor,
+                                        ),
+                                      ),
+                                    ),
+                                  );
+                                }
+
                                 Color dotColor = tabColor;
                                 if (isBday) {
                                   dotColor = const Color(0xFFFF2D78); // Pink
@@ -1674,9 +1716,60 @@ class _EventsCalendarPageState extends ConsumerState<EventsCalendarPage> {
     );
   }
 
+  String? _resolveConnectedGroupPic(Event event) {
+    if (event.connectedGroupPic != null &&
+        event.connectedGroupPic!.trim().isNotEmpty) {
+      return event.connectedGroupPic!.trim();
+    }
+    if (event.connectedGroupId != null &&
+        event.connectedGroupId!.trim().isNotEmpty) {
+      try {
+        final ctrl = ref.read(groupControllerProvider);
+        for (final cat in [
+          'groups_all',
+          'groups_pooja',
+          'groups_rashmika',
+          'groups_none',
+        ]) {
+          final cached = ctrl.getCachedGroups(cat);
+          for (final g in cached) {
+            if (g.groupId == event.connectedGroupId &&
+                g.groupPic.trim().isNotEmpty) {
+              return g.groupPic.trim();
+            }
+          }
+        }
+      } catch (_) {}
+    }
+    return null;
+  }
+
+  Widget _buildEventAvatarPlaceholder({
+    required bool isBirthday,
+    required bool isRecurring,
+  }) {
+    return Center(
+      child: Icon(
+        isBirthday
+            ? Icons.cake_rounded
+            : (isRecurring
+                ? Icons.auto_awesome_rounded
+                : Icons.event_note_rounded),
+        color: Colors.white,
+        size: 22,
+      ),
+    );
+  }
+
   Widget _buildEventCard(Event event, EventController controller) {
     final isBirthday = event.title.toLowerCase().contains('birth') ||
         event.title.toLowerCase().contains('bday');
+    final queendomType = QueendomBadgeHelper.detectQueendom(
+      queendom: event.connectedQueendom,
+      name: event.connectedGroupName,
+      title: event.title,
+    );
+    final groupPicUrl = _resolveConnectedGroupPic(event);
 
     final now = DateTime.now();
     final today = DateTime(now.year, now.month, now.day);
@@ -1731,43 +1824,96 @@ class _EventsCalendarPageState extends ConsumerState<EventsCalendarPage> {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                // Top Row: Avatar icon + Title + Status Badges
+                // Top Row: Avatar icon / Profile Pic + Title + Status Badges
                 Row(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    // Icon Box
-                    Container(
-                      width: 44,
-                      height: 44,
-                      decoration: BoxDecoration(
-                        gradient: LinearGradient(
-                          begin: Alignment.topLeft,
-                          end: Alignment.bottomRight,
-                          colors: isBirthday
-                              ? [const Color(0xFFFF2D78), const Color(0xFFFF8E53)]
-                              : (event.isRecurring
-                                  ? [const Color(0xFFFFB300), const Color(0xFFFF7043)]
-                                  : [const Color(0xFF7928CA), const Color(0xFFFF0080)]),
-                        ),
-                        borderRadius: BorderRadius.circular(12),
-                        boxShadow: [
-                          BoxShadow(
-                            color: (isBirthday ? const Color(0xFFFF2D78) : tabColor)
-                                .withValues(alpha: 0.3),
-                            blurRadius: 8,
-                            offset: const Offset(0, 2),
+                    // Profile Pic / Icon Box with Queendom Badge
+                    Stack(
+                      clipBehavior: Clip.none,
+                      children: [
+                        Container(
+                          width: 44,
+                          height: 44,
+                          decoration: BoxDecoration(
+                            gradient: groupPicUrl != null
+                                ? null
+                                : LinearGradient(
+                                    begin: Alignment.topLeft,
+                                    end: Alignment.bottomRight,
+                                    colors: isBirthday
+                                        ? [
+                                            const Color(0xFFFF2D78),
+                                            const Color(0xFFFF8E53)
+                                          ]
+                                        : (event.isRecurring
+                                            ? [
+                                                const Color(0xFFFFB300),
+                                                const Color(0xFFFF7043)
+                                              ]
+                                            : [
+                                                const Color(0xFF7928CA),
+                                                const Color(0xFFFF0080)
+                                              ]),
+                                  ),
+                            borderRadius: BorderRadius.circular(12),
+                            border: groupPicUrl != null
+                                ? Border.all(
+                                    color: isBirthday
+                                        ? const Color(0xFFFF2D78)
+                                        : (queendomType != null
+                                            ? QueendomBadgeHelper.getAccentColor(
+                                                queendomType)
+                                            : tabColor),
+                                    width: 1.4,
+                                  )
+                                : null,
+                            boxShadow: [
+                              BoxShadow(
+                                color: (isBirthday
+                                        ? const Color(0xFFFF2D78)
+                                        : tabColor)
+                                    .withValues(alpha: 0.35),
+                                blurRadius: 8,
+                                offset: const Offset(0, 2),
+                              ),
+                            ],
                           ),
-                        ],
-                      ),
-                      child: Icon(
-                        isBirthday
-                            ? Icons.cake_rounded
-                            : (event.isRecurring
-                                ? Icons.auto_awesome_rounded
-                                : Icons.event_note_rounded),
-                        color: Colors.white,
-                        size: 22,
-                      ),
+                          child: groupPicUrl != null
+                              ? ClipRRect(
+                                  borderRadius: BorderRadius.circular(10.6),
+                                  child: CachedNetworkImage(
+                                    imageUrl: groupPicUrl,
+                                    width: 44,
+                                    height: 44,
+                                    fit: BoxFit.cover,
+                                    placeholder: (_, __) =>
+                                        _buildEventAvatarPlaceholder(
+                                      isBirthday: isBirthday,
+                                      isRecurring: event.isRecurring,
+                                    ),
+                                    errorWidget: (_, __, ___) =>
+                                        _buildEventAvatarPlaceholder(
+                                      isBirthday: isBirthday,
+                                      isRecurring: event.isRecurring,
+                                    ),
+                                  ),
+                                )
+                              : _buildEventAvatarPlaceholder(
+                                  isBirthday: isBirthday,
+                                  isRecurring: event.isRecurring,
+                                ),
+                        ),
+                        if (queendomType != null)
+                          Positioned(
+                            right: -3,
+                            bottom: -3,
+                            child: QueendomBadgeWidget(
+                              queendomType: queendomType,
+                              size: 19,
+                            ),
+                          ),
+                      ],
                     ),
                     const SizedBox(width: 12),
 
@@ -1859,73 +2005,6 @@ class _EventsCalendarPageState extends ConsumerState<EventsCalendarPage> {
                                 ),
                             ],
                           ),
-
-                          // Connected Queendom Group Pill
-                          if (event.connectedGroupName != null &&
-                              event.connectedGroupId != null) ...[
-                            const SizedBox(height: 7),
-                            InkWell(
-                              onTap: () {
-                                navigateToQueendomGroup(
-                                  context,
-                                  groupId: event.connectedGroupId!,
-                                  name: event.connectedGroupName ?? 'Queendom Group',
-                                  groupPic: event.connectedGroupPic,
-                                  queendom: event.connectedQueendom,
-                                );
-                              },
-                              borderRadius: BorderRadius.circular(6),
-                              child: Container(
-                                padding: const EdgeInsets.symmetric(
-                                  horizontal: 7,
-                                  vertical: 2.5,
-                                ),
-                                decoration: BoxDecoration(
-                                  color: (event.connectedQueendom == 'Queen Pooja'
-                                          ? const Color(0xFFFFD700)
-                                          : const Color(0xFFFF4081))
-                                      .withValues(alpha: 0.15),
-                                  borderRadius: BorderRadius.circular(6),
-                                  border: Border.all(
-                                    color: (event.connectedQueendom == 'Queen Pooja'
-                                            ? const Color(0xFFFFD700)
-                                            : const Color(0xFFFF4081))
-                                        .withValues(alpha: 0.35),
-                                    width: 0.8,
-                                  ),
-                                ),
-                                child: Row(
-                                  mainAxisSize: MainAxisSize.min,
-                                  children: [
-                                    Text(
-                                      event.connectedQueendom == 'Queen Pooja'
-                                          ? '👑 Pooja'
-                                          : '👑 Rashmika',
-                                      style: TextStyle(
-                                        color: event.connectedQueendom == 'Queen Pooja'
-                                            ? const Color(0xFFFFD700)
-                                            : const Color(0xFFFF4081),
-                                        fontSize: 10,
-                                        fontWeight: FontWeight.bold,
-                                      ),
-                                    ),
-                                    const SizedBox(width: 5),
-                                    Flexible(
-                                      child: Text(
-                                        event.connectedGroupName!,
-                                        style: const TextStyle(
-                                          color: Colors.white70,
-                                          fontSize: 10,
-                                          fontWeight: FontWeight.w500,
-                                        ),
-                                        overflow: TextOverflow.ellipsis,
-                                      ),
-                                    ),
-                                  ],
-                                ),
-                              ),
-                            ),
-                          ],
                         ],
                       ),
                     ),

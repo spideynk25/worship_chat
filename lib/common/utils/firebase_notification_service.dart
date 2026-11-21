@@ -1,5 +1,6 @@
 import 'dart:convert';
 import 'dart:developer';
+import 'dart:typed_data';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:dio/dio.dart';
 import 'package:firebase_auth/firebase_auth.dart';
@@ -10,12 +11,20 @@ import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:uuid/uuid.dart';
 import 'package:worship_chat/common/utils/active_chat_notifier.dart';
+import 'package:worship_chat/common/utils/app_capabilities.dart';
 import 'package:worship_chat/common/utils/fcm_token_manager.dart';
+import 'package:worship_chat/common/utils/wish_helper.dart';
 import 'package:worship_chat/features/chat/screens/one_to_one_chat_screen.dart';
 import 'package:worship_chat/features/group/screens/group_chat_screen.dart';
+import 'package:worship_chat/features/status/screens/view_status_screen.dart';
+import 'package:worship_chat/features/status/repository/status_repository.dart';
+import 'package:hive_flutter/hive_flutter.dart';
+import 'package:worship_chat/features/chat/repositories/chat_repository.dart';
+import 'package:worship_chat/features/group/repository/group_repository.dart';
 import 'package:worship_chat/models/chat_contact.dart';
 import 'package:worship_chat/models/group.dart';
 import 'package:worship_chat/models/group_chat_message_model.dart';
+import 'package:worship_chat/models/group_gallery_image.dart';
 import 'package:worship_chat/models/one_to_one_message_model.dart';
 import 'package:worship_chat/models/user_model.dart';
 
@@ -23,6 +32,8 @@ import 'package:worship_chat/models/user_model.dart';
 @pragma('vm:entry-point')
 void notificationActionBackgroundHandler(NotificationResponse response) async {
   WidgetsFlutterBinding.ensureInitialized();
+  await AppCapabilities.initialize(background: true);
+  if (!AppCapabilities.current.notificationsEnabled) return;
   try {
     await Firebase.initializeApp();
   } catch (_) {}
@@ -32,8 +43,22 @@ void notificationActionBackgroundHandler(NotificationResponse response) async {
     await FirebaseNotificationService.handleMarkAsReadAction(response);
   } else if (response.actionId == 'action_reply') {
     await FirebaseNotificationService.handleReplyAction(response);
+  } else if (response.actionId == 'action_wish_celebrate') {
+    await FirebaseNotificationService.handleCelebrateAction(response);
   }
 }
+
+const AndroidNotificationChannel backgroundTransfersChannel =
+    AndroidNotificationChannel(
+  'background_transfers_channel',
+  'Background Transfers',
+  description:
+      'Ongoing notifications for background media uploads, downloads, and messages.',
+  importance: Importance.low,
+  playSound: false,
+  enableVibration: false,
+  showBadge: false,
+);
 
 // ─── Android notification channels ───────────────────────────────────────────
 const AndroidNotificationChannel _highImportanceChannel =
@@ -44,6 +69,19 @@ const AndroidNotificationChannel _highImportanceChannel =
   importance: Importance.max,
   playSound: true,
   enableVibration: true,
+);
+
+const AndroidNotificationChannel _wishNotificationChannel =
+    AndroidNotificationChannel(
+  'royal_wishes_celebration_channel',
+  'Royal Wishes & Celebrations',
+  description:
+      'Celebratory birthday proclamations, royal wishes, and divine sanctum devotions.',
+  importance: Importance.max,
+  playSound: true,
+  enableVibration: true,
+  enableLights: true,
+  ledColor: Color(0xFFFFD700),
 );
 
 const AndroidNotificationChannel _legacyChannel = AndroidNotificationChannel(
@@ -57,6 +95,7 @@ const AndroidNotificationChannel _legacyChannel = AndroidNotificationChannel(
 
 /// Creates and registers notification channels with Android system NotificationManager early at boot
 Future<void> createDefaultNotificationChannels() async {
+  if (!AppCapabilities.current.notificationsEnabled) return;
   await FirebaseNotificationService.ensureStaticInitialized();
 }
 
@@ -79,9 +118,28 @@ class FirebaseNotificationService {
     _initialNotificationHandled = true;
   }
 
+  /// Returns whether there is a pending notification awaiting navigation.
+  static bool get hasPendingNotification =>
+      !_initialNotificationHandled && _pendingNotificationData != null;
+
+  /// Retrieves and clears any pending notification data synchronously.
+  static Map<String, dynamic>? getAndClearPendingNotificationData() {
+    if (_initialNotificationHandled || _pendingNotificationData == null) {
+      return null;
+    }
+    final data = _pendingNotificationData;
+    _pendingNotificationData = null;
+    _initialNotificationHandled = true;
+    return data;
+  }
+
   /// Called after RootGate finishes its splash animation and mounts HomeScreen.
   /// Dispatches any pending cold-start notification navigation cleanly on top of HomeScreen.
   static Future<void> checkAndDispatchPendingNotification() async {
+    if (!AppCapabilities.current.notificationsEnabled) {
+      clearPendingNotification();
+      return;
+    }
     isAppReady = true;
     if (!_initialNotificationHandled && _pendingNotificationData != null) {
       final data = _pendingNotificationData!;
@@ -94,6 +152,7 @@ class FirebaseNotificationService {
 
   /// Retrieves cold-start notification data immediately at app launch (if any).
   static Future<Map<String, dynamic>?> getInitialNotificationData() async {
+    if (!AppCapabilities.current.notificationsEnabled) return null;
     if (_initialNotificationHandled) {
       return null;
     }
@@ -139,6 +198,7 @@ class FirebaseNotificationService {
   static Future<Widget?> buildChatScreenFromNotificationData(
     Map<String, dynamic> data,
   ) async {
+    if (!AppCapabilities.current.chatEnabled) return null;
     String? type = data['type'] as String?;
     if (type == null || type.isEmpty) {
       if (data.containsKey('groupId') || data.containsKey('groupName')) {
@@ -163,27 +223,44 @@ class FirebaseNotificationService {
 
       String name = data['name'] as String? ?? '';
       String? profilePic = data['profilePic'] as String?;
-      String fcmToken = '';
+      String fcmToken = data['fcmToken'] as String? ?? '';
 
-      try {
-        final doc = await FirebaseFirestore.instance
-            .collection('users')
-            .doc(senderUid)
-            .get()
-            .timeout(const Duration(milliseconds: 1200));
+      // Check local Hive cache for instantaneous (0ms) contact resolution
+      if (name.isEmpty || profilePic == null || profilePic.isEmpty) {
+        try {
+          if (Hive.isBoxOpen('chatContactsBox')) {
+            final box = Hive.box<ChatContact>('chatContactsBox');
+            final cached = box.get(senderUid);
+            if (cached != null) {
+              if (name.isEmpty && cached.name.isNotEmpty) {
+                name = cached.name;
+              }
+              if ((profilePic == null || profilePic.isEmpty) &&
+                  cached.profilePic != null &&
+                  cached.profilePic!.isNotEmpty) {
+                profilePic = cached.profilePic;
+              }
+            }
+          }
+        } catch (_) {}
+      }
 
-        if (doc.exists && doc.data() != null) {
-          final user = UserModel.fromMap(doc.data()!);
-          if (user.name != null && user.name!.isNotEmpty) {
-            name = user.name!;
+      // Fallback to cached user box if needed
+      if (name.isEmpty) {
+        try {
+          if (Hive.isBoxOpen('userBox')) {
+            final box = Hive.box<UserModel>('userBox');
+            final cached = box.get(senderUid);
+            if (cached != null &&
+                cached.name != null &&
+                cached.name!.isNotEmpty) {
+              name = cached.name!;
+              if (profilePic == null || profilePic.isEmpty) {
+                profilePic = cached.profilePic;
+              }
+            }
           }
-          if (user.profilePic != null && user.profilePic!.isNotEmpty) {
-            profilePic = user.profilePic;
-          }
-          fcmToken = user.fcmToken ?? '';
-        }
-      } catch (e) {
-        log('Note: fallback to notification payload for user info: $e');
+        } catch (_) {}
       }
 
       if (name.isEmpty) {
@@ -207,21 +284,15 @@ class FirebaseNotificationService {
 
       GroupModel? group;
       try {
-        final doc = await FirebaseFirestore.instance
-            .collection('groups')
-            .doc(groupId)
-            .get()
-            .timeout(const Duration(milliseconds: 1200));
-
-        if (doc.exists && doc.data() != null) {
-          group = GroupModel.fromMap(doc.data()!);
+        if (Hive.isBoxOpen('groupsBox')) {
+          final box = Hive.box<GroupModel>('groupsBox');
+          group = box.get(groupId);
         }
-      } catch (e) {
-        log('Note: fallback to notification payload for group info: $e');
-      }
+      } catch (_) {}
 
       final groupName = data['groupName'] as String? ??
           data['name'] as String? ??
+          group?.nameWithPosition ??
           group?.name ??
           'Group Chat';
 
@@ -231,18 +302,18 @@ class FirebaseNotificationService {
             name: groupName,
             groupId: groupId,
             lastMessage: '',
-            groupPic: '',
+            groupPic: (data['groupPic'] as String?) ?? '',
             membersUid: [],
             timeSent: DateTime.now(),
             fcmTokens: [],
             unseenMessages: {},
             chatBackgroundUrl: null,
             wish: null,
-            queendom: null,
+            queendom: data['queendom'] as String?,
           );
 
       return GroupChatScreen(
-        name: resolvedGroup.name,
+        name: resolvedGroup.nameWithPosition,
         groupId: resolvedGroup.groupId,
         fcmToken: List<String>.from(resolvedGroup.fcmTokens),
         membersUid: List<String>.from(resolvedGroup.membersUid),
@@ -271,6 +342,7 @@ class FirebaseNotificationService {
   static Future<void> ensureStaticInitialized({
     void Function(NotificationResponse)? onForegroundResponse,
   }) async {
+    if (!AppCapabilities.current.notificationsEnabled) return;
     if (_isStaticInitialized && onForegroundResponse == null) return;
     try {
       const androidSettings =
@@ -301,11 +373,395 @@ class FirebaseNotificationService {
               AndroidFlutterLocalNotificationsPlugin>();
       await androidPlugin?.createNotificationChannel(_highImportanceChannel);
       await androidPlugin?.createNotificationChannel(_legacyChannel);
+      await androidPlugin?.createNotificationChannel(_wishNotificationChannel);
+      await androidPlugin?.createNotificationChannel(backgroundTransfersChannel);
 
       _isStaticInitialized = true;
       log('✅ FlutterLocalNotificationsPlugin statically initialized with channels');
     } catch (e) {
       log('⚠️ Error statically initializing notifications: $e');
+    }
+  }
+
+  static FlutterLocalNotificationsPlugin get localNotifications =>
+      _staticLocalNotifications;
+
+  /// Displays an alert notification specifically for wish reminders.
+  /// Uses royal_wishes_celebration_channel with golden led and high importance.
+  static Future<void> showWishReminderNotification({
+    required int id,
+    required String title,
+    required String body,
+    required String payload,
+  }) async {
+    if (!AppCapabilities.current.notificationsEnabled) return;
+    await ensureStaticInitialized();
+
+    const androidDetails = AndroidNotificationDetails(
+      'royal_wishes_celebration_channel',
+      'Royal Wishes & Celebrations',
+      channelDescription:
+          'Celebratory birthday proclamations, royal wishes, and divine sanctum devotions.',
+      importance: Importance.max,
+      priority: Priority.high,
+      playSound: true,
+      enableVibration: true,
+      enableLights: true,
+      ledColor: Color(0xFFFFD700),
+      color: Color(0xFFD4AF37),
+      icon: '@mipmap/launcher_icon',
+      styleInformation: BigTextStyleInformation(''),
+    );
+
+    const darwinDetails = DarwinNotificationDetails(
+      presentSound: true,
+      presentBadge: true,
+      presentAlert: true,
+    );
+
+    const details = NotificationDetails(
+      android: androidDetails,
+      iOS: darwinDetails,
+    );
+
+    try {
+      await _staticLocalNotifications.show(
+        id,
+        title,
+        body,
+        details,
+        payload: payload,
+      );
+      log('👑 Wish reminder notification posted (id: $id, title: $title)');
+    } catch (e) {
+      log('❌ Error posting wish reminder notification: $e');
+    }
+  }
+
+  static bool _hiveInitialized = false;
+
+  /// Ensures Hive is initialized and all models are registered in the current isolate.
+  /// Safe to call repeatedly across main isolate, background FCM isolate, and notification action isolate.
+  static Future<void> ensureHiveInitialized() async {
+    if (_hiveInitialized) return;
+    try {
+      try {
+        await Hive.initFlutter('worship_chat');
+      } catch (_) {}
+      if (!Hive.isAdapterRegistered(0)) {
+        Hive.registerAdapter(UserModelAdapter());
+      }
+      if (!Hive.isAdapterRegistered(1)) {
+        Hive.registerAdapter(OneToOneMessageModelAdapter());
+      }
+      if (!Hive.isAdapterRegistered(2)) {
+        Hive.registerAdapter(GroupChatMessageModelAdapter());
+      }
+      if (!Hive.isAdapterRegistered(10)) {
+        Hive.registerAdapter(GroupGalleryImageAdapter());
+      }
+      _hiveInitialized = true;
+      log('✅ Hive initialized and adapters registered in isolate');
+    } catch (e) {
+      log('Note: ensureHiveInitialized: $e');
+    }
+  }
+
+  static Future<Box?> _safeOpenBox(String boxName) async {
+    try {
+      if (Hive.isBoxOpen(boxName)) {
+        return Hive.box(boxName);
+      }
+      return await Hive.openBox(boxName);
+    } catch (e) {
+      log('⚠️ Initial attempt to open box "$boxName" failed: $e, retrying...');
+      try {
+        await Future.delayed(const Duration(milliseconds: 200));
+        if (Hive.isBoxOpen(boxName)) {
+          return Hive.box(boxName);
+        }
+        return await Hive.openBox(boxName);
+      } catch (retryErr) {
+        log('❌ Failed to open box "$boxName": $retryErr');
+        return null;
+      }
+    }
+  }
+
+  /// Ingests incoming FCM message payload directly into Hive cache.
+  /// Enables instantaneous (0ms) message display when opening chat.
+  static Future<void> ingestNotificationMessageIntoHive(RemoteMessage message) async {
+    final data = Map<String, dynamic>.from(message.data);
+    if ((data['text'] == null || data['text'].toString().trim().isEmpty) &&
+        message.notification?.body != null) {
+      data['text'] = message.notification!.body;
+    }
+    if ((data['name'] == null || data['name'].toString().trim().isEmpty) &&
+        message.notification?.title != null) {
+      data['name'] = message.notification!.title;
+    }
+    await ingestNotificationDataIntoHive(data);
+  }
+
+  /// Ingests notification data map into Hive box 'messages' and updates 'contacts_cache'.
+  static Future<void> ingestNotificationDataIntoHive(Map<String, dynamic> data) async {
+    try {
+      await ensureHiveInitialized();
+      final messagesBox = await _safeOpenBox('messages');
+      if (messagesBox == null) {
+        log('⚠️ [Hive Ingest] Could not open "messages" box');
+        return;
+      }
+
+      String? type = data['type']?.toString().trim();
+      final senderUid = (data['senderUid'] ?? data['uid'] ?? data['senderId'])?.toString().trim();
+      final groupId = (data['groupId'] ?? (type == 'group' ? data['id'] : null))?.toString().trim();
+
+      if (type == null || type.isEmpty) {
+        if (groupId != null && groupId.isNotEmpty) {
+          type = 'group';
+        } else if (senderUid != null && senderUid.isNotEmpty) {
+          type = 'chat';
+        }
+      }
+
+      final prefs = await SharedPreferences.getInstance();
+      String? currentUserId;
+      try {
+        currentUserId = FirebaseAuth.instance.currentUser?.uid;
+      } catch (_) {}
+      currentUserId ??= prefs.getString('cached_current_user_id') ??
+          (type == 'chat' ? data['receiverId']?.toString().trim() : null);
+
+      if (currentUserId == null || currentUserId.isEmpty) {
+        log('⚠️ [Hive Ingest] Cannot determine current user ID, skipping ingestion');
+        return;
+      }
+
+      if (type == 'chat' && senderUid != null && senderUid.isNotEmpty) {
+        if (senderUid == currentUserId) return;
+
+        final localKey = '${currentUserId}_$senderUid';
+        final cachedData = messagesBox.get(localKey, defaultValue: []);
+        final List<OneToOneMessageModel> messages = [];
+        if (cachedData is List) {
+          for (final item in cachedData) {
+            if (item is OneToOneMessageModel) {
+              messages.add(item);
+            } else if (item is Map) {
+              try {
+                messages.add(OneToOneMessageModel.fromMap(Map<String, dynamic>.from(item)));
+              } catch (_) {}
+            }
+          }
+        }
+
+        final rawMessageId =
+            (data['messageId'] ?? data['id'])?.toString().trim();
+
+        DateTime timeSent = DateTime.now();
+        if (data['timeSent'] != null) {
+          timeSent =
+              DateTime.tryParse(data['timeSent'].toString()) ?? DateTime.now();
+        }
+
+        final rawText = (data['text'] ?? data['body'] ?? '').toString();
+        final rawMsgType = (data['messageType'] ?? 'text').toString();
+        final fileData = data['fileMessageData']?.toString();
+
+        // Always update contacts cache so chatlist tile updates immediately
+        await _updateContactsCacheForOneToOne(
+          currentUserId: currentUserId,
+          senderUid: senderUid,
+          name: (data['name'] ?? data['senderName'] ?? '').toString(),
+          profilePic: data['profilePic']?.toString(),
+          lastMessage:
+              rawText.isNotEmpty ? rawText : (fileData != null ? 'Media' : ''),
+          timeSent: timeSent,
+        );
+
+        // DO NOT inject phantom message into Hive if messageId is missing.
+        // Inventing random UUIDs causes duplicate messages when Firestore syncs.
+        if (rawMessageId == null || rawMessageId.isEmpty) {
+          log('ℹ️ [Hive Ingest] Skipping message injection: messageId is empty');
+          return;
+        }
+
+        // DO NOT inject media notification as raw text cards (e.g. '📷 Photo' / '🎥 Video')
+        final isMediaWithoutData =
+            (rawMsgType == 'image' || rawMsgType == 'video') &&
+                (fileData == null || fileData.isEmpty);
+        if (isMediaWithoutData) {
+          log('ℹ️ [Hive Ingest] Skipping media message without fileMessageData');
+          return;
+        }
+
+        if (messages.any((m) => m.messageId == rawMessageId)) {
+          log('ℹ️ [Hive Ingest] Message $rawMessageId already in local cache for $localKey');
+          return;
+        }
+
+        final newMsg = OneToOneMessageModel(
+          senderId: senderUid,
+          receiverId: currentUserId,
+          text: rawText,
+          messageType: rawMsgType,
+          timeSent: timeSent,
+          messageId: rawMessageId,
+          isSeen: false,
+          isDelivered: true,
+          isSending: false,
+          fileMessageData: fileData,
+          repliedMessage: (data['repliedMessage'] ?? '').toString(),
+          repliedTo: (data['repliedTo'] ?? '').toString(),
+          repliedMessageType: (data['repliedMessageType'] ?? 'text').toString(),
+        );
+
+        messages.add(newMsg);
+        messages.sort((a, b) => a.timeSent.compareTo(b.timeSent));
+        await messagesBox.put(localKey, messages);
+        log('⚡ [Hive Ingest] Stored new 1-to-1 message $rawMessageId in Hive key $localKey');
+
+        ChatRepository.notifyChatListeners(localKey, messages);
+      } else if (type == 'group' && groupId != null && groupId.isNotEmpty) {
+        final localKey = groupId;
+        final cachedData = messagesBox.get(localKey, defaultValue: []);
+        final List<GroupChatMessageModel> messages = [];
+        if (cachedData is List) {
+          for (final item in cachedData) {
+            if (item is GroupChatMessageModel) {
+              messages.add(item);
+            } else if (item is Map) {
+              try {
+                messages.add(GroupChatMessageModel.fromMap(
+                    Map<String, dynamic>.from(item)));
+              } catch (_) {}
+            }
+          }
+        }
+
+        final rawMessageId =
+            (data['messageId'] ?? data['id'])?.toString().trim();
+        if (rawMessageId == null || rawMessageId.isEmpty) {
+          log('ℹ️ [Hive Ingest] Skipping group message injection: messageId is empty');
+          return;
+        }
+
+        final senderId =
+            (data['senderId'] ?? data['senderUid'] ?? '').toString();
+        if (senderId.isNotEmpty && senderId == currentUserId) return;
+
+        DateTime timeSent = DateTime.now();
+        if (data['timeSent'] != null) {
+          timeSent =
+              DateTime.tryParse(data['timeSent'].toString()) ?? DateTime.now();
+        }
+
+        final rawText = (data['text'] ?? data['body'] ?? '').toString();
+        final rawMsgType = (data['messageType'] ?? 'text').toString();
+        final fileData = data['fileMessageData']?.toString();
+
+        final isMediaWithoutData =
+            (rawMsgType == 'image' || rawMsgType == 'video') &&
+                (fileData == null || fileData.isEmpty);
+        if (isMediaWithoutData) {
+          log('ℹ️ [Hive Ingest] Skipping group media message without fileMessageData');
+          return;
+        }
+
+        if (messages.any((m) => m.messageId == rawMessageId)) {
+          log('ℹ️ [Hive Ingest] Group message $rawMessageId already in local cache for $localKey');
+          return;
+        }
+
+        List<String> receiverIds = [];
+        if (data['receiverIds'] != null) {
+          receiverIds = data['receiverIds'].toString().split(',').where((s) => s.isNotEmpty).toList();
+        }
+
+        final newMsg = GroupChatMessageModel(
+          senderId: senderId,
+          receiverIds: receiverIds,
+          groupId: groupId,
+          text: rawText,
+          messageType: rawMsgType,
+          timeSent: timeSent,
+          messageId: rawMessageId,
+          isSeen: false,
+          isDelivered: true,
+          isSending: false,
+          fileMessageData: fileData,
+          repliedMessage: (data['repliedMessage'] ?? '').toString(),
+          repliedTo: (data['repliedTo'] ?? '').toString(),
+          repliedMessageType: (data['repliedMessageType'] ?? 'text').toString(),
+        );
+
+        messages.add(newMsg);
+        messages.sort((a, b) => a.timeSent.compareTo(b.timeSent));
+        await messagesBox.put(localKey, messages);
+        log('⚡ [Hive Ingest] Stored new group message $rawMessageId in Hive key $localKey');
+
+        GroupRepository.notifyGroupChatListeners(groupId, messages);
+      }
+    } catch (e) {
+      log('❌ Error in ingestNotificationDataIntoHive: $e');
+    }
+  }
+
+  static Future<void> _updateContactsCacheForOneToOne({
+    required String currentUserId,
+    required String senderUid,
+    required String name,
+    String? profilePic,
+    required String lastMessage,
+    required DateTime timeSent,
+  }) async {
+    try {
+      final box = await _safeOpenBox('contacts_cache');
+      if (box == null) return;
+      final cacheKey = 'user_chats_$currentUserId';
+      final cachedRaw = box.get(cacheKey, defaultValue: []);
+      final List<Map<String, dynamic>> contactMaps = [];
+      if (cachedRaw is List) {
+        for (final item in cachedRaw) {
+          if (item is Map) {
+            contactMaps.add(Map<String, dynamic>.from(item));
+          }
+        }
+      }
+
+      final existingIndex = contactMaps.indexWhere((c) => c['uid'] == senderUid);
+      if (existingIndex >= 0) {
+        final existing = contactMaps[existingIndex];
+        existing['lastMessage'] = lastMessage;
+        existing['timeSent'] = timeSent.millisecondsSinceEpoch;
+        existing['unseenCount'] = true;
+        if (name.isNotEmpty) existing['name'] = name;
+        if (profilePic != null && profilePic.isNotEmpty) existing['profilePic'] = profilePic;
+        contactMaps[existingIndex] = existing;
+      } else if (name.isNotEmpty) {
+        contactMaps.add({
+          'name': name,
+          'profilePic': profilePic,
+          'uid': senderUid,
+          'timeSent': timeSent.millisecondsSinceEpoch,
+          'lastMessage': lastMessage,
+          'fcmToken': '',
+          'unseenCount': true,
+          'chatBackgroundUrl': '',
+        });
+      }
+
+      contactMaps.sort((a, b) {
+        final tA = a['timeSent'] as int? ?? 0;
+        final tB = b['timeSent'] as int? ?? 0;
+        return tB.compareTo(tA);
+      });
+
+      await box.put(cacheKey, contactMaps);
+      log('⚡ [Hive Ingest] Updated contacts_cache for $senderUid in $cacheKey');
+    } catch (e) {
+      log('Note: Error updating contacts_cache: $e');
     }
   }
 
@@ -363,6 +819,7 @@ class FirebaseNotificationService {
     String chatId, {
     String? chatName,
   }) async {
+    if (!AppCapabilities.current.notificationsEnabled) return;
     final cleanChatId = chatId.trim();
     if (cleanChatId.isEmpty) return;
 
@@ -409,10 +866,11 @@ class FirebaseNotificationService {
     }
   }
 
-  final FirebaseMessaging _firebaseMessaging = FirebaseMessaging.instance;
+  FirebaseMessaging get _firebaseMessaging => FirebaseMessaging.instance;
 
   // ── Public entry point ─────────────────────────────────────────────────────
   Future<void> initialize() async {
+    if (!AppCapabilities.current.notificationsEnabled) return;
     _instance = this;
 
     // 1. Ensure static notification plugin and channels are ready
@@ -510,9 +968,11 @@ class FirebaseNotificationService {
   static Future<void> showNotificationFromRemoteMessage(
     RemoteMessage message,
   ) async {
+    if (!AppCapabilities.current.notificationsEnabled) return;
     try {
       await ensureStaticInitialized();
       log('Processing remote notification message: ${message.messageId}, data: ${message.data}');
+      await ingestNotificationMessageIntoHive(message);
 
       final msgType = message.data['type']?.toString().trim();
       final senderUid = (message.data['senderUid'] ??
@@ -626,13 +1086,28 @@ class FirebaseNotificationService {
         messages: styleMessages,
       );
 
-      final actions = <AndroidNotificationAction>[
-        const AndroidNotificationAction(
-          'action_mark_read',
-          'Mark as read',
-          cancelNotification: true,
-          showsUserInterface: false,
-        ),
+      final isWish = (message.data['isWish'] == 'true') ||
+          WishHelper.isWish(text: safeBody) ||
+          WishHelper.isWish(text: rawBody?.toString());
+
+      final channelId = isWish
+          ? _wishNotificationChannel.id
+          : _highImportanceChannel.id;
+      final channelName = isWish
+          ? _wishNotificationChannel.name
+          : _highImportanceChannel.name;
+      final channelDesc = isWish
+          ? _wishNotificationChannel.description
+          : _highImportanceChannel.description;
+
+      final stylizedWishBody = WishHelper.toRoyalScript(safeBody);
+
+      final wishBigTextStyle = BigTextStyleInformation(
+        stylizedWishBody,
+        contentTitle: safeTitle,
+      );
+
+      final standardActions = <AndroidNotificationAction>[
         const AndroidNotificationAction(
           'action_reply',
           'Reply',
@@ -645,27 +1120,51 @@ class FirebaseNotificationService {
             ),
           ],
         ),
+        const AndroidNotificationAction(
+          'action_mark_read',
+          'Mark as read',
+          cancelNotification: true,
+          showsUserInterface: false,
+        ),
       ];
 
+      final actions = standardActions;
+
+      final vibrationPattern = isWish
+          ? Int64List.fromList([0, 160, 100, 240, 100, 380])
+          : null;
+
       final androidDetails = AndroidNotificationDetails(
-        _highImportanceChannel.id,
-        _highImportanceChannel.name,
-        channelDescription: _highImportanceChannel.description,
+        channelId,
+        channelName,
+        channelDescription: channelDesc,
         importance: Importance.max,
         priority: Priority.high,
         playSound: true,
         enableVibration: true,
+        vibrationPattern: vibrationPattern,
+        enableLights: isWish,
+        ledColor: isWish ? const Color(0xFFFFD700) : null,
+        ledOnMs: isWish ? 500 : null,
+        ledOffMs: isWish ? 500 : null,
+        color: isWish ? const Color(0xFFD4AF37) : null, // Metallic Royal Gold
         icon: '@mipmap/launcher_icon',
         tag: chatId,
-        styleInformation: messagingStyle,
+        styleInformation: isWish ? wishBigTextStyle : messagingStyle,
         visibility: NotificationVisibility.public,
-        category: AndroidNotificationCategory.message,
+        category: isWish
+            ? AndroidNotificationCategory.event
+            : AndroidNotificationCategory.message,
         actions: actions,
       );
 
       final details = NotificationDetails(
         android: androidDetails,
-        iOS: const DarwinNotificationDetails(presentSound: true),
+        iOS: const DarwinNotificationDetails(
+          presentSound: true,
+          presentBadge: true,
+          presentAlert: true,
+        ),
       );
 
       // Encode the entire FCM data map as JSON so action and tap handlers can read it
@@ -683,35 +1182,48 @@ class FirebaseNotificationService {
         await _staticLocalNotifications.show(
           notifId,
           safeTitle,
-          safeBody,
+          isWish ? stylizedWishBody : safeBody,
           details,
           payload: payloadJson,
         );
-        log('✅ Notification posted (MessagingStyle) for $chatId (id: $notifId)');
+        log('✅ Notification posted (${isWish ? "WishStyle" : "MessagingStyle"}) for $chatId (id: $notifId)');
       } catch (styleErr) {
-        log('⚠️ MessagingStyle failed, falling back to BigTextStyle: $styleErr');
+        log('⚠️ Notification style failed, falling back to BigTextStyle: $styleErr');
         final fallbackAndroidDetails = AndroidNotificationDetails(
-          _highImportanceChannel.id,
-          _highImportanceChannel.name,
-          channelDescription: _highImportanceChannel.description,
+          channelId,
+          channelName,
+          channelDescription: channelDesc,
           importance: Importance.max,
           priority: Priority.high,
           playSound: true,
           enableVibration: true,
+          vibrationPattern: vibrationPattern,
+          enableLights: isWish,
+          ledColor: isWish ? const Color(0xFFFFD700) : null,
+          color: isWish ? const Color(0xFFD4AF37) : null,
           icon: '@mipmap/launcher_icon',
           tag: chatId,
-          styleInformation: BigTextStyleInformation(safeBody, contentTitle: safeTitle),
+          styleInformation: BigTextStyleInformation(
+            isWish ? WishHelper.toRoyalScript(safeBody) : safeBody,
+            contentTitle: safeTitle,
+          ),
           visibility: NotificationVisibility.public,
-          category: AndroidNotificationCategory.message,
+          category: isWish
+              ? AndroidNotificationCategory.event
+              : AndroidNotificationCategory.message,
           actions: actions,
         );
         await _staticLocalNotifications.show(
           notifId,
           safeTitle,
-          safeBody,
+          isWish ? WishHelper.toRoyalScript(safeBody) : safeBody,
           NotificationDetails(
             android: fallbackAndroidDetails,
-            iOS: const DarwinNotificationDetails(presentSound: true),
+            iOS: const DarwinNotificationDetails(
+              presentSound: true,
+              presentBadge: true,
+              presentAlert: true,
+            ),
           ),
           payload: payloadJson,
         );
@@ -724,12 +1236,14 @@ class FirebaseNotificationService {
 
   // ── Foreground: display a local notification ───────────────────────────────
   Future<void> _handleForegroundMessage(RemoteMessage message) async {
+    if (!AppCapabilities.current.notificationsEnabled) return;
     log('Foreground message: ${message.messageId}');
     await showNotificationFromRemoteMessage(message);
   }
 
   // ── Local notification response (tap or action button) ─────────────────────
   Future<void> _onLocalNotificationTapped(NotificationResponse response) async {
+    if (!AppCapabilities.current.notificationsEnabled) return;
     log('Local notification action: ${response.actionId}, payload: ${response.payload}');
 
     if (response.actionId == 'action_mark_read') {
@@ -757,6 +1271,7 @@ class FirebaseNotificationService {
   static Future<void> handleMarkAsReadAction(
     NotificationResponse response,
   ) async {
+    if (!AppCapabilities.current.notificationsEnabled) return;
     try {
       await ensureStaticInitialized();
       if (response.payload == null || response.payload!.isEmpty) return;
@@ -897,6 +1412,7 @@ class FirebaseNotificationService {
   static Future<void> handleReplyAction(
     NotificationResponse response,
   ) async {
+    if (!AppCapabilities.current.notificationsEnabled) return;
     try {
       await ensureStaticInitialized();
       final replyText = response.input?.trim();
@@ -1024,6 +1540,37 @@ class FirebaseNotificationService {
         batch.set(senderMessageRef, message.toMap());
         await batch.commit();
 
+        // Save local reply directly into Hive
+        try {
+          await ensureHiveInitialized();
+          final localKey = '${currentUserId}_$senderUid';
+          final box = await _safeOpenBox('messages');
+          if (box != null) {
+            final cachedData = box.get(localKey, defaultValue: []);
+            final List<OneToOneMessageModel> msgs = [];
+            if (cachedData is List) {
+              for (final item in cachedData) {
+                if (item is OneToOneMessageModel) {
+                  msgs.add(item);
+                } else if (item is Map) {
+                  try {
+                    msgs.add(OneToOneMessageModel.fromMap(
+                        Map<String, dynamic>.from(item)));
+                  } catch (_) {}
+                }
+              }
+            }
+            if (!msgs.any((m) => m.messageId == messageId)) {
+              msgs.add(message);
+              msgs.sort((a, b) => a.timeSent.compareTo(b.timeSent));
+              await box.put(localKey, msgs);
+              ChatRepository.notifyChatListeners(localKey, msgs);
+            }
+          }
+        } catch (hiveErr) {
+          log('Note: Error saving notification reply to Hive: $hiveErr');
+        }
+
         // Update contacts
         String myToken = '';
         try {
@@ -1037,7 +1584,7 @@ class FirebaseNotificationService {
           lastMessage: replyText,
           fcmToken: myToken,
           unseenCount: true,
-          chatBackgroundUrl: '',
+          chatBackgroundUrl: null,
         );
         await FirebaseFirestore.instance
             .collection('users')
@@ -1054,7 +1601,7 @@ class FirebaseNotificationService {
           lastMessage: replyText,
           fcmToken: receiverToken,
           unseenCount: false,
-          chatBackgroundUrl: '',
+          chatBackgroundUrl: null,
         );
         await FirebaseFirestore.instance
             .collection('users')
@@ -1072,9 +1619,14 @@ class FirebaseNotificationService {
             data: {
               'type': 'chat',
               'senderUid': currentUserId,
+              'receiverId': senderUid,
               'name': senderName,
               'profilePic': senderProfilePic,
               'tag': currentUserId,
+              'messageId': messageId,
+              'messageType': 'text',
+              'text': replyText,
+              'timeSent': timeSent.toIso8601String(),
             },
           );
         }
@@ -1118,6 +1670,36 @@ class FirebaseNotificationService {
               .doc(messageId)
               .set(groupMessage.toMap());
 
+          // Save group reply directly into Hive
+          try {
+            await ensureHiveInitialized();
+            final box = await _safeOpenBox('messages');
+            if (box != null) {
+              final cachedData = box.get(groupId, defaultValue: []);
+              final List<GroupChatMessageModel> msgs = [];
+              if (cachedData is List) {
+                for (final item in cachedData) {
+                  if (item is GroupChatMessageModel) {
+                    msgs.add(item);
+                  } else if (item is Map) {
+                    try {
+                      msgs.add(GroupChatMessageModel.fromMap(
+                          Map<String, dynamic>.from(item)));
+                    } catch (_) {}
+                  }
+                }
+              }
+              if (!msgs.any((m) => m.messageId == messageId)) {
+                msgs.add(groupMessage);
+                msgs.sort((a, b) => a.timeSent.compareTo(b.timeSent));
+                await box.put(groupId, msgs);
+                GroupRepository.notifyGroupChatListeners(groupId, msgs);
+              }
+            }
+          } catch (hiveErr) {
+            log('Note: Error saving group notification reply to Hive: $hiveErr');
+          }
+
           Map<String, bool> unseenMessages = {};
           for (var uid in membersUid) {
             unseenMessages[uid] = (uid != currentUserId);
@@ -1146,6 +1728,14 @@ class FirebaseNotificationService {
                 'groupName': groupName,
                 'tag': groupId,
                 'name': senderName,
+                'senderId': currentUserId,
+                'senderUid': currentUserId,
+                'messageId': messageId,
+                'messageType': 'text',
+                'text': replyText,
+                'timeSent': timeSent.toIso8601String(),
+                if (receiverIds.isNotEmpty)
+                  'receiverIds': receiverIds.join(','),
               },
             );
           }
@@ -1154,6 +1744,26 @@ class FirebaseNotificationService {
       }
     } catch (e) {
       log('❌ Error in handleReplyAction: $e');
+    }
+  }
+
+  static Future<void> handleCelebrateAction(
+    NotificationResponse response,
+  ) async {
+    try {
+      if (response.payload == null) return;
+      final data = Map<String, dynamic>.from(
+        jsonDecode(response.payload!) as Map,
+      );
+      final chatId = (data['groupId'] ?? data['senderUid'] ?? data['chatId'])
+          ?.toString()
+          .trim();
+      if (chatId != null && chatId.isNotEmpty) {
+        await cancelNotificationsForChat(chatId);
+      }
+      log('🎉 Handled celebratory notification action for $chatId');
+    } catch (e) {
+      log('Error handling celebrate action: $e');
     }
   }
 
@@ -1183,12 +1793,16 @@ class FirebaseNotificationService {
   Future<void> _navigateFromNotificationData(
     Map<String, dynamic> data,
   ) async {
+    if (!AppCapabilities.current.chatEnabled) return;
     // If the app is still at the splash screen / RootGate, queue and wait until HomeScreen mounts
     if (!isAppReady) {
       log('⏳ App is still initializing (RootGate), queueing pending notification: $data');
       _pendingNotificationData = data;
       return;
     }
+
+    // Ensure notification payload message is stored in Hive before opening chat
+    await ingestNotificationDataIntoHive(data);
 
     String? type = data['type'] as String?;
     if (type == null || type.isEmpty) {
@@ -1207,13 +1821,75 @@ class FirebaseNotificationService {
       await _navigateToOneToOneChat(data);
     } else if (type == 'group') {
       await _navigateToGroupChat(data);
+    } else if (type == 'story' || type == 'status') {
+      await _navigateToStatus(data);
     } else {
       log('Unknown or missing notification type: $type');
     }
   }
 
+  // ── Navigate to a status / story screen ───────────────────────────────────
+  Future<void> _navigateToStatus(Map<String, dynamic> data) async {
+    if (!AppCapabilities.current.chatEnabled) return;
+    final isAuthed = await _ensureAuthenticated();
+    if (!isAuthed) {
+      log('Cannot navigate to status: user not authenticated');
+      return;
+    }
+
+    final nav = await _waitForNavigator();
+    if (nav == null) {
+      log('Cannot navigate to status: NavigatorState unavailable');
+      return;
+    }
+
+    final targetUid =
+        (data['uid'] ?? data['senderUid'] ?? data['senderId']) as String?;
+    if (targetUid == null || targetUid.isEmpty) {
+      log('Cannot navigate to status: missing targetUid');
+      return;
+    }
+
+    try {
+      final now = DateTime.now();
+      final snapshot = await FirebaseFirestore.instance
+          .collection('status')
+          .where('uid', isEqualTo: targetUid)
+          .get();
+
+      final List<Map<String, dynamic>> active = [];
+      for (final doc in snapshot.docs) {
+        final docData = doc.data();
+        final timeCreated = (docData['timeCreated'] as Timestamp?)?.toDate();
+        if (timeCreated != null && now.difference(timeCreated).inHours < 24) {
+          active.add(StatusRepository.sanitizeStatus(docData));
+        }
+      }
+
+      active.sort((a, b) {
+        final aTime =
+            (a['timeCreated'] as Timestamp?)?.toDate() ?? DateTime.now();
+        final bTime =
+            (b['timeCreated'] as Timestamp?)?.toDate() ?? DateTime.now();
+        return aTime.compareTo(bTime);
+      });
+
+      if (active.isNotEmpty) {
+        nav.pushNamed(
+          ViewStatusesScreen.routeName,
+          arguments: {"statuses": active, "initialIndex": 0},
+        );
+      } else {
+        nav.popUntil((route) => route.isFirst);
+      }
+    } catch (e) {
+      log('Error navigating to status from notification: $e');
+    }
+  }
+
   // ── Navigate to a 1-to-1 chat screen ──────────────────────────────────────
   Future<void> _navigateToOneToOneChat(Map<String, dynamic> data) async {
+    if (!AppCapabilities.current.chatEnabled) return;
     final isAuthed = await _ensureAuthenticated();
     if (!isAuthed) {
       log('Cannot navigate to 1-to-1 chat: user not authenticated');
@@ -1226,13 +1902,26 @@ class FirebaseNotificationService {
       return;
     }
 
+    final targetUid =
+        (data['senderUid'] ?? data['uid'] ?? data['senderId']) as String?;
+    if (targetUid != null &&
+        ActiveChatNotifier.instance.isChatActive(targetUid)) {
+      log('User is already viewing chat $targetUid');
+      return;
+    }
+
     final chatScreen = await buildChatScreenFromNotificationData(data);
     if (chatScreen == null) return;
 
     try {
       nav.push(
-        MaterialPageRoute(
-          builder: (_) => chatScreen,
+        PageRouteBuilder(
+          pageBuilder: (_, __, ___) => chatScreen,
+          transitionsBuilder: (_, animation, __, child) => FadeTransition(
+            opacity: CurvedAnimation(parent: animation, curve: Curves.easeOut),
+            child: child,
+          ),
+          transitionDuration: const Duration(milliseconds: 150),
         ),
       );
     } catch (e) {
@@ -1242,6 +1931,7 @@ class FirebaseNotificationService {
 
   // ── Navigate to a group chat screen ──────────────────────────────────────
   Future<void> _navigateToGroupChat(Map<String, dynamic> data) async {
+    if (!AppCapabilities.current.chatEnabled) return;
     final isAuthed = await _ensureAuthenticated();
     if (!isAuthed) {
       log('Cannot navigate to group chat: user not authenticated');
@@ -1254,13 +1944,25 @@ class FirebaseNotificationService {
       return;
     }
 
+    final targetGroupId = (data['groupId'] ?? data['id']) as String?;
+    if (targetGroupId != null &&
+        ActiveChatNotifier.instance.isChatActive(targetGroupId)) {
+      log('User is already viewing group $targetGroupId');
+      return;
+    }
+
     final groupScreen = await buildChatScreenFromNotificationData(data);
     if (groupScreen == null) return;
 
     try {
       nav.push(
-        MaterialPageRoute(
-          builder: (_) => groupScreen,
+        PageRouteBuilder(
+          pageBuilder: (_, __, ___) => groupScreen,
+          transitionsBuilder: (_, animation, __, child) => FadeTransition(
+            opacity: CurvedAnimation(parent: animation, curve: Curves.easeOut),
+            child: child,
+          ),
+          transitionDuration: const Duration(milliseconds: 150),
         ),
       );
     } catch (e) {
@@ -1279,6 +1981,7 @@ Future<void> sendNotification(
   String body, {
   Map<String, String>? data,
 }) async {
+  if (!AppCapabilities.current.notificationsEnabled) return;
   try {
     final cleanToken = token.trim();
     if (cleanToken.isEmpty) {
@@ -1332,6 +2035,7 @@ Future<void> sendMultipleNotification(
   String body, {
   Map<String, String>? data,
 }) async {
+  if (!AppCapabilities.current.notificationsEnabled) return;
   try {
     final uniqueTokens = tokens
         .map((t) => t.trim())

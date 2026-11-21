@@ -41,16 +41,19 @@ class MediaCacheService {
   /// Returns null if not cached yet.
   String? getCachedSync(String url) {
     if (url.isEmpty) return null;
-    // Reject file:// scheme URIs — they are not valid remote URLs or plain paths
-    if (url.startsWith('file://')) return null;
+    final clean = url.startsWith('file://') ? url.replaceFirst('file://', '') : url;
     if (_memoryCache.containsKey(url)) {
       return _memoryCache[url];
     }
+    if (_memoryCache.containsKey(clean)) {
+      return _memoryCache[clean];
+    }
     // If it's already a local file path
-    if (!url.startsWith('http://') && !url.startsWith('https://')) {
-      if (File(url).existsSync()) {
-        _memoryCache[url] = url;
-        return url;
+    if (!clean.startsWith('http://') && !clean.startsWith('https://')) {
+      if (File(clean).existsSync()) {
+        _memoryCache[url] = clean;
+        _memoryCache[clean] = clean;
+        return clean;
       }
     }
     // Check if already in disk cache without async
@@ -112,8 +115,7 @@ class MediaCacheService {
   // Get cached file path or download if not cached
   Future<String?> getMediaPath(String url) async {
     if (url.isEmpty) return null;
-    // Reject file:// scheme URIs — they are not valid remote or plain file paths
-    if (url.startsWith('file://')) return null;
+    final clean = url.startsWith('file://') ? url.replaceFirst('file://', '') : url;
 
     // Check fast memory cache or local file first
     final fastSync = getCachedSync(url);
@@ -122,11 +124,12 @@ class MediaCacheService {
     }
 
     // If it's a local file path that exists on device
-    if (!url.startsWith('http://') && !url.startsWith('https://')) {
-      final localFile = File(url);
+    if (!clean.startsWith('http://') && !clean.startsWith('https://')) {
+      final localFile = File(clean);
       if (await localFile.exists()) {
-        _memoryCache[url] = url;
-        return url;
+        _memoryCache[url] = clean;
+        _memoryCache[clean] = clean;
+        return clean;
       }
       return null;
     }
@@ -153,8 +156,8 @@ class MediaCacheService {
         url,
         localPath,
         options: Options(
-          receiveTimeout: const Duration(seconds: 20),
-          sendTimeout: const Duration(seconds: 15),
+          receiveTimeout: const Duration(seconds: 45),
+          sendTimeout: const Duration(seconds: 25),
         ),
         onReceiveProgress: (received, total) {
           if (total != -1) {

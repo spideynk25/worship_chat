@@ -23,7 +23,7 @@ class ChatContact {
   });
 
   Map<String, dynamic> toMap() {
-    return <String, dynamic>{
+    final map = <String, dynamic>{
       'name': name,
       'profilePic': profilePic,
       'uid': uid,
@@ -31,8 +31,11 @@ class ChatContact {
       'lastMessage': lastMessage,
       'fcmToken': fcmToken,
       'unseenCount': unseenCount,
-      'chatBackgroundUrl': chatBackgroundUrl,
     };
+    if (chatBackgroundUrl != null && chatBackgroundUrl!.trim().isNotEmpty) {
+      map['chatBackgroundUrl'] = chatBackgroundUrl!.trim();
+    }
+    return map;
   }
 
   factory ChatContact.fromMap(Map<String, dynamic> map, {String? documentId}) {

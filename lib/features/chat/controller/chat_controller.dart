@@ -1,6 +1,5 @@
 import 'dart:developer';
 import 'package:firebase_auth/firebase_auth.dart';
-import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:hive_flutter/hive_flutter.dart';
@@ -78,10 +77,12 @@ class ChatController {
           : (messageReplyOverride ?? ref.read(messageReplyProvider));
       log("controller sendTextMessage: $fcmToken");
 
-      UserModel? senderUser = await ref.read(userDataAuthProvider.future);
-      if (senderUser == null && Hive.isBoxOpen('userBox')) {
+      // Check local Hive cache synchronously (0ms) so cold start doesn't freeze the first message
+      UserModel? senderUser;
+      if (Hive.isBoxOpen('userBox')) {
         senderUser = Hive.box<UserModel>('userBox').get('currentUser');
       }
+      senderUser ??= ref.read(userDataAuthProvider).asData?.value;
       if (senderUser == null) {
         final authUser = FirebaseAuth.instance.currentUser;
         if (authUser != null) {
@@ -93,9 +94,17 @@ class ChatController {
             isOnline: true,
             email: authUser.email ?? '',
             groupId: [],
-            fcmToken: await FirebaseMessaging.instance.getToken(),
+            fcmToken: null,
           );
         }
+      }
+      if (senderUser == null) {
+        try {
+          senderUser = await ref.read(userDataAuthProvider.future).timeout(
+            const Duration(milliseconds: 1500),
+            onTimeout: () => null,
+          );
+        } catch (_) {}
       }
 
       if (senderUser != null) {
@@ -186,6 +195,38 @@ class ChatController {
       messageId: messageId,
       receiverUserId: receiverUserId,
       emoji: emoji,
+    );
+  }
+
+  void editMessage({
+    required String messageId,
+    required String receiverUserId,
+    required String newText,
+  }) {
+    chatRepository.editMessage(
+      messageId: messageId,
+      receiverUserId: receiverUserId,
+      newText: newText,
+    );
+  }
+
+  void deleteMessageForMe({
+    required String messageId,
+    required String receiverUserId,
+  }) {
+    chatRepository.deleteMessageForMe(
+      messageId: messageId,
+      receiverUserId: receiverUserId,
+    );
+  }
+
+  void deleteMessageForEveryone({
+    required String messageId,
+    required String receiverUserId,
+  }) {
+    chatRepository.deleteMessageForEveryone(
+      messageId: messageId,
+      receiverUserId: receiverUserId,
     );
   }
 }

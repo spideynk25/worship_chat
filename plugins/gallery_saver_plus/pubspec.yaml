@@ -1,0 +1,33 @@
+name: gallery_saver_plus
+description: Saves images and videos from network or temporary file to external
+  storage. Both images and videos will be visible in Android Gallery and iOS
+  Photos.
+version: 3.2.9
+homepage: https://github.com/open-ci-io/gallery_saver_plus
+
+environment:
+  sdk: '>=3.0.0 <4.0.0'
+  flutter: ">=3.0.0"
+
+module:
+  androidX: true
+
+dependencies:
+  flutter:
+    sdk: flutter
+  http: ^1.2.2
+  path: ^1.9.0
+  path_provider: ^2.1.4
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+
+flutter:
+  plugin:
+    platforms:
+      android:
+        package: carnegietechnologies.gallery_saver
+        pluginClass: GallerySaverPlugin
+      ios:
+        pluginClass: GallerySaverPlugin

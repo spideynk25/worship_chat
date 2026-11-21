@@ -28,15 +28,9 @@ class DefaultFirebaseOptions {
       case TargetPlatform.iOS:
         return ios;
       case TargetPlatform.macOS:
-        throw UnsupportedError(
-          'DefaultFirebaseOptions have not been configured for macos - '
-          'you can reconfigure this by running the FlutterFire CLI again.',
-        );
+        return macos;
       case TargetPlatform.windows:
-        throw UnsupportedError(
-          'DefaultFirebaseOptions have not been configured for windows - '
-          'you can reconfigure this by running the FlutterFire CLI again.',
-        );
+        return windows;
       case TargetPlatform.linux:
         throw UnsupportedError(
           'DefaultFirebaseOptions have not been configured for linux - '
@@ -50,19 +44,32 @@ class DefaultFirebaseOptions {
   }
 
   static const FirebaseOptions android = FirebaseOptions(
-    apiKey: 'AIzaSyDWMGGbW_UvqoxmKC1y9wT0dKOdsjaPm3g',
-    appId: '1:644989567395:android:34ccaf9aed408f7aa21a16',
-    messagingSenderId: '644989567395',
-    projectId: 'flutter-via-chat',
-    storageBucket: 'flutter-via-chat.firebasestorage.app',
+    apiKey: 'AIzaSyB-70aCPyhqcJnZe89VGtqduKHI1TXAwpQ',
+    appId: '1:191038258345:android:eb27eaccb07e3ab9eabdb8',
+    messagingSenderId: '191038258345',
+    projectId: 'worship-chat-c60b5',
+    storageBucket: 'worship-chat-c60b5.firebasestorage.app',
   );
 
   static const FirebaseOptions ios = FirebaseOptions(
-    apiKey: 'AIzaSyBtukOjSheATb1Or_O_36PjU-TkQVUnT1M',
-    appId: '1:644989567395:ios:34d76964e810dc65a21a16',
-    messagingSenderId: '644989567395',
-    projectId: 'flutter-via-chat',
-    storageBucket: 'flutter-via-chat.firebasestorage.app',
-    iosBundleId: 'com.example.viaChat',
+    apiKey: 'AIzaSyC71wCL1M5FsXVNOHPYuBCMQDPiC3R1xp0',
+    appId: '1:191038258345:ios:a068530cf3eaeaa4eabdb8',
+    messagingSenderId: '191038258345',
+    projectId: 'worship-chat-c60b5',
+    storageBucket: 'worship-chat-c60b5.firebasestorage.app',
+    iosBundleId: 'com.shadow.worshipchat.worshipChat',
+  );
+
+  // Both Apple targets use the same registered bundle identifier.
+  static const FirebaseOptions macos = ios;
+
+  // Existing Windows registration in the same Firebase project as the phone app.
+  static const FirebaseOptions windows = FirebaseOptions(
+    apiKey: 'AIzaSyAZM5I4_3a46JCp2BWkVhgQ7NxKoQ7iIs0',
+    appId: '1:191038258345:web:0d5686b8453b83d5eabdb8',
+    messagingSenderId: '191038258345',
+    projectId: 'worship-chat-c60b5',
+    authDomain: 'worship-chat-c60b5.firebaseapp.com',
+    storageBucket: 'worship-chat-c60b5.firebasestorage.app',
   );
 }

@@ -175,7 +175,7 @@ class _CameraScreenState extends State<CameraScreen> {
                           begin: Alignment.topCenter,
                           end: Alignment.bottomCenter,
                           colors: [
-                            Colors.black.withOpacity(0.6),
+                            Colors.black.withValues(alpha: 0.6),
                             Colors.transparent,
                           ],
                         ),
@@ -220,7 +220,7 @@ class _CameraScreenState extends State<CameraScreen> {
                           begin: Alignment.bottomCenter,
                           end: Alignment.topCenter,
                           colors: [
-                            Colors.black.withOpacity(0.6),
+                            Colors.black.withValues(alpha: 0.6),
                             Colors.transparent,
                           ],
                         ),
@@ -241,7 +241,7 @@ class _CameraScreenState extends State<CameraScreen> {
                                   width: 4,
                                 ),
                                 color: _isRecording
-                                    ? Colors.white.withOpacity(0.3)
+                                    ? Colors.white.withValues(alpha: 0.3)
                                     : Colors.transparent,
                               ),
                               child: const Icon(
@@ -373,7 +373,7 @@ class _CameraScreenState extends State<CameraScreen> {
                     child: Container(
                       padding: const EdgeInsets.all(16),
                       decoration: BoxDecoration(
-                        color: Colors.white.withOpacity(0.2),
+                        color: Colors.white.withValues(alpha: 0.2),
                         shape: BoxShape.circle,
                       ),
                       child: const Icon(

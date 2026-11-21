@@ -141,7 +141,7 @@ void main() {
 
     testWidgets('ForwardMessageSheet builds without error', (tester) async {
       await tester.pumpWidget(
-        const ProviderScope(
+        ProviderScope(
           child: MaterialApp(
             home: Scaffold(
               body: ForwardMessageSheet(

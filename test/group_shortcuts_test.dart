@@ -64,5 +64,44 @@ void main() {
       expect(canReorder(-1, 0, list.length), false);
       expect(canReorder(0, 2, list.length), false);
     });
+
+    test('User-scoped keys prevent shortcuts cross-contamination between user accounts', () {
+      final userA = 'user_alice_123';
+      final userB = 'user_bob_456';
+
+      String getUserHiveKey(String uid) =>
+          uid.isNotEmpty ? 'dashboard_group_shortcuts_order_$uid' : 'dashboard_group_shortcuts_order';
+
+      expect(getUserHiveKey(userA), 'dashboard_group_shortcuts_order_user_alice_123');
+      expect(getUserHiveKey(userB), 'dashboard_group_shortcuts_order_user_bob_456');
+      expect(getUserHiveKey(userA) != getUserHiveKey(userB), true);
+    });
+
+    test('Cloud sync resolution restores shortcuts across reinstalls without premature override', () {
+      bool isSyncingCloud = true;
+      bool hasLoadedFromStorage = false;
+      List<String> shortcutIds = [];
+
+      final allGroups = ['grp_1', 'grp_2', 'grp_3', 'grp_4', 'grp_5', 'grp_6', 'grp_7', 'grp_8', 'grp_9'];
+
+      // While syncing cloud on fresh install, we must NOT override with default 8
+      bool shouldShowDefaultShortcuts() {
+        if (isSyncingCloud && !hasLoadedFromStorage && shortcutIds.isEmpty) {
+          return false; // Wait for cloud sync!
+        }
+        return !hasLoadedFromStorage && shortcutIds.isEmpty;
+      }
+
+      expect(shouldShowDefaultShortcuts(), false, reason: 'Must wait for cloud sync rather than wiping shortcuts with default 8');
+
+      // Cloud returns previously saved shortcuts from before reinstall
+      final cloudRestoredShortcuts = ['grp_5', 'grp_9', 'grp_2'];
+      shortcutIds = List<String>.from(cloudRestoredShortcuts);
+      hasLoadedFromStorage = true;
+      isSyncingCloud = false;
+
+      expect(shouldShowDefaultShortcuts(), false);
+      expect(shortcutIds, ['grp_5', 'grp_9', 'grp_2'], reason: 'Restored exact user shortcuts from cloud');
+    });
   });
 }

@@ -1,3 +1,4 @@
+import 'dart:developer';
 import 'dart:io';
 import 'dart:math' as math;
 import 'package:cloud_firestore/cloud_firestore.dart';
@@ -170,7 +171,7 @@ class CombinedContactsScreen extends ConsumerWidget {
                       ),
                     ),
                     Divider(
-                      color: Colors.grey.withOpacity(0.12),
+                      color: Colors.grey.withValues(alpha: 0.12),
                       thickness: 1,
                       indent: 14,
                       endIndent: 14,
@@ -273,7 +274,7 @@ class CombinedContactsScreen extends ConsumerWidget {
                                                 .textTheme
                                                 .bodyMedium
                                                 ?.color
-                                                ?.withOpacity(0.7)
+                                                ?.withValues(alpha: 0.7)
                                           : Colors.grey,
                                       fontWeight: hasUnread
                                           ? FontWeight.w500
@@ -428,12 +429,16 @@ class CombinedContactsScreen extends ConsumerWidget {
       context: context,
       backgroundColor: Colors.transparent,
       builder: (_) => _StatusPickerSheet(
-        onFilePicked: (File file, bool isVideo) {
-          if (!context.mounted) return;
+        onFilesPicked: (List<File> files, bool isVideo) {
+          if (!context.mounted || files.isEmpty) return;
           Navigator.pushNamed(
             context,
             ConfirmStatusScreen.routeName,
-            arguments: {'file': file, 'isVideo': isVideo},
+            arguments: {
+              'files': files,
+              'file': files.first,
+              'isVideo': isVideo,
+            },
           );
         },
       ),
@@ -482,7 +487,7 @@ class _MyStatusCard extends StatelessWidget {
                       border: hasStatus
                           ? Border.all(color: tabColor, width: 2.5)
                           : Border.all(
-                              color: Colors.grey.withOpacity(0.35),
+                              color: Colors.grey.withValues(alpha: 0.35),
                               width: 1.5,
                             ),
                     ),
@@ -608,12 +613,12 @@ class _ContactStoryCard extends StatelessWidget {
                           placeholder: (_, __) => Container(
                             width: 61,
                             height: 61,
-                            color: tabColor.withOpacity(0.08),
+                            color: tabColor.withValues(alpha: 0.08),
                           ),
                           errorWidget: (_, __, ___) => Container(
                             width: 61,
                             height: 61,
-                            color: tabColor.withOpacity(0.1),
+                            color: tabColor.withValues(alpha: 0.1),
                             child: Icon(
                               Icons.person,
                               color: tabColor,
@@ -630,7 +635,7 @@ class _ContactStoryCard extends StatelessWidget {
                             width: 18,
                             height: 18,
                             decoration: BoxDecoration(
-                              color: Colors.black.withOpacity(0.65),
+                              color: Colors.black.withValues(alpha: 0.65),
                               shape: BoxShape.circle,
                             ),
                             child: const Icon(
@@ -667,16 +672,16 @@ class _ContactStoryCard extends StatelessWidget {
 // ── WhatsApp-style status picker sheet ─────────────────────────────────────
 
 class _StatusPickerSheet extends StatelessWidget {
-  final void Function(File file, bool isVideo) onFilePicked;
+  final void Function(List<File> files, bool isVideo) onFilesPicked;
 
-  const _StatusPickerSheet({required this.onFilePicked});
+  const _StatusPickerSheet({required this.onFilesPicked});
 
   Future<void> _pickFromCamera(BuildContext context) async {
     Navigator.pop(context);
     await showModalBottomSheet(
       context: context,
       backgroundColor: Colors.transparent,
-      builder: (_) => _CameraTypeSheet(onFilePicked: onFilePicked),
+      builder: (_) => _CameraTypeSheet(onFilesPicked: onFilesPicked),
     );
   }
 
@@ -685,7 +690,7 @@ class _StatusPickerSheet extends StatelessWidget {
     await showModalBottomSheet(
       context: context,
       backgroundColor: Colors.transparent,
-      builder: (_) => _GalleryTypeSheet(onFilePicked: onFilePicked),
+      builder: (_) => _GalleryTypeSheet(onFilesPicked: onFilesPicked),
     );
   }
 
@@ -751,9 +756,9 @@ class _StatusPickerSheet extends StatelessWidget {
 // ── Camera type picker (Photo vs Video) ────────────────────────────────────
 
 class _CameraTypeSheet extends StatelessWidget {
-  final void Function(File file, bool isVideo) onFilePicked;
+  final void Function(List<File> files, bool isVideo) onFilesPicked;
 
-  const _CameraTypeSheet({required this.onFilePicked});
+  const _CameraTypeSheet({required this.onFilesPicked});
 
   Future<void> _takePhoto(BuildContext context) async {
     Navigator.pop(context);
@@ -762,14 +767,14 @@ class _CameraTypeSheet extends StatelessWidget {
       imageQuality: 90,
     );
     if (picked == null) return;
-    onFilePicked(File(picked.path), false);
+    onFilesPicked([File(picked.path)], false);
   }
 
   Future<void> _recordVideo(BuildContext context) async {
     Navigator.pop(context);
     final picked = await ImagePicker().pickVideo(source: ImageSource.camera);
     if (picked == null) return;
-    onFilePicked(File(picked.path), true);
+    onFilesPicked([File(picked.path)], true);
   }
 
   @override
@@ -834,25 +839,32 @@ class _CameraTypeSheet extends StatelessWidget {
 // ── Gallery type picker (Photo vs Video) ───────────────────────────────────
 
 class _GalleryTypeSheet extends StatelessWidget {
-  final void Function(File file, bool isVideo) onFilePicked;
+  final void Function(List<File> files, bool isVideo) onFilesPicked;
 
-  const _GalleryTypeSheet({required this.onFilePicked});
+  const _GalleryTypeSheet({required this.onFilesPicked});
 
   Future<void> _pickPhoto(BuildContext context) async {
     Navigator.pop(context);
-    final picked = await ImagePicker().pickImage(
-      source: ImageSource.gallery,
-      imageQuality: 90,
-    );
-    if (picked == null) return;
-    onFilePicked(File(picked.path), false);
+    try {
+      final pickedList = await ImagePicker().pickMultiImage(
+        imageQuality: 90,
+      );
+      if (pickedList.isEmpty) return;
+      onFilesPicked(pickedList.map((x) => File(x.path)).toList(), false);
+    } catch (e) {
+      log('Error picking multiple photos: $e');
+    }
   }
 
   Future<void> _pickVideo(BuildContext context) async {
     Navigator.pop(context);
-    final picked = await ImagePicker().pickVideo(source: ImageSource.gallery);
-    if (picked == null) return;
-    onFilePicked(File(picked.path), true);
+    try {
+      final picked = await ImagePicker().pickVideo(source: ImageSource.gallery);
+      if (picked == null) return;
+      onFilesPicked([File(picked.path)], true);
+    } catch (e) {
+      log('Error picking video: $e');
+    }
   }
 
   @override
@@ -940,9 +952,9 @@ class _PickerOption extends StatelessWidget {
             width: 64,
             height: 64,
             decoration: BoxDecoration(
-              color: color.withOpacity(0.15),
+              color: color.withValues(alpha: 0.15),
               shape: BoxShape.circle,
-              border: Border.all(color: color.withOpacity(0.4), width: 1.5),
+              border: Border.all(color: color.withValues(alpha: 0.4), width: 1.5),
             ),
             child: Icon(icon, color: color, size: 28),
           ),

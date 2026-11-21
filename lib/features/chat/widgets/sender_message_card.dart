@@ -1,9 +1,15 @@
+import 'dart:ui';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:swipe_to/swipe_to.dart';
+import 'package:worship_chat/common/utils/google_lens_service.dart';
 import 'package:worship_chat/common/utils/utils.dart';
+import 'package:worship_chat/common/utils/wish_helper.dart';
+import 'package:worship_chat/features/settings/providers/chat_bubble_settings_provider.dart';
 import 'display_messages.dart';
 import 'message_reaction_dialog.dart';
+import 'wish_bubble_content_widget.dart';
 
 class SenderMessageCard extends StatefulWidget {
   final String message;
@@ -21,7 +27,11 @@ class SenderMessageCard extends StatefulWidget {
   final Map<String, String> reactions;
   final void Function(String emoji)? onReactionSelected;
   final VoidCallback? onForward;
+  final VoidCallback? onDelete;
+  final VoidCallback? onReplyTap;
   final bool isNewlyReceived;
+  final bool isEdited;
+  final bool isDeleted;
 
   const SenderMessageCard({
     super.key,
@@ -40,7 +50,11 @@ class SenderMessageCard extends StatefulWidget {
     this.reactions = const {},
     this.onReactionSelected,
     this.onForward,
+    this.onDelete,
+    this.onReplyTap,
     this.isNewlyReceived = false,
+    this.isEdited = false,
+    this.isDeleted = false,
   });
 
   @override
@@ -156,34 +170,42 @@ class _SenderMessageCardState extends State<SenderMessageCard>
     final hasCaption = isMedia &&
         widget.message.isNotEmpty &&
         widget.message != widget.fileMessageData;
-    final isPureMedia = isMedia && !hasCaption;
-    final isPureGif = widget.messageType == 'gif' && !hasCaption && !isReplying;
+    final isPureMedia = !widget.isDeleted && isMedia && !hasCaption;
+    final isPureGif = !widget.isDeleted && widget.messageType == 'gif' && !hasCaption && !isReplying;
 
     final double mediaWidth = isSmallScreen
         ? (screenWidth * 0.70).clamp(220.0, 275.0)
         : 295.0;
     final double mediaHeight = isSmallScreen ? 235.0 : 265.0;
 
+    final isWish = !widget.isDeleted && WishHelper.isWish(
+      messageType: widget.messageType,
+      text: widget.message,
+    );
+
     // Compact single-line detection for short messages (like "hi", "ok", "yes")
-    final isShortSingleLine = widget.messageType == 'text' &&
+    final isShortSingleLine = !widget.isDeleted &&
+        widget.messageType == 'text' &&
+        !isWish &&
         !isReplying &&
         !widget.message.contains('\n') &&
         !widget.message.contains('http://') &&
         !widget.message.contains('https://') &&
         widget.message.length <= 25;
 
-    // Asymmetrical tail pointing towards sender's avatar on the left
-    const bubbleRadius = BorderRadius.only(
-      topLeft: Radius.circular(18),
-      topRight: Radius.circular(18),
-      bottomLeft: Radius.circular(4),
-      bottomRight: Radius.circular(18),
-    );
+    final bubbleRadius = isWish
+        ? WishHelper.getBubbleRadius(isMe: false, isSmallScreen: isSmallScreen)
+        : const BorderRadius.only(
+            topLeft: Radius.circular(18),
+            topRight: Radius.circular(18),
+            bottomLeft: Radius.circular(4),
+            bottomRight: Radius.circular(18),
+          );
 
     return SwipeTo(
       iconSize: 0,
       swipeSensitivity: 8,
-      onRightSwipe: (details) => widget.onRightSwipe(),
+      onRightSwipe: widget.isDeleted ? null : (details) => widget.onRightSwipe(),
       child: Align(
         alignment: Alignment.bottomLeft,
         child: AnimatedBuilder(
@@ -229,10 +251,23 @@ class _SenderMessageCardState extends State<SenderMessageCard>
                         onReactionSelected: (emoji) {
                           widget.onReactionSelected?.call(emoji);
                         },
-                        onReply: widget.onRightSwipe,
-                        onCopy: () => _copyMessage(context),
-                        onForward: widget.onForward,
+                        onReply: widget.isDeleted ? null : widget.onRightSwipe,
+                        onCopy: widget.isDeleted ? null : () => _copyMessage(context),
+                        onForward: widget.isDeleted ? null : widget.onForward,
+                        onGoogleLens: (widget.isDeleted || widget.messageType != 'image')
+                            ? null
+                            : () {
+                                final mediaUrl = widget.fileMessageData?.isNotEmpty == true
+                                    ? widget.fileMessageData!
+                                    : widget.message;
+                                GoogleLensService.search(
+                                  context: context,
+                                  imageUrl: mediaUrl,
+                                );
+                              },
+                        onDelete: widget.onDelete,
                         isMyMessage: false,
+                        isDeleted: widget.isDeleted,
                       );
                     },
                     child: Container(
@@ -246,50 +281,124 @@ class _SenderMessageCardState extends State<SenderMessageCard>
                           ? null
                           : BoxDecoration(
                               borderRadius: bubbleRadius,
-                              gradient: const LinearGradient(
-                                begin: Alignment.topLeft,
-                                end: Alignment.bottomRight,
-                                colors: [
-                                  Color(0xFF262137), // Rich obsidian violet
-                                  Color(0xFF1B1728), // Deep slate dusk
-                                ],
-                              ),
-                              border: Border.all(
-                                color: Colors.white.withValues(alpha: 0.08),
-                                width: 0.8,
-                              ),
-                              boxShadow: [
-                                BoxShadow(
-                                  color: Colors.black.withValues(alpha: 0.25),
-                                  blurRadius: 8,
-                                  offset: const Offset(0, 3),
-                                ),
-                              ],
+                              boxShadow: isWish
+                                  ? WishHelper.getBubbleShadow(
+                                      text: widget.message,
+                                    )
+                                  : [
+                                      BoxShadow(
+                                        color: Colors.black.withValues(alpha: 0.14),
+                                        blurRadius: 10,
+                                        offset: const Offset(0, 2),
+                                      ),
+                                    ],
                             ),
                       child: ClipRRect(
                         borderRadius: isPureGif
                             ? BorderRadius.circular(16)
                             : bubbleRadius,
-                        child: isPureMedia
-                            ? _buildPureMedia(
-                                context,
-                                isReplying,
-                                bubbleRadius,
-                                mediaWidth,
-                                mediaHeight,
-                              )
-                            : isShortSingleLine
-                                ? _buildShortSingleLine(context, isSmallScreen)
-                                : _buildDynamicContent(
-                                    context,
-                                    isReplying,
-                                    isMedia,
-                                    isSmallScreen,
-                                    hasCaption,
-                                    bubbleRadius,
-                                    mediaWidth,
-                                    mediaHeight,
-                                  ),
+                        child: isPureGif
+                            ? (widget.isDeleted
+                                ? _buildDeletedMessage(context, isSmallScreen)
+                                : isWish
+                                    ? _buildWishMessage(
+                                        context,
+                                        isReplying,
+                                        isSmallScreen,
+                                      )
+                                    : isPureMedia
+                                        ? _buildPureMedia(
+                                            context,
+                                            isReplying,
+                                            bubbleRadius,
+                                            mediaWidth,
+                                            mediaHeight,
+                                          )
+                                        : isShortSingleLine
+                                            ? _buildShortSingleLine(context, isSmallScreen)
+                                            : _buildDynamicContent(
+                                                context,
+                                                isReplying,
+                                                isMedia,
+                                                isSmallScreen,
+                                                hasCaption,
+                                                bubbleRadius,
+                                                mediaWidth,
+                                                mediaHeight,
+                                              ))
+                            : BackdropFilter(
+                                filter: ImageFilter.blur(
+                                  sigmaX: 13,
+                                  sigmaY: 13,
+                                ),
+                                child: Consumer(
+                                  builder: (context, ref, _) {
+                                    final bubbleSettings = ref.watch(chatBubbleSettingsProvider);
+                                    final gradientColors = bubbleSettings.getBubbleGradientColors(isMe: false);
+                                    final borderColor = bubbleSettings.getBubbleBorderColor(isMe: false);
+                                    final contrast = bubbleSettings.getTextContrast(
+                                      isMe: false,
+                                      backdropColor: Theme.of(context).scaffoldBackgroundColor,
+                                    );
+
+                                    return Container(
+                                      decoration: isWish
+                                          ? BoxDecoration(
+                                              borderRadius: bubbleRadius,
+                                              gradient: WishHelper.getBubbleGradient(
+                                                isMe: false,
+                                                text: widget.message,
+                                              ),
+                                              border: WishHelper.getBubbleBorder(
+                                                text: widget.message,
+                                              ),
+                                            )
+                                          : BoxDecoration(
+                                              borderRadius: bubbleRadius,
+                                              gradient: LinearGradient(
+                                                begin: Alignment.topLeft,
+                                                end: Alignment.bottomRight,
+                                                colors: gradientColors,
+                                                stops: const [0.0, 0.45, 1.0],
+                                              ),
+                                              border: Border.all(
+                                                color: borderColor,
+                                                width: 1.0,
+                                              ),
+                                            ),
+                                      child: widget.isDeleted
+                                          ? _buildDeletedMessage(context, isSmallScreen, contrast)
+                                          : isWish
+                                              ? _buildWishMessage(
+                                                  context,
+                                                  isReplying,
+                                                  isSmallScreen,
+                                                )
+                                              : isPureMedia
+                                                  ? _buildPureMedia(
+                                                      context,
+                                                      isReplying,
+                                                      bubbleRadius,
+                                                      mediaWidth,
+                                                      mediaHeight,
+                                                    )
+                                                  : isShortSingleLine
+                                                      ? _buildShortSingleLine(context, isSmallScreen, contrast)
+                                                      : _buildDynamicContent(
+                                                          context,
+                                                          isReplying,
+                                                          isMedia,
+                                                          isSmallScreen,
+                                                          hasCaption,
+                                                          bubbleRadius,
+                                                          mediaWidth,
+                                                          mediaHeight,
+                                                          contrast,
+                                                        ),
+                                    );
+                                  },
+                                ),
+                              ),
                       ),
                     ),
                   ),
@@ -322,8 +431,92 @@ class _SenderMessageCardState extends State<SenderMessageCard>
     );
   }
 
+  /// Ornate royal proclamation wish bubble
+  Widget _buildWishMessage(
+    BuildContext context,
+    bool isReplying,
+    bool isSmallScreen,
+  ) {
+    final wishWidget = WishBubbleContentWidget(
+      text: widget.message,
+      date: widget.date,
+      isMe: false,
+      senderName: widget.username,
+      isSmallScreen: isSmallScreen,
+    );
+
+    if (!isReplying) {
+      return wishWidget;
+    }
+
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Padding(
+          padding: const EdgeInsets.fromLTRB(8, 8, 8, 2),
+          child: _buildReplyHeader(context),
+        ),
+        wishWidget,
+      ],
+    );
+  }
+
+  /// Deleted message bubble matching WhatsApp / Telegram
+  Widget _buildDeletedMessage(
+    BuildContext context,
+    bool isSmallScreen, [
+    BubbleTextContrast? contrast,
+  ]) {
+    final effectiveContrast = contrast ??
+        ChatBubbleSettings.contrastForBackground(const Color(0xFF15141F));
+    const displayText = 'This message was deleted';
+    final deletedColor = effectiveContrast.isLightBackground
+        ? const Color(0xFF6E6A7C)
+        : const Color(0xFFA09EB0);
+
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(12, 8, 10, 8),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.center,
+        children: [
+          Icon(
+            Icons.block_flipped,
+            size: isSmallScreen ? 14 : 16,
+            color: deletedColor,
+          ),
+          const SizedBox(width: 6),
+          Text(
+            displayText,
+            style: TextStyle(
+              fontSize: isSmallScreen ? 13.5 : 14.5,
+              fontStyle: FontStyle.italic,
+              color: deletedColor,
+            ),
+          ),
+          const SizedBox(width: 10),
+          Text(
+            widget.date,
+            style: TextStyle(
+              fontSize: isSmallScreen ? 10.5 : 11.5,
+              color: effectiveContrast.secondaryTextColor.withValues(alpha: 0.6),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
   /// Compact single-line bubble: text & timestamp side-by-side with dynamic snug fit
-  Widget _buildShortSingleLine(BuildContext context, bool isSmallScreen) {
+  Widget _buildShortSingleLine(
+    BuildContext context,
+    bool isSmallScreen, [
+    BubbleTextContrast? contrast,
+  ]) {
+    final effectiveContrast = contrast ??
+        ChatBubbleSettings.contrastForBackground(const Color(0xFF15141F));
+
     return Padding(
       padding: const EdgeInsets.fromLTRB(12, 7, 10, 7),
       child: Row(
@@ -334,18 +527,33 @@ class _SenderMessageCardState extends State<SenderMessageCard>
             widget.message,
             style: TextStyle(
               fontSize: isSmallScreen ? 14 : 15,
-              color: Colors.white,
+              color: effectiveContrast.primaryTextColor,
               height: 1.2,
+              shadows: effectiveContrast.textShadows,
             ),
           ),
           const SizedBox(width: 8),
+          if (widget.isEdited) ...[
+            Text(
+              'edited',
+              style: TextStyle(
+                fontSize: isSmallScreen ? 10 : 11,
+                fontStyle: FontStyle.italic,
+                color: effectiveContrast.secondaryTextColor.withValues(alpha: 0.8),
+                height: 1.2,
+                shadows: effectiveContrast.textShadows,
+              ),
+            ),
+            const SizedBox(width: 4),
+          ],
           Text(
             widget.date,
             style: TextStyle(
               fontSize: isSmallScreen ? 11 : 12,
               fontWeight: FontWeight.w400,
-              color: Colors.white.withValues(alpha: 0.6),
+              color: effectiveContrast.secondaryTextColor,
               height: 1.2,
+              shadows: effectiveContrast.textShadows,
             ),
           ),
         ],
@@ -377,7 +585,7 @@ class _SenderMessageCardState extends State<SenderMessageCard>
           senderName: widget.username,
           senderProfilePic: widget.senderProfilePic,
           mediaWidth: mediaWidth,
-          mediaHeight: mediaHeight,
+          mediaHeight: widget.messageType == 'image' ? null : mediaHeight,
           mediaBorderRadius: isReplying
               ? BorderRadius.only(
                   bottomLeft: bubbleRadius.bottomLeft,
@@ -402,13 +610,29 @@ class _SenderMessageCardState extends State<SenderMessageCard>
                 width: 0.5,
               ),
             ),
-            child: Text(
-              widget.date,
-              style: TextStyle(
-                fontSize: 11,
-                fontWeight: FontWeight.w500,
-                color: Colors.white.withValues(alpha: 0.9),
-              ),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                if (widget.isEdited) ...[
+                  Text(
+                    'edited',
+                    style: TextStyle(
+                      fontSize: 10,
+                      fontStyle: FontStyle.italic,
+                      color: Colors.white.withValues(alpha: 0.8),
+                    ),
+                  ),
+                  const SizedBox(width: 4),
+                ],
+                Text(
+                  widget.date,
+                  style: TextStyle(
+                    fontSize: 11,
+                    fontWeight: FontWeight.w500,
+                    color: Colors.white.withValues(alpha: 0.9),
+                  ),
+                ),
+              ],
             ),
           ),
         ),
@@ -447,8 +671,11 @@ class _SenderMessageCardState extends State<SenderMessageCard>
     bool hasCaption,
     BorderRadius bubbleRadius,
     double mediaWidth,
-    double mediaHeight,
-  ) {
+    double mediaHeight, [
+    BubbleTextContrast? contrast,
+  ]) {
+    final effectiveContrast = contrast ??
+        ChatBubbleSettings.contrastForBackground(const Color(0xFF15141F));
     final isCustomBubble = widget.messageType == 'document' ||
         widget.messageType == 'location' ||
         widget.messageType == 'live_location';
@@ -483,8 +710,11 @@ class _SenderMessageCardState extends State<SenderMessageCard>
               receiverId: widget.receiverId,
               senderName: widget.username,
               senderProfilePic: widget.senderProfilePic,
+              textColor: effectiveContrast.primaryTextColor,
               mediaWidth: isMedia ? mediaWidth : null,
-              mediaHeight: isMedia ? mediaHeight : null,
+              mediaHeight: widget.messageType == 'image'
+                  ? null
+                  : (isMedia ? mediaHeight : null),
               mediaBorderRadius: isMedia
                   ? BorderRadius.only(
                       topLeft: isReplying ? Radius.zero : bubbleRadius.topLeft,
@@ -499,7 +729,8 @@ class _SenderMessageCardState extends State<SenderMessageCard>
                   widget.message,
                   style: TextStyle(
                     fontSize: isSmallScreen ? 14 : 15,
-                    color: Colors.white,
+                    color: effectiveContrast.primaryTextColor,
+                    shadows: effectiveContrast.textShadows,
                   ),
                 ),
               ),
@@ -514,12 +745,25 @@ class _SenderMessageCardState extends State<SenderMessageCard>
                 crossAxisAlignment: CrossAxisAlignment.center,
                 children: [
                   const SizedBox(width: 14), // Minimum separation
+                  if (widget.isEdited) ...[
+                    Text(
+                      'edited',
+                      style: TextStyle(
+                        fontSize: isSmallScreen ? 10 : 11,
+                        fontStyle: FontStyle.italic,
+                        color: effectiveContrast.secondaryTextColor.withValues(alpha: 0.8),
+                        shadows: effectiveContrast.textShadows,
+                      ),
+                    ),
+                    const SizedBox(width: 4),
+                  ],
                   Text(
                     widget.date,
                     style: TextStyle(
                       fontSize: isSmallScreen ? 11 : 12,
                       fontWeight: FontWeight.w400,
-                      color: Colors.white.withValues(alpha: 0.6),
+                      color: effectiveContrast.secondaryTextColor,
+                      shadows: effectiveContrast.textShadows,
                     ),
                   ),
                 ],
@@ -532,41 +776,58 @@ class _SenderMessageCardState extends State<SenderMessageCard>
   }
 
   /// Sleek glassy reply preview quote
-  Widget _buildReplyHeader(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-      decoration: BoxDecoration(
-        color: Colors.black.withValues(alpha: 0.22),
-        borderRadius: BorderRadius.circular(10),
-        border: const Border(
-          left: BorderSide(
-            color: Color(0xFF8B7FF5), // Iris lavender accent
-            width: 3.5,
-          ),
-        ),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text(
-            widget.username,
-            style: const TextStyle(
-              fontWeight: FontWeight.w700,
-              fontSize: 13,
-              color: Color(0xFFA594F9),
+  Widget _buildReplyHeader(BuildContext context, [BubbleTextContrast? contrast]) {
+    final effectiveContrast = contrast ??
+        ChatBubbleSettings.contrastForBackground(const Color(0xFF15141F));
+    return GestureDetector(
+      onTap: widget.onReplyTap,
+      behavior: HitTestBehavior.opaque,
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+        decoration: BoxDecoration(
+          color: effectiveContrast.isLightBackground
+              ? Colors.black.withValues(alpha: 0.08)
+              : Colors.black.withValues(alpha: 0.22),
+          borderRadius: BorderRadius.circular(10),
+          border: Border(
+            left: BorderSide(
+              color: widget.repliedMessageType == 'wish'
+                  ? const Color(0xFFFFD700)
+                  : (effectiveContrast.isLightBackground
+                      ? const Color(0xFF6B186B)
+                      : const Color(0xFF8B7FF5)), // Iris lavender accent
+              width: 3.5,
             ),
           ),
-          const SizedBox(height: 2),
-          DisplayMessages(
-            message: widget.repliedText,
-            messageType: widget.repliedMessageType,
-            fileMessageData: widget.repliedText,
-            isPreviewable: false,
-            useCachedMedia: true,
-            mediaWidth: 46.0,
-            mediaHeight: 46.0,
-          ),
-        ],
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              widget.username,
+              style: TextStyle(
+                fontWeight: FontWeight.w700,
+                fontSize: 13,
+                color: widget.repliedMessageType == 'wish'
+                    ? const Color(0xFFFFD700)
+                    : (effectiveContrast.isLightBackground
+                        ? const Color(0xFF5A189A)
+                        : const Color(0xFFB1A9FF)),
+              ),
+            ),
+            const SizedBox(height: 2),
+            DisplayMessages(
+              message: widget.repliedText,
+              messageType: widget.repliedMessageType,
+              fileMessageData: widget.repliedText,
+              isPreviewable: false,
+              useCachedMedia: true,
+              mediaWidth: 46.0,
+              mediaHeight: 46.0,
+              textColor: effectiveContrast.primaryTextColor,
+            ),
+          ],
+        ),
       ),
     );
   }

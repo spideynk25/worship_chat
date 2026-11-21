@@ -15,6 +15,7 @@ import 'package:worship_chat/features/dashboard/repositories/event_repository.da
 import 'package:worship_chat/features/group/controller/group_controller.dart';
 import 'package:worship_chat/features/group/utils/group_template_helper.dart';
 import 'package:worship_chat/features/group/utils/queendom_emblem_helper.dart';
+import 'package:worship_chat/features/settings/providers/queendom_customization_provider.dart';
 import 'package:worship_chat/models/event.dart';
 import 'package:worship_chat/models/group.dart';
 
@@ -35,39 +36,8 @@ class _EditGroupScreenState extends ConsumerState<EditGroupScreen> {
   late String selectedPosition;
 
   final List<String> queendom = ['None', 'Queen Rashmika', 'Queen Pooja'];
-  final List<String> families = [
-    'None',
-    'Aura',
-    'Core',
-    'Main',
-    'Eternal',
-    'Divine',
-    'Wicked',
-    'Lustra',
-    'Rumia',
-    'Erotica',
-    'Elegant',
-    'Elora',
-    'Zyra',
-    'Velisse',
-  ];
-
-  final List<String> positions = [
-    'None',
-    'Aura Elixiria',
-    'Core Supreme Goddess',
-    'Supreme Goddess',
-    'Golden Blossom Goddess',
-    'Goddess',
-    'Demi Goddess',
-    'Dark Angel',
-    'Queen',
-    'Elfwitch',
-    'Enchantress',
-    'First Born Princess',
-    'Second Born Princess',
-    'Third Born Princess',
-  ];
+  List<String> get families => ref.watch(queendomCustomizationProvider).allFamilies;
+  List<String> get positions => ref.watch(queendomCustomizationProvider).allPositions;
 
   late TextEditingController nameController;
   late TextEditingController livingPlaceController;
@@ -458,8 +428,8 @@ class _EditGroupScreenState extends ConsumerState<EditGroupScreen> {
                   borderRadius: BorderRadius.circular(14),
                   border: Border.all(
                     color: widget.group.isFuckToySubGroup
-                        ? Colors.purpleAccent.withOpacity(0.5)
-                        : Colors.pinkAccent.withOpacity(0.5),
+                        ? Colors.purpleAccent.withValues(alpha: 0.5)
+                        : Colors.pinkAccent.withValues(alpha: 0.5),
                     width: 1.2,
                   ),
                 ),
@@ -492,7 +462,7 @@ class _EditGroupScreenState extends ConsumerState<EditGroupScreen> {
                             'Lives in ${widget.group.parentGroupName ?? "deity"}\'s sanctum (${widget.group.effectiveLivingPlace}). Wish and living place are inherited.',
                             style: TextStyle(
                               fontSize: 11.5,
-                              color: Colors.white.withOpacity(0.65),
+                              color: Colors.white.withValues(alpha: 0.65),
                             ),
                           ),
                         ],
@@ -505,7 +475,7 @@ class _EditGroupScreenState extends ConsumerState<EditGroupScreen> {
             ] else ...[
               // 2. Queendom dropdown
               DropdownButtonFormField<String>(
-                value: selectedQueendom,
+                initialValue: selectedQueendom,
                 decoration: const InputDecoration(
                   labelText: 'Queendom',
                   border: OutlineInputBorder(),
@@ -531,13 +501,13 @@ class _EditGroupScreenState extends ConsumerState<EditGroupScreen> {
 
               // 3. Position dropdown
               DropdownButtonFormField<String>(
-                value: selectedPosition,
+                initialValue: selectedPosition,
                 decoration: const InputDecoration(
                   labelText: 'Position / Category',
                   border: OutlineInputBorder(),
                   prefixIcon: Icon(Icons.star_outline),
                 ),
-                items: positions
+                items: {...positions, selectedPosition}
                     .map(
                       (pos) => DropdownMenuItem(
                         value: pos,
@@ -573,13 +543,13 @@ class _EditGroupScreenState extends ConsumerState<EditGroupScreen> {
               if (_hasOtherFamilies) ...[
                 const SizedBox(height: 16),
                 DropdownButtonFormField<String>(
-                  value: selectedFamily,
+                  initialValue: selectedFamily,
                   decoration: const InputDecoration(
                     labelText: 'Family',
                     border: OutlineInputBorder(),
                     prefixIcon: Icon(Icons.diversity_3_outlined),
                   ),
-                  items: families
+                  items: {...families, selectedFamily}
                       .map(
                         (fam) => DropdownMenuItem(
                           value: fam,
@@ -892,7 +862,7 @@ class _EditGroupScreenState extends ConsumerState<EditGroupScreen> {
                 style: TextStyle(fontSize: 11, color: Colors.white54),
               ),
               value: isRecurringBirthday,
-              activeColor: accentColor,
+              activeThumbColor: accentColor,
               onChanged: (val) {
                 setState(() {
                   isRecurringBirthday = val;
@@ -1225,10 +1195,9 @@ class _ImageCropScreen extends StatefulWidget {
   final Function(File) onCropped;
 
   const _ImageCropScreen({
-    Key? key,
     required this.file,
     required this.onCropped,
-  }) : super(key: key);
+  });
 
   @override
   State<_ImageCropScreen> createState() => _ImageCropScreenState();
@@ -1241,11 +1210,11 @@ class _ImageCropScreenState extends State<_ImageCropScreen> {
     final state = editorKey.currentState;
     if (state == null) return;
 
-    final Uint8List? rawData = state.rawImageData;
+    final Uint8List rawData = state.rawImageData;
     final Rect? cropRect = state.getCropRect();
     final EditActionDetails? action = state.editAction;
 
-    if (rawData == null || cropRect == null || action == null) {
+    if (cropRect == null || action == null) {
       return;
     }
 

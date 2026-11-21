@@ -15,14 +15,14 @@ class CachedImageWidget extends StatefulWidget {
   final Widget? errorWidget;
 
   const CachedImageWidget({
-    Key? key,
+    super.key,
     required this.imageUrl,
     this.width,
     this.height,
     this.fit = BoxFit.cover,
     this.placeholder,
     this.errorWidget,
-  }) : super(key: key);
+  });
 
   @override
   State<CachedImageWidget> createState() => _CachedImageWidgetState();
@@ -157,11 +157,11 @@ class CachedVideoWidget extends StatefulWidget {
   final double? height;
 
   const CachedVideoWidget({
-    Key? key,
+    super.key,
     required this.videoUrl,
     this.width,
     this.height,
-  }) : super(key: key);
+  });
 
   @override
   State<CachedVideoWidget> createState() => _CachedVideoWidgetState();

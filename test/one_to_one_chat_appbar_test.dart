@@ -1,12 +1,121 @@
+import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:intl/intl.dart';
 import 'package:worship_chat/colors.dart';
 import 'package:worship_chat/common/widgets/chat_status_indicator.dart';
 import 'package:worship_chat/common/widgets/user_avatar.dart';
+import 'package:worship_chat/models/user_model.dart';
 
 void main() {
   group('One-to-One Chat AppBar & Subtitle Tests', () {
+    test('AppBarStatusSubtitle.formatLastSeen formats WhatsApp style accurately', () {
+      final now = DateTime.now();
+
+      // Today
+      final todayTime = DateTime(now.year, now.month, now.day, 14, 30);
+      final todayExpected =
+          'last seen today at ${DateFormat('h:mm a').format(todayTime).toLowerCase()}';
+      expect(AppBarStatusSubtitle.formatLastSeen(todayTime), todayExpected);
+
+      // Yesterday
+      final yesterday = now.subtract(const Duration(days: 1));
+      final yesterdayTime =
+          DateTime(yesterday.year, yesterday.month, yesterday.day, 9, 15);
+      final yesterdayExpected =
+          'last seen yesterday at ${DateFormat('h:mm a').format(yesterdayTime).toLowerCase()}';
+      expect(AppBarStatusSubtitle.formatLastSeen(yesterdayTime), yesterdayExpected);
+
+      // Specific past date in same year
+      final pastDateThisYear = DateTime(now.year, 1, 15, 16, 45);
+      if (now.difference(pastDateThisYear).inDays > 1) {
+        final pastDateStr = DateFormat('dd/MM/yy').format(pastDateThisYear);
+        final timeStr = DateFormat('h:mm a').format(pastDateThisYear).toLowerCase();
+        expect(
+          AppBarStatusSubtitle.formatLastSeen(pastDateThisYear),
+          'last seen $pastDateStr at $timeStr',
+        );
+      }
+
+      // Past year
+      final pastYearDate = DateTime(2023, 5, 20, 11, 0);
+      final pastYearDateStr = DateFormat('dd/MM/yyyy').format(pastYearDate);
+      final pastYearTimeStr =
+          DateFormat('h:mm a').format(pastYearDate).toLowerCase();
+      expect(
+        AppBarStatusSubtitle.formatLastSeen(pastYearDate),
+        'last seen $pastYearDateStr at $pastYearTimeStr',
+      );
+    });
+
+    test('UserModel serializes and deserializes lastSeen from Timestamp, int, DateTime, and String', () {
+      final now = DateTime.now();
+
+      // From Timestamp
+      final userFromTimestamp = UserModel.fromMap({
+        'name': 'Pooja Hegde',
+        'isOnline': false,
+        'lastSeen': Timestamp.fromDate(now),
+      });
+      expect(userFromTimestamp.lastSeen?.millisecondsSinceEpoch,
+          closeTo(now.millisecondsSinceEpoch, 1000));
+
+      // From int (millis)
+      final userFromInt = UserModel.fromMap({
+        'name': 'Rashmika Mandanna',
+        'isOnline': false,
+        'lastSeen': now.millisecondsSinceEpoch,
+      });
+      expect(userFromInt.lastSeen?.millisecondsSinceEpoch,
+          closeTo(now.millisecondsSinceEpoch, 1000));
+
+      // From DateTime
+      final userFromDateTime = UserModel.fromMap({
+        'name': 'Queen',
+        'isOnline': false,
+        'lastSeen': now,
+      });
+      expect(userFromDateTime.lastSeen, now);
+
+      // From String
+      final userFromString = UserModel.fromMap({
+        'name': 'Devotee',
+        'isOnline': false,
+        'lastSeen': now.toIso8601String(),
+      });
+      expect(userFromString.lastSeen?.millisecondsSinceEpoch,
+          closeTo(now.millisecondsSinceEpoch, 1000));
+
+      // toMap creates Firestore Timestamp
+      final userMap = userFromDateTime.toMap();
+      expect(userMap['lastSeen'], isA<Timestamp>());
+      expect((userMap['lastSeen'] as Timestamp).toDate(), now);
+    });
+
+    testWidgets('AppBarStatusSubtitle displays WhatsApp last seen when offline', (tester) async {
+      final now = DateTime.now();
+      final todayTime = DateTime(now.year, now.month, now.day, 16, 20);
+      final expectedTodayText =
+          'last seen today at ${DateFormat('h:mm a').format(todayTime).toLowerCase()}';
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: AppBarStatusSubtitle(
+              isTyping: false,
+              isOnline: false,
+              lastSeen: todayTime,
+            ),
+          ),
+        ),
+      );
+
+      expect(find.text(expectedTodayText), findsOneWidget);
+      // Pulsing green dot should not be visible when offline
+      expect(find.byType(PulsingOnlineDot), findsNothing);
+    });
+
     testWidgets('AppBarStatusSubtitle transitions between typing, online, and offline', (tester) async {
       // 1. Offline state
       await tester.pumpWidget(

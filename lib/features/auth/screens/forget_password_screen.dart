@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:worship_chat/colors.dart';
+import 'package:worship_chat/features/auth/widgets/auth_form_viewport.dart';
 import 'package:worship_chat/features/auth/controller/auth_controller.dart';
 
 class ForgetPasswordScreen extends ConsumerStatefulWidget {
@@ -22,6 +23,12 @@ class _ForgetPasswordScreenState extends ConsumerState<ForgetPasswordScreen> {
   }
 
   @override
+  void dispose() {
+    _emailController.dispose();
+    super.dispose();
+  }
+
+  @override
   Widget build(BuildContext context) {
     return Scaffold(
       body: Stack(
@@ -36,10 +43,11 @@ class _ForgetPasswordScreenState extends ConsumerState<ForgetPasswordScreen> {
           ),
 
           // Reset Password Form
-          Center(
+          AuthFormViewport(
             child: Padding(
               padding: const EdgeInsets.symmetric(horizontal: 24.0),
               child: Container(
+                constraints: const BoxConstraints(maxWidth: 480),
                 padding: const EdgeInsets.all(25),
                 decoration: BoxDecoration(
                   color: Colors.black.withValues(alpha: 0.3),
@@ -124,8 +132,9 @@ class _ForgetPasswordScreenState extends ConsumerState<ForgetPasswordScreen> {
                       const SizedBox(height: 10),
 
                       // Navigate to Login
-                      Row(
-                        mainAxisAlignment: MainAxisAlignment.center,
+                      Wrap(
+                        alignment: WrapAlignment.center,
+                        crossAxisAlignment: WrapCrossAlignment.center,
                         children: [
                           const Text(
                             "Remember your password?",

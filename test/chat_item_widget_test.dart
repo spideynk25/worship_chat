@@ -1015,6 +1015,25 @@ void main() {
       expect(sizedBoxFinder, findsWidgets);
       expect(find.text('06:46 PM'), findsOneWidget);
     });
+
+    testWidgets('DisplayMessages with video message initializes safely in paused mode',
+        (tester) async {
+      await tester.pumpWidget(
+        const MaterialApp(
+          home: Scaffold(
+            body: DisplayMessages(
+              message: 'Check out this video',
+              messageType: 'video',
+              fileMessageData: 'https://example.com/video.mp4',
+              isPreviewable: true,
+            ),
+          ),
+        ),
+      );
+
+      await tester.pump();
+      expect(find.byType(DisplayMessages), findsOneWidget);
+    });
   });
 }
 

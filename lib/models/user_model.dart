@@ -1,3 +1,4 @@
+import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:hive/hive.dart';
 
 part 'user_model.g.dart';
@@ -28,6 +29,9 @@ class UserModel {
   @HiveField(7)
   final String? fcmToken;
 
+  @HiveField(8)
+  final DateTime? lastSeen;
+
   UserModel({
     this.userName,
     this.name,
@@ -37,6 +41,7 @@ class UserModel {
     this.email,
     this.groupId,
     this.fcmToken,
+    this.lastSeen,
   });
 
   Map<String, dynamic> toMap() {
@@ -49,6 +54,7 @@ class UserModel {
       'email': email,
       'groupId': groupId,
       'fcmToken': fcmToken,
+      'lastSeen': lastSeen != null ? Timestamp.fromDate(lastSeen!) : null,
     };
   }
 
@@ -66,6 +72,23 @@ class UserModel {
       }
     }
 
+    DateTime? parsedLastSeen;
+    final rawLastSeen = map['lastSeen'];
+    if (rawLastSeen is Timestamp) {
+      parsedLastSeen = rawLastSeen.toDate();
+    } else if (rawLastSeen is DateTime) {
+      parsedLastSeen = rawLastSeen;
+    } else if (rawLastSeen is int) {
+      parsedLastSeen = DateTime.fromMillisecondsSinceEpoch(rawLastSeen);
+    } else if (rawLastSeen is String) {
+      final asInt = int.tryParse(rawLastSeen);
+      if (asInt != null) {
+        parsedLastSeen = DateTime.fromMillisecondsSinceEpoch(asInt);
+      } else {
+        parsedLastSeen = DateTime.tryParse(rawLastSeen);
+      }
+    }
+
     return UserModel(
       userName: map['userName'] ?? '',
       name: map['name'] ?? '',
@@ -75,6 +98,7 @@ class UserModel {
       email: map['email'] ?? '',
       groupId: List<String>.from(map['groupId'] ?? []),
       fcmToken: map['fcmToken'] ?? '',
+      lastSeen: parsedLastSeen,
     );
   }
 }

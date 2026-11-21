@@ -105,7 +105,9 @@ class _ViewStatusesScreenState extends ConsumerState<ViewStatusesScreen>
     SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
     _cancelTimer();
     _pageController.dispose();
-    for (final c in _progressControllers) c.dispose();
+    for (final c in _progressControllers) {
+      c.dispose();
+    }
     _cleanupVideoController(_videoController);
     _videoController = null;
     _replyController.dispose();
@@ -385,7 +387,6 @@ class _ViewStatusesScreenState extends ConsumerState<ViewStatusesScreen>
     final status = widget.statuses[_currentIndex];
     final statusOwnerUid = status['uid'] as String;
     final statusUrl = status['statusUrl'] as String;
-    final ownerName = status['userName'] as String;
     final isVideo = (status['mediaType'] as String?) == 'video';
 
     // ── Build a MessageReply so the chat bubble shows the story thumbnail ──
@@ -400,7 +401,7 @@ class _ViewStatusesScreenState extends ConsumerState<ViewStatusesScreen>
     );
 
     // ── Inject the reply into the provider so sendTextMessage picks it up ──
-    ref.read(messageReplyProvider.state).state = storyReply;
+    ref.read(messageReplyProvider.notifier).state = storyReply;
 
     // ── Fetch the status owner's FCM token ────────────────────────────────
     String fcmToken = '';
@@ -418,7 +419,7 @@ class _ViewStatusesScreenState extends ConsumerState<ViewStatusesScreen>
     } catch (_) {}
 
     if (!mounted) {
-      ref.read(messageReplyProvider.state).state = null;
+      ref.read(messageReplyProvider.notifier).state = null;
       setState(() => _isSendingReply = false);
       return;
     }
@@ -439,7 +440,7 @@ class _ViewStatusesScreenState extends ConsumerState<ViewStatusesScreen>
         );
 
     // Clear the reply provider after sending
-    ref.read(messageReplyProvider.state).state = null;
+    ref.read(messageReplyProvider.notifier).state = null;
 
     if (mounted) {
       setState(() {
@@ -502,7 +503,7 @@ class _ViewStatusesScreenState extends ConsumerState<ViewStatusesScreen>
                         child: CachedNetworkImage(
                           imageUrl: url,
                           fit: BoxFit.cover,
-                          color: Colors.black.withOpacity(0.4),
+                          color: Colors.black.withValues(alpha: 0.4),
                           colorBlendMode: BlendMode.darken,
                           placeholder: (_, __) =>
                               const ColoredBox(color: Colors.black),
@@ -553,7 +554,7 @@ class _ViewStatusesScreenState extends ConsumerState<ViewStatusesScreen>
                     begin: Alignment.topCenter,
                     end: Alignment.bottomCenter,
                     colors: [
-                      Colors.black.withOpacity(0.75),
+                      Colors.black.withValues(alpha: 0.75),
                       Colors.transparent,
                     ],
                   ),
@@ -573,7 +574,7 @@ class _ViewStatusesScreenState extends ConsumerState<ViewStatusesScreen>
                     begin: Alignment.bottomCenter,
                     end: Alignment.topCenter,
                     colors: [
-                      Colors.black.withOpacity(0.75),
+                      Colors.black.withValues(alpha: 0.75),
                       Colors.transparent,
                     ],
                   ),
@@ -612,8 +613,8 @@ class _ViewStatusesScreenState extends ConsumerState<ViewStatusesScreen>
                                   child: LinearProgressIndicator(
                                     value: val,
                                     minHeight: 3,
-                                    backgroundColor: Colors.white.withOpacity(
-                                      0.3,
+                                    backgroundColor: Colors.white.withValues(
+                                      alpha: 0.3,
                                     ),
                                     valueColor: const AlwaysStoppedAnimation(
                                       Colors.white,
@@ -760,10 +761,10 @@ class _ViewStatusesScreenState extends ConsumerState<ViewStatusesScreen>
                                     vertical: 11,
                                   ),
                                   decoration: BoxDecoration(
-                                    color: Colors.white.withOpacity(0.14),
+                                    color: Colors.white.withValues(alpha: 0.14),
                                     borderRadius: BorderRadius.circular(30),
                                     border: Border.all(
-                                      color: Colors.white.withOpacity(0.25),
+                                      color: Colors.white.withValues(alpha: 0.25),
                                     ),
                                   ),
                                   child: const Row(
@@ -829,13 +830,13 @@ class _ViewStatusesScreenState extends ConsumerState<ViewStatusesScreen>
                     ),
                     decoration: BoxDecoration(
                       color: isLiked
-                          ? Colors.red.withOpacity(0.25)
-                          : Colors.white.withOpacity(0.12),
+                          ? Colors.red.withValues(alpha: 0.25)
+                          : Colors.white.withValues(alpha: 0.12),
                       borderRadius: BorderRadius.circular(50),
                       border: Border.all(
                         color: isLiked
-                            ? Colors.red.withOpacity(0.6)
-                            : Colors.white.withOpacity(0.2),
+                            ? Colors.red.withValues(alpha: 0.6)
+                            : Colors.white.withValues(alpha: 0.2),
                       ),
                     ),
                     child: Icon(
@@ -864,10 +865,10 @@ class _ViewStatusesScreenState extends ConsumerState<ViewStatusesScreen>
                         vertical: 10,
                       ),
                       decoration: BoxDecoration(
-                        color: Colors.white.withOpacity(0.12),
+                        color: Colors.white.withValues(alpha: 0.12),
                         borderRadius: BorderRadius.circular(50),
                         border: Border.all(
-                          color: Colors.white.withOpacity(0.2),
+                          color: Colors.white.withValues(alpha: 0.2),
                         ),
                       ),
                       child: const Row(
@@ -914,9 +915,9 @@ class _ViewStatusesScreenState extends ConsumerState<ViewStatusesScreen>
         filter: ImageFilter.blur(sigmaX: 16, sigmaY: 16),
         child: Container(
           decoration: BoxDecoration(
-            color: Colors.white.withOpacity(0.10),
+            color: Colors.white.withValues(alpha: 0.10),
             borderRadius: BorderRadius.circular(20),
-            border: Border.all(color: Colors.white.withOpacity(0.18)),
+            border: Border.all(color: Colors.white.withValues(alpha: 0.18)),
           ),
           child: Column(
             mainAxisSize: MainAxisSize.min,
@@ -929,7 +930,7 @@ class _ViewStatusesScreenState extends ConsumerState<ViewStatusesScreen>
                 ),
                 child: Container(
                   height: 72,
-                  color: Colors.white.withOpacity(0.06),
+                  color: Colors.white.withValues(alpha: 0.06),
                   child: Row(
                     children: [
                       // Thumbnail
@@ -1025,7 +1026,7 @@ class _ViewStatusesScreenState extends ConsumerState<ViewStatusesScreen>
                           padding: const EdgeInsets.all(12),
                           child: Icon(
                             Icons.close_rounded,
-                            color: Colors.white.withOpacity(0.6),
+                            color: Colors.white.withValues(alpha: 0.6),
                             size: 18,
                           ),
                         ),
@@ -1038,7 +1039,7 @@ class _ViewStatusesScreenState extends ConsumerState<ViewStatusesScreen>
               Divider(
                 height: 1,
                 thickness: 1,
-                color: Colors.white.withOpacity(0.10),
+                color: Colors.white.withValues(alpha: 0.10),
               ),
               // ── Text field + send ──────────────────────────────────────
               Padding(
@@ -1061,7 +1062,7 @@ class _ViewStatusesScreenState extends ConsumerState<ViewStatusesScreen>
                           hintText:
                               'Reply to ${ownerName.split(' ').first}\'s story…',
                           hintStyle: TextStyle(
-                            color: Colors.white.withOpacity(0.45),
+                            color: Colors.white.withValues(alpha: 0.45),
                             fontSize: 14,
                           ),
                           border: InputBorder.none,
@@ -1087,7 +1088,7 @@ class _ViewStatusesScreenState extends ConsumerState<ViewStatusesScreen>
                           shape: BoxShape.circle,
                           boxShadow: [
                             BoxShadow(
-                              color: tabColor.withOpacity(0.4),
+                              color: tabColor.withValues(alpha: 0.4),
                               blurRadius: 8,
                               offset: const Offset(0, 2),
                             ),
@@ -1174,11 +1175,11 @@ class _ViewersSheet extends ConsumerWidget {
           filter: ImageFilter.blur(sigmaX: 24, sigmaY: 24),
           child: Container(
             decoration: BoxDecoration(
-              color: const Color(0xFF111111).withOpacity(0.94),
+              color: const Color(0xFF111111).withValues(alpha: 0.94),
               borderRadius: const BorderRadius.vertical(
                 top: Radius.circular(24),
               ),
-              border: Border.all(color: Colors.white.withOpacity(0.07)),
+              border: Border.all(color: Colors.white.withValues(alpha: 0.07)),
             ),
             child: SafeArea(
               top: false,
@@ -1256,7 +1257,7 @@ class _ViewersSheet extends ConsumerWidget {
                               width: 56,
                               height: 56,
                               decoration: BoxDecoration(
-                                color: Colors.white.withOpacity(0.05),
+                                color: Colors.white.withValues(alpha: 0.05),
                                 shape: BoxShape.circle,
                               ),
                               child: const Icon(

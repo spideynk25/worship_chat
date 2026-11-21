@@ -49,6 +49,18 @@ class OneToOneMessageModel {
   @HiveField(12)
   final Map<String, String> reactions; // userId -> emoji
 
+  @HiveField(13)
+  final bool? _isEdited;
+  bool get isEdited => _isEdited ?? false;
+
+  @HiveField(14)
+  final bool? _isDeleted;
+  bool get isDeleted => _isDeleted ?? false;
+
+  @HiveField(15)
+  final List<String>? _deletedFor;
+  List<String> get deletedFor => _deletedFor ?? const [];
+
   OneToOneMessageModel({
     required this.senderId,
     required this.receiverId,
@@ -64,10 +76,16 @@ class OneToOneMessageModel {
     required this.repliedTo,
     required this.repliedMessageType,
     Map<String, String>? reactions,
+    bool? isEdited,
+    bool? isDeleted,
+    List<String>? deletedFor,
   })  : _isSeen = isSeen ?? false,
         _isDelivered = isDelivered ?? false,
         _isSending = isSending ?? false,
-        reactions = reactions ?? const {};
+        reactions = reactions ?? const {},
+        _isEdited = isEdited ?? false,
+        _isDeleted = isDeleted ?? false,
+        _deletedFor = deletedFor ?? const [];
 
   OneToOneMessageModel copyWith({
     String? senderId,
@@ -84,6 +102,9 @@ class OneToOneMessageModel {
     String? repliedTo,
     String? repliedMessageType,
     Map<String, String>? reactions,
+    bool? isEdited,
+    bool? isDeleted,
+    List<String>? deletedFor,
   }) {
     return OneToOneMessageModel(
       senderId: senderId ?? this.senderId,
@@ -100,6 +121,9 @@ class OneToOneMessageModel {
       repliedTo: repliedTo ?? this.repliedTo,
       repliedMessageType: repliedMessageType ?? this.repliedMessageType,
       reactions: reactions ?? this.reactions,
+      isEdited: isEdited ?? this.isEdited,
+      isDeleted: isDeleted ?? this.isDeleted,
+      deletedFor: deletedFor ?? this.deletedFor,
     );
   }
 
@@ -118,6 +142,9 @@ class OneToOneMessageModel {
       'repliedTo': repliedTo,
       'repliedMessageType': repliedMessageType,
       'reactions': reactions,
+      'isEdited': isEdited,
+      'isDeleted': isDeleted,
+      'deletedFor': deletedFor,
     };
   }
 
@@ -163,6 +190,12 @@ class OneToOneMessageModel {
       repliedTo: map['repliedTo']?.toString() ?? '',
       repliedMessageType: map['repliedMessageType']?.toString() ?? 'text',
       reactions: parsedReactions,
+      isEdited: map['isEdited'] as bool? ?? false,
+      isDeleted: map['isDeleted'] as bool? ?? false,
+      deletedFor: (map['deletedFor'] as List<dynamic>?)
+              ?.map((e) => e.toString())
+              .toList() ??
+          const [],
     );
   }
 }

@@ -1,7 +1,10 @@
 import 'dart:io';
+import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:worship_chat/colors.dart';
+import 'package:hive_flutter/hive_flutter.dart';
+import 'package:uuid/uuid.dart';
 import 'package:worship_chat/common/utils/utils.dart';
 import 'package:worship_chat/common/utils/share_intent_service.dart';
 import 'package:worship_chat/common/widgets/skeleton_loader.dart';
@@ -9,8 +12,11 @@ import 'package:worship_chat/features/auth/controller/auth_controller.dart';
 import 'package:worship_chat/features/chat/controller/chat_controller.dart';
 import 'package:worship_chat/features/group/controller/group_controller.dart';
 import 'package:worship_chat/features/group/controller/group_gallery_controller.dart';
+import 'package:worship_chat/features/group/utils/queendom_emblem_helper.dart';
+import 'package:worship_chat/features/home/screens/home_screen.dart';
 import 'package:worship_chat/models/chat_contact.dart';
 import 'package:worship_chat/models/group.dart';
+import 'package:worship_chat/models/user_model.dart';
 
 enum _ShareTarget { gallery, groupChat, directChat }
 
@@ -24,14 +30,20 @@ class _Selection {
   const _Selection.contact(ChatContact c) : contact = c, group = null;
 
   bool get isGroup => group != null;
-  String get name => group?.name ?? contact?.name ?? '';
+  String get name => group?.nameWithPosition ?? contact?.name ?? '';
   String get pic => group?.groupPic ?? contact?.profilePic ?? '';
   String get id => group?.groupId ?? contact?.uid ?? '';
 }
 
 class ShareUploadScreen extends ConsumerStatefulWidget {
-  final List<File> files;
-  const ShareUploadScreen({super.key, required this.files});
+  final List<File>? files;
+  final SharedPayload? payload;
+
+  const ShareUploadScreen({
+    super.key,
+    this.files,
+    this.payload,
+  });
 
   @override
   ConsumerState<ShareUploadScreen> createState() => _ShareUploadScreenState();
@@ -39,18 +51,44 @@ class ShareUploadScreen extends ConsumerStatefulWidget {
 
 class _ShareUploadScreenState extends ConsumerState<ShareUploadScreen>
     with SingleTickerProviderStateMixin {
+  late final SharedPayload _payload;
+
   _Selection? _selection;
   _ShareTarget _target = _ShareTarget.gallery;
   bool _isUploading = false;
   int _uploaded = 0;
   late TabController _tabController;
 
-  // Tab indices: 0 = My Groups, 1 = Queen Pooja, 2 = Queen Rashmika, 3 = Direct
-  static const int _kDirectTabIndex = 3;
+  // Cached streams to prevent stream recreation and UI rebuilding on progress updates
+  late final Stream<List<GroupModel>> _myGroupsStream;
+  late final Stream<List<GroupModel>> _poojaGroupsStream;
+  late final Stream<List<GroupModel>> _rashmikaGroupsStream;
+  late final Stream<List<ChatContact>> _directContactsStream;
+
+  // Tab indices: 0 = Direct Message, 1 = My Groups, 2 = Queen Pooja, 3 = Queen Rashmika
+  static const int _kDirectTabIndex = 0;
 
   @override
   void initState() {
     super.initState();
+
+    // Resolve payload
+    _payload = widget.payload ??
+        SharedPayload(
+          files: widget.files ?? const [],
+          type: SharedPayloadType.image,
+        );
+
+    // Initial target: since Direct Message is tab 0, start in directChat mode
+    _target = _ShareTarget.directChat;
+
+    // Initialize stable streams once in initState so setState() doesn't recreate them
+    _myGroupsStream = ref.read(groupControllerProvider).chatGroups();
+    _poojaGroupsStream = ref.read(groupControllerProvider).getQueenPoojaStream();
+    _rashmikaGroupsStream =
+        ref.read(groupControllerProvider).getQueenRashmikaStream();
+    _directContactsStream = ref.read(chatControllerProvider).chatContacts();
+
     _tabController = TabController(length: 4, vsync: this);
     _tabController.addListener(() {
       setState(() {
@@ -58,7 +96,9 @@ class _ShareUploadScreenState extends ConsumerState<ShareUploadScreen>
           _target = _ShareTarget.directChat;
         } else {
           if (_target == _ShareTarget.directChat) {
-            _target = _ShareTarget.gallery;
+            _target = _payload.canUploadToGallery
+                ? _ShareTarget.gallery
+                : _ShareTarget.groupChat;
           }
         }
         _selection = null;
@@ -72,10 +112,33 @@ class _ShareUploadScreenState extends ConsumerState<ShareUploadScreen>
     super.dispose();
   }
 
+  void _safeExit() {
+    ref.read(sharedFilesProvider.notifier).clear();
+    ref.read(sharedPayloadProvider.notifier).clear();
+    if (!mounted) return;
+    if (Navigator.of(context).canPop()) {
+      Navigator.pop(context);
+    } else {
+      Navigator.of(context).pushReplacement(
+        MaterialPageRoute(builder: (_) => const HomeScreen()),
+      );
+    }
+  }
+
+  void _finishAndExit(String message, {bool success = true}) {
+    if (!mounted) return;
+    _snack(message, success);
+    _safeExit();
+  }
+
   void _selectGroup(GroupModel group) {
     setState(() {
       _selection = _Selection.group(group);
-      if (_target == _ShareTarget.directChat) _target = _ShareTarget.gallery;
+      if (_target == _ShareTarget.directChat) {
+        _target = _payload.canUploadToGallery
+            ? _ShareTarget.gallery
+            : _ShareTarget.groupChat;
+      }
     });
   }
 
@@ -92,13 +155,54 @@ class _ShareUploadScreenState extends ConsumerState<ShareUploadScreen>
     return 'group';
   }
 
+  // ── Fast synchronous-first user data resolution ────────────────────────────
+
+  Future<UserModel?> _getUserDataFast() async {
+    UserModel? user;
+    if (Hive.isBoxOpen('userBox')) {
+      user = Hive.box<UserModel>('userBox').get('currentUser');
+    }
+    user ??= ref.read(userDataAuthProvider).asData?.value;
+    if (user != null) return user;
+
+    try {
+      final authUser = FirebaseAuth.instance.currentUser;
+      if (authUser != null) {
+        user = UserModel(
+          name: authUser.displayName ?? 'User',
+          userName: authUser.displayName ?? 'User',
+          uid: authUser.uid,
+          profilePic: authUser.photoURL ?? '',
+          isOnline: true,
+          email: authUser.email ?? '',
+          groupId: [],
+          fcmToken: null,
+        );
+      }
+    } catch (_) {}
+    if (user != null) return user;
+
+    try {
+      return await ref.read(userDataAuthProvider.future).timeout(
+        const Duration(seconds: 2),
+        onTimeout: () => null,
+      );
+    } catch (_) {
+      return null;
+    }
+  }
+
   // ── Upload to gallery ─────────────────────────────────────────────────────
 
   Future<void> _uploadToGallery() async {
     final group = _selection?.group;
-    if (group == null) return;
-    final userData = await ref.read(userDataAuthProvider.future);
-    if (userData == null) return;
+    if (group == null || !_payload.canUploadToGallery) return;
+
+    final userData = await _getUserDataFast();
+    if (userData == null) {
+      _snack('⚠️ Unable to verify user session', false);
+      return;
+    }
 
     setState(() {
       _isUploading = true;
@@ -109,22 +213,33 @@ class _ShareUploadScreenState extends ConsumerState<ShareUploadScreen>
         .read(groupGalleryControllerProvider)
         .uploadImages(
           groupId: group.groupId,
-          imageFiles: widget.files,
+          imageFiles: _payload.files,
           uploaderName: userData.name ?? 'Unknown',
-          caption: null,
-          onProgress: (uploaded, _) => setState(() => _uploaded = uploaded),
+          caption: _payload.text,
+          onProgress: (uploaded, _) {
+            if (mounted) setState(() => _uploaded = uploaded);
+          },
         );
 
-    if (mounted) {
-      ref.read(sharedFilesProvider.notifier).clear();
-      _snack(
-        count > 0
-            ? '✅ $count photo${count == 1 ? '' : 's'} added to ${group.name} gallery'
-            : '⚠️ Upload failed',
-        count > 0,
-      );
-      Navigator.pop(context);
+    _finishAndExit(
+      count > 0
+          ? '✅ $count photo${count == 1 ? '' : 's'} added to ${group.nameWithPosition} gallery'
+          : '⚠️ Upload failed',
+      success: count > 0,
+    );
+  }
+
+  String _fileMessageType(File file) {
+    final lower = file.path.toLowerCase();
+    if (lower.endsWith('.mp4') ||
+        lower.endsWith('.mov') ||
+        lower.endsWith('.mkv') ||
+        lower.endsWith('.avi') ||
+        lower.endsWith('.webm') ||
+        lower.endsWith('.3gp')) {
+      return 'video';
     }
+    return 'image';
   }
 
   // ── Send to group chat ────────────────────────────────────────────────────
@@ -132,8 +247,12 @@ class _ShareUploadScreenState extends ConsumerState<ShareUploadScreen>
   Future<void> _sendToGroupChat() async {
     final group = _selection?.group;
     if (group == null) return;
-    final userData = await ref.read(userDataAuthProvider.future);
-    if (userData == null) return;
+
+    final userData = await _getUserDataFast();
+    if (userData == null) {
+      _snack('⚠️ Unable to verify user session', false);
+      return;
+    }
 
     setState(() {
       _isUploading = true;
@@ -144,31 +263,55 @@ class _ShareUploadScreenState extends ConsumerState<ShareUploadScreen>
         .where((uid) => uid != userData.uid)
         .toList();
 
-    for (int i = 0; i < widget.files.length; i++) {
+    if (_payload.isTextOnly) {
+      if (!mounted) return;
       await ref
           .read(groupControllerProvider)
           .sendTextMessage(
             context,
-            '',
+            _payload.text ?? '',
             group.groupId,
-            'image',
-            widget.files[i],
-            List<String>.from(group.fcmTokens ?? []),
+            'text',
+            null,
+            List<String>.from(group.fcmTokens),
             receiverIds,
-            group.name,
+            group.nameWithPosition,
             _groupType(group),
+          );
+
+      _finishAndExit('✅ Sent to ${group.nameWithPosition}');
+      return;
+    }
+
+    // Media files sharing
+    final files = _payload.files;
+    final isVideo = _payload.type == SharedPayloadType.video;
+    final mediaGroupId = files.length > 1 ? const Uuid().v1() : null;
+
+    for (int i = 0; i < files.length; i++) {
+      final file = files[i];
+      final messageType = _fileMessageType(file);
+      if (!mounted) return;
+      await ref
+          .read(groupControllerProvider)
+          .sendTextMessage(
+            context,
+            i == 0 && _payload.text != null ? _payload.text! : '',
+            group.groupId,
+            messageType,
+            file,
+            List<String>.from(group.fcmTokens),
+            receiverIds,
+            group.nameWithPosition,
+            _groupType(group),
+            mediaGroupId: mediaGroupId,
           );
       if (mounted) setState(() => _uploaded = i + 1);
     }
 
-    if (mounted) {
-      ref.read(sharedFilesProvider.notifier).clear();
-      _snack(
-        '✅ ${widget.files.length} photo${widget.files.length == 1 ? '' : 's'} sent to ${group.name}',
-        true,
-      );
-      Navigator.pop(context);
-    }
+    _finishAndExit(
+      '✅ ${files.length} ${isVideo ? "video" : "photo"}${files.length == 1 ? '' : 's'} sent to ${group.nameWithPosition}',
+    );
   }
 
   // ── Send to 1-to-1 chat ───────────────────────────────────────────────────
@@ -176,39 +319,67 @@ class _ShareUploadScreenState extends ConsumerState<ShareUploadScreen>
   Future<void> _sendToDirectChat() async {
     final contact = _selection?.contact;
     if (contact == null) return;
-    final userData = await ref.read(userDataAuthProvider.future);
-    if (userData == null) return;
+
+    final userData = await _getUserDataFast();
+    if (userData == null) {
+      _snack('⚠️ Unable to verify user session', false);
+      return;
+    }
 
     setState(() {
       _isUploading = true;
       _uploaded = 0;
     });
 
-    for (int i = 0; i < widget.files.length; i++) {
+    if (_payload.isTextOnly) {
+      if (!mounted) return;
       await ref
           .read(chatControllerProvider)
           .sendTextMessage(
             context,
-            '',
+            _payload.text ?? '',
             contact.uid,
-            'image',
-            widget.files[i],
+            'text',
+            null,
             contact.fcmToken ?? '',
             null,
             null,
             'others',
           );
+
+      _finishAndExit('✅ Sent to ${contact.name}');
+      return;
+    }
+
+    // Media files sharing
+    final files = _payload.files;
+    final isVideo = _payload.type == SharedPayloadType.video;
+    final mediaGroupId = files.length > 1 ? const Uuid().v1() : null;
+
+    for (int i = 0; i < files.length; i++) {
+      final file = files[i];
+      final messageType = _fileMessageType(file);
+      if (!mounted) return;
+      await ref
+          .read(chatControllerProvider)
+          .sendTextMessage(
+            context,
+            i == 0 && _payload.text != null ? _payload.text! : '',
+            contact.uid,
+            messageType,
+            file,
+            contact.fcmToken ?? '',
+            null,
+            null,
+            'others',
+            groupId: mediaGroupId,
+          );
       if (mounted) setState(() => _uploaded = i + 1);
     }
 
-    if (mounted) {
-      ref.read(sharedFilesProvider.notifier).clear();
-      _snack(
-        '✅ ${widget.files.length} photo${widget.files.length == 1 ? '' : 's'} sent to ${contact.name}',
-        true,
-      );
-      Navigator.pop(context);
-    }
+    _finishAndExit(
+      '✅ ${files.length} ${isVideo ? "video" : "photo"}${files.length == 1 ? '' : 's'} sent to ${contact.name}',
+    );
   }
 
   Future<void> _submit() async {
@@ -239,393 +410,802 @@ class _ShareUploadScreenState extends ConsumerState<ShareUploadScreen>
   bool get _isDirectTab => _tabController.index == _kDirectTabIndex;
 
   String get _submitLabel {
+    final count = _payload.isTextOnly ? 1 : _payload.files.length;
+    final plural = count == 1 ? '' : 's';
+    final typeName = _payload.isTextOnly
+        ? (_payload.isYouTube
+            ? 'YouTube link'
+            : _payload.isXTwitter
+                ? 'post'
+                : 'message')
+        : (_payload.type == SharedPayloadType.video ? 'video' : 'photo');
+
     if (_isUploading) {
       final verb = _target == _ShareTarget.gallery ? 'Uploading' : 'Sending';
-      return '$verb $_uploaded / ${widget.files.length}...';
+      if (_payload.isTextOnly) return '$verb...';
+      return '$verb $_uploaded / $count...';
     }
     if (_selection == null) return 'Select a destination first';
-    final count = widget.files.length;
-    final plural = count == 1 ? '' : 's';
+
     switch (_target) {
       case _ShareTarget.gallery:
-        return 'Upload $count photo$plural to Gallery';
+        return 'Upload $count $typeName$plural to Gallery';
       case _ShareTarget.groupChat:
-        return 'Send $count photo$plural to Chat';
+        return 'Send $count $typeName$plural to ${_selection!.name}';
       case _ShareTarget.directChat:
-        return 'Send $count photo$plural to ${_selection!.name}';
+        return 'Send $count $typeName$plural to ${_selection!.name}';
     }
   }
 
   Color get _submitColor {
     switch (_target) {
       case _ShareTarget.gallery:
-        return tabColor;
+        return const Color(0xFFFFD700); // Royal Gold
       case _ShareTarget.groupChat:
-        return Colors.blueAccent;
+        return const Color(0xFF9D4EDD); // Royal Purple
       case _ShareTarget.directChat:
-        return Colors.purpleAccent;
+        return const Color(0xFFC77DFF); // Lavender accent
     }
   }
 
   IconData get _submitIcon {
     switch (_target) {
       case _ShareTarget.gallery:
-        return Icons.cloud_upload_outlined;
+        return Icons.cloud_upload_rounded;
       case _ShareTarget.groupChat:
       case _ShareTarget.directChat:
-        return Icons.send;
+        return Icons.send_rounded;
     }
   }
 
   @override
   Widget build(BuildContext context) {
-    // Key fix: read keyboard height via viewInsets
     final keyboardHeight = MediaQuery.of(context).viewInsets.bottom;
 
-    return Scaffold(
-      // resizeToAvoidBottomInset: false lets us manually control layout
-      // so the button stays anchored and the list shrinks properly
-      resizeToAvoidBottomInset: false,
-      backgroundColor: backgroundColor,
-      appBar: AppBar(
-        backgroundColor: appBarColor,
-        elevation: 0,
-        leading: IconButton(
-          icon: const Icon(Icons.close),
-          onPressed: () {
-            ref.read(sharedFilesProvider.notifier).clear();
-            Navigator.pop(context);
-          },
-        ),
-        title: const Text(
-          'Share to Worship Chat',
-          style: TextStyle(fontWeight: FontWeight.bold),
-        ),
-        bottom: TabBar(
-          controller: _tabController,
-          indicatorColor: tabColor,
-          labelColor: tabColor,
-          unselectedLabelColor: Colors.grey,
-          isScrollable: true,
-          tabAlignment: TabAlignment.start,
-          tabs: const [
-            Tab(text: 'My Groups'),
-            Tab(text: 'Queen Pooja'),
-            Tab(text: 'Queen Rashmika'),
-            Tab(text: 'Direct'),
-          ],
-        ),
-      ),
-      body: SafeArea(
-        child: Column(
-          children: [
-            // ── Image previews ──────────────────────────────────────────
-            Container(
-              height: 100,
-              color: Colors.black,
-              child: ListView.builder(
-                scrollDirection: Axis.horizontal,
-                padding: const EdgeInsets.all(10),
-                itemCount: widget.files.length,
-                itemBuilder: (_, i) => Stack(
-                  children: [
-                    Container(
-                      margin: const EdgeInsets.only(right: 8),
-                      child: ClipRRect(
-                        borderRadius: BorderRadius.circular(10),
-                        child: Image.file(
-                          widget.files[i],
-                          width: 80,
-                          height: 80,
-                          fit: BoxFit.cover,
-                        ),
-                      ),
-                    ),
-                    if (widget.files.length > 1)
-                      Positioned(
-                        top: 4,
-                        left: 4,
-                        child: Container(
-                          padding: const EdgeInsets.symmetric(
-                            horizontal: 5,
-                            vertical: 2,
-                          ),
-                          decoration: BoxDecoration(
-                            color: Colors.black54,
-                            borderRadius: BorderRadius.circular(6),
-                          ),
-                          child: Text(
-                            '${i + 1}',
-                            style: const TextStyle(
-                              color: Colors.white,
-                              fontSize: 10,
-                              fontWeight: FontWeight.bold,
-                            ),
-                          ),
-                        ),
-                      ),
+    return PopScope(
+      canPop: false,
+      onPopInvokedWithResult: (didPop, result) {
+        if (didPop) return;
+        _safeExit();
+      },
+      child: Scaffold(
+        resizeToAvoidBottomInset: false,
+        backgroundColor: const Color(0xFF0A0912),
+        appBar: AppBar(
+          backgroundColor: const Color(0xFF120E1E),
+          elevation: 0,
+          leading: IconButton(
+            icon: Container(
+              padding: const EdgeInsets.all(6),
+              decoration: BoxDecoration(
+                color: Colors.white.withValues(alpha: 0.08),
+                shape: BoxShape.circle,
+              ),
+              child: const Icon(Icons.close, color: Colors.white70, size: 18),
+            ),
+            onPressed: _safeExit,
+          ),
+          title: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Icon(Icons.auto_awesome, color: Color(0xFFFFD700), size: 18),
+              const SizedBox(width: 8),
+              ShaderMask(
+                shaderCallback: (bounds) => const LinearGradient(
+                  colors: [
+                    Color(0xFFFFDF7D),
+                    Color(0xFFFFB300),
+                    Color(0xFFFFA000),
                   ],
+                ).createShader(bounds),
+                child: const Text(
+                  'QUEENDOM SHARE',
+                  style: TextStyle(
+                    color: Colors.white,
+                    fontWeight: FontWeight.w900,
+                    letterSpacing: 1.5,
+                    fontSize: 15,
+                  ),
                 ),
+              ),
+            ],
+          ),
+          centerTitle: true,
+          bottom: PreferredSize(
+            preferredSize: const Size.fromHeight(48),
+            child: Container(
+              decoration: BoxDecoration(
+                color: const Color(0xFF14121F),
+                border: Border(
+                  bottom: BorderSide(color: Colors.white.withValues(alpha: 0.06)),
+                ),
+              ),
+              child: TabBar(
+                controller: _tabController,
+                indicatorColor: const Color(0xFFFFD700),
+                indicatorWeight: 3,
+                labelColor: const Color(0xFFFFD700),
+                unselectedLabelColor: Colors.grey[400],
+                labelStyle: const TextStyle(
+                  fontWeight: FontWeight.bold,
+                  fontSize: 13,
+                  letterSpacing: 0.3,
+                ),
+                unselectedLabelStyle: const TextStyle(
+                  fontWeight: FontWeight.normal,
+                  fontSize: 13,
+                ),
+                isScrollable: true,
+                tabAlignment: TabAlignment.start,
+                tabs: const [
+                  Tab(text: 'Direct Message'),
+                  Tab(text: 'My Groups'),
+                  Tab(text: 'Queen Pooja'),
+                  Tab(text: 'Queen Rashmika'),
+                ],
               ),
             ),
+          ),
+        ),
+        body: SafeArea(
+          child: Column(
+            children: [
+              // ── Preview Section ───────────────────────────────────────────
+              _buildContentPreview(),
 
-            // ── Share target toggle (hidden on Direct tab) ──────────────
-            if (!_isDirectTab)
-              Container(
-                color: Colors.grey[900],
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 16,
-                  vertical: 10,
-                ),
-                child: Row(
+              // ── Share target toggle (only when gallery is available) ──────
+              if (!_isDirectTab && _payload.canUploadToGallery)
+                _buildTargetToggleBar(),
+
+              // ── Text / Direct header info banner ──────────────────────────
+              if (_isDirectTab || !_payload.canUploadToGallery)
+                _buildModeInfoBanner(),
+
+              // ── Selected destination banner ───────────────────────────────
+              if (_selection != null) _buildSelectedDestinationBanner(),
+
+              // ── Tab views with cached streams ─────────────────────────────
+              Expanded(
+                child: TabBarView(
+                  controller: _tabController,
                   children: [
-                    Text(
-                      'Share to:',
-                      style: TextStyle(color: Colors.grey[400], fontSize: 13),
+                    // Direct Messages (Tab 0)
+                    _SearchableContactTab(
+                      stream: _directContactsStream,
+                      selectedContact: _selection?.contact,
+                      onSelect: _selectContact,
+                      emptyLabel: 'No conversations yet',
                     ),
-                    const SizedBox(width: 12),
-                    _TargetChip(
-                      label: 'Gallery',
-                      icon: Icons.photo_library_outlined,
-                      selected: _target == _ShareTarget.gallery,
-                      color: tabColor,
-                      onTap: () =>
-                          setState(() => _target = _ShareTarget.gallery),
+                    // My Groups (Tab 1)
+                    _SearchableGroupTab(
+                      stream: _myGroupsStream,
+                      selectedGroup: _selection?.group,
+                      onSelect: _selectGroup,
+                      emptyLabel: 'No groups available in Queendom',
                     ),
-                    const SizedBox(width: 8),
-                    _TargetChip(
-                      label: 'Chat',
-                      icon: Icons.chat_bubble_outline,
-                      selected: _target == _ShareTarget.groupChat,
-                      color: Colors.blueAccent,
-                      onTap: () =>
-                          setState(() => _target = _ShareTarget.groupChat),
+                    // Queen Pooja (Tab 2)
+                    _SearchableGroupTab(
+                      stream: _poojaGroupsStream,
+                      selectedGroup: _selection?.group,
+                      onSelect: _selectGroup,
+                      emptyLabel: 'No Queen Pooja groups available',
                     ),
-                    const Spacer(),
-                    Container(
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 8,
-                        vertical: 4,
-                      ),
-                      decoration: BoxDecoration(
-                        color: Colors.grey[800],
-                        borderRadius: BorderRadius.circular(10),
-                      ),
-                      child: Text(
-                        '${widget.files.length} photo${widget.files.length == 1 ? '' : 's'}',
-                        style: TextStyle(color: Colors.grey[400], fontSize: 11),
-                      ),
+                    // Queen Rashmika (Tab 3)
+                    _SearchableGroupTab(
+                      stream: _rashmikaGroupsStream,
+                      selectedGroup: _selection?.group,
+                      onSelect: _selectGroup,
+                      emptyLabel: 'No Queen Rashmika groups available',
                     ),
                   ],
                 ),
               ),
 
-            // ── Direct tab header strip ─────────────────────────────────
-            if (_isDirectTab)
-              Container(
-                color: Colors.grey[900],
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 16,
-                  vertical: 10,
+              // ── Upload progress indicator ─────────────────────────────────
+              if (_isUploading)
+                LinearProgressIndicator(
+                  value: _payload.files.isNotEmpty
+                      ? _uploaded / _payload.files.length
+                      : null,
+                  backgroundColor: const Color(0xFF1E1A2E),
+                  valueColor: AlwaysStoppedAnimation<Color>(_submitColor),
+                  minHeight: 4,
                 ),
-                child: Row(
-                  children: [
-                    Icon(
-                      Icons.person_outline,
-                      size: 15,
-                      color: Colors.purpleAccent,
-                    ),
-                    const SizedBox(width: 8),
-                    Text(
-                      'Send directly to a person',
-                      style: TextStyle(color: Colors.grey[400], fontSize: 13),
-                    ),
-                    const Spacer(),
-                    Container(
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 8,
-                        vertical: 4,
-                      ),
-                      decoration: BoxDecoration(
-                        color: Colors.grey[800],
-                        borderRadius: BorderRadius.circular(10),
-                      ),
-                      child: Text(
-                        '${widget.files.length} photo${widget.files.length == 1 ? '' : 's'}',
-                        style: TextStyle(color: Colors.grey[400], fontSize: 11),
-                      ),
-                    ),
-                  ],
-                ),
-              ),
 
-            // ── Selected destination strip ──────────────────────────────
-            if (_selection != null)
-              Container(
-                width: double.infinity,
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 16,
-                  vertical: 8,
+              // ── Submit Action Button ──────────────────────────────────────
+              AnimatedPadding(
+                duration: const Duration(milliseconds: 150),
+                curve: Curves.easeOut,
+                padding: EdgeInsets.fromLTRB(
+                  16,
+                  8,
+                  16,
+                  keyboardHeight > 0 ? keyboardHeight + 8 : 16,
                 ),
-                color: _submitColor.withOpacity(0.1),
-                child: Row(
-                  children: [
-                    Container(
-                      decoration: BoxDecoration(
-                        shape: BoxShape.circle,
-                        border: Border.all(color: _submitColor, width: 1.5),
-                      ),
-                      child: CircleAvatar(
-                        backgroundImage: NetworkImage(_selection!.pic),
-                        radius: 14,
-                        backgroundColor: Colors.grey[700],
+                child: SizedBox(
+                  width: double.infinity,
+                  height: 52,
+                  child: ElevatedButton(
+                    onPressed: _selection == null || _isUploading
+                        ? null
+                        : _submit,
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: _submitColor,
+                      foregroundColor: _target == _ShareTarget.gallery
+                          ? const Color(0xFF0E0B16)
+                          : Colors.white,
+                      disabledBackgroundColor: const Color(0xFF221E30),
+                      disabledForegroundColor: Colors.grey[600],
+                      elevation: _selection != null ? 6 : 0,
+                      shadowColor: _submitColor.withValues(alpha: 0.4),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(16),
                       ),
                     ),
-                    const SizedBox(width: 10),
-                    Expanded(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(
-                            _selection!.name,
-                            style: const TextStyle(
-                              color: Colors.white,
-                              fontSize: 13,
-                              fontWeight: FontWeight.bold,
-                            ),
-                            overflow: TextOverflow.ellipsis,
+                    child: _isUploading
+                        ? Row(
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            children: [
+                              SizedBox(
+                                width: 20,
+                                height: 20,
+                                child: CircularProgressIndicator(
+                                  strokeWidth: 2.5,
+                                  color: _target == _ShareTarget.gallery
+                                      ? const Color(0xFF0E0B16)
+                                      : Colors.white,
+                                ),
+                              ),
+                              const SizedBox(width: 12),
+                              Text(
+                                _submitLabel,
+                                style: const TextStyle(
+                                  fontSize: 15,
+                                  fontWeight: FontWeight.bold,
+                                ),
+                              ),
+                            ],
+                          )
+                        : Row(
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            children: [
+                              Icon(_submitIcon, size: 20),
+                              const SizedBox(width: 10),
+                              Flexible(
+                                child: Text(
+                                  _submitLabel,
+                                  style: const TextStyle(
+                                    fontSize: 15,
+                                    fontWeight: FontWeight.bold,
+                                  ),
+                                  overflow: TextOverflow.ellipsis,
+                                ),
+                              ),
+                            ],
                           ),
-                          Text(
-                            _target == _ShareTarget.gallery
-                                ? 'Will be uploaded to gallery'
-                                : _target == _ShareTarget.directChat
-                                ? 'Will be sent as direct message${widget.files.length > 1 ? 's' : ''}'
-                                : 'Will be sent as chat message${widget.files.length > 1 ? 's' : ''}',
-                            style: TextStyle(
-                              color: Colors.grey[400],
-                              fontSize: 11,
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                    IconButton(
-                      icon: const Icon(
-                        Icons.close,
-                        size: 16,
-                        color: Colors.grey,
-                      ),
-                      onPressed: () => setState(() => _selection = null),
-                      padding: EdgeInsets.zero,
-                      constraints: const BoxConstraints(),
-                    ),
-                  ],
+                  ),
                 ),
               ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
 
-            // ── Tab content — Expanded so it takes remaining space ──────
+  // ── Preview Widget Builder ────────────────────────────────────────────────
+
+  Widget _buildContentPreview() {
+    if (_payload.isTextOnly) {
+      return Container(
+        width: double.infinity,
+        margin: const EdgeInsets.fromLTRB(16, 12, 16, 6),
+        padding: const EdgeInsets.all(14),
+        decoration: BoxDecoration(
+          color: const Color(0xFF141122),
+          borderRadius: BorderRadius.circular(16),
+          border: Border.all(
+            color: _payload.isYouTube
+                ? const Color(0xFFFF334B).withValues(alpha: 0.3)
+                : _payload.isXTwitter
+                    ? const Color(0xFF1DA1F2).withValues(alpha: 0.3)
+                    : const Color(0xFFFFD700).withValues(alpha: 0.2),
+          ),
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                _buildPlatformBadge(),
+                const Spacer(),
+                GestureDetector(
+                  onTap: () {
+                    Clipboard.setData(ClipboardData(text: _payload.text ?? ''));
+                    AppSnackBar.success(context, 'Copied link to clipboard');
+                  },
+                  child: Container(
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                    decoration: BoxDecoration(
+                      color: Colors.white.withValues(alpha: 0.08),
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    child: const Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(Icons.copy_rounded, size: 12, color: Colors.white70),
+                        SizedBox(width: 4),
+                        Text(
+                          'Copy',
+                          style: TextStyle(color: Colors.white70, fontSize: 11),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 8),
+            Text(
+              _payload.text ?? '',
+              maxLines: 2,
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(
+                color: Colors.white,
+                fontSize: 13,
+                height: 1.35,
+              ),
+            ),
+          ],
+        ),
+      );
+    }
+
+    if (_payload.type == SharedPayloadType.video) {
+      return Container(
+        height: 86,
+        margin: const EdgeInsets.fromLTRB(16, 10, 16, 6),
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+        decoration: BoxDecoration(
+          color: const Color(0xFF141122),
+          borderRadius: BorderRadius.circular(16),
+          border: Border.all(
+            color: const Color(0xFFFF9100).withValues(alpha: 0.3),
+          ),
+        ),
+        child: Row(
+          children: [
+            Container(
+              width: 56,
+              height: 56,
+              decoration: BoxDecoration(
+                color: const Color(0xFFFF9100).withValues(alpha: 0.15),
+                borderRadius: BorderRadius.circular(12),
+              ),
+              child: const Icon(
+                Icons.play_circle_fill_rounded,
+                color: Color(0xFFFF9100),
+                size: 32,
+              ),
+            ),
+            const SizedBox(width: 14),
             Expanded(
-              child: TabBarView(
-                controller: _tabController,
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  // My Groups
-                  _SearchableGroupTab(
-                    stream: ref.watch(groupControllerProvider).chatGroups(),
-                    selectedGroup: _selection?.group,
-                    onSelect: _selectGroup,
-                    emptyLabel: 'No groups available',
+                  Row(
+                    children: [
+                      Container(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 6,
+                          vertical: 2,
+                        ),
+                        decoration: BoxDecoration(
+                          color: const Color(0xFFFF9100).withValues(alpha: 0.2),
+                          borderRadius: BorderRadius.circular(6),
+                        ),
+                        child: const Text(
+                          'VIDEO',
+                          style: TextStyle(
+                            color: Color(0xFFFF9100),
+                            fontSize: 10,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      Text(
+                        '${_payload.files.length} file${_payload.files.length == 1 ? '' : 's'}',
+                        style: TextStyle(color: Colors.grey[400], fontSize: 12),
+                      ),
+                    ],
                   ),
-                  // Queen Pooja
-                  _SearchableGroupTab(
-                    stream: ref
-                        .watch(groupControllerProvider)
-                        .getQueenPoojaStream(),
-                    selectedGroup: _selection?.group,
-                    onSelect: _selectGroup,
-                    emptyLabel: 'No Queen Pooja groups',
-                  ),
-                  // Queen Rashmika
-                  _SearchableGroupTab(
-                    stream: ref
-                        .watch(groupControllerProvider)
-                        .getQueenRashmikaStream(),
-                    selectedGroup: _selection?.group,
-                    onSelect: _selectGroup,
-                    emptyLabel: 'No Queen Rashmika groups',
-                  ),
-                  // Direct Messages
-                  _SearchableContactTab(
-                    stream: ref.watch(chatControllerProvider).chatContacts(),
-                    selectedContact: _selection?.contact,
-                    onSelect: _selectContact,
-                    emptyLabel: 'No conversations yet',
+                  const SizedBox(height: 4),
+                  Text(
+                    _payload.files.first.path.split('/').last,
+                    style: const TextStyle(
+                      color: Colors.white,
+                      fontSize: 13,
+                      fontWeight: FontWeight.w600,
+                    ),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
                   ),
                 ],
               ),
             ),
+          ],
+        ),
+      );
+    }
 
-            // ── Upload progress bar ─────────────────────────────────────
-            if (_isUploading)
-              LinearProgressIndicator(
-                value: widget.files.isNotEmpty
-                    ? _uploaded / widget.files.length
-                    : null,
-                backgroundColor: Colors.grey[800],
-                valueColor: AlwaysStoppedAnimation<Color>(_submitColor),
-                minHeight: 3,
+    // Photo carousel preview
+    return Container(
+      height: 96,
+      margin: const EdgeInsets.only(top: 8, bottom: 4),
+      child: ListView.builder(
+        scrollDirection: Axis.horizontal,
+        padding: const EdgeInsets.symmetric(horizontal: 16),
+        itemCount: _payload.files.length,
+        itemBuilder: (_, i) => Stack(
+          children: [
+            Container(
+              margin: const EdgeInsets.only(right: 10),
+              decoration: BoxDecoration(
+                borderRadius: BorderRadius.circular(14),
+                border: Border.all(
+                  color: Colors.white.withValues(alpha: 0.15),
+                  width: 1.2,
+                ),
               ),
-
-            // ── Submit button — animates up with keyboard ───────────────
-            AnimatedPadding(
-              duration: const Duration(milliseconds: 150),
-              curve: Curves.easeOut,
-              padding: EdgeInsets.fromLTRB(
-                16,
-                8,
-                16,
-                keyboardHeight > 0 ? keyboardHeight + 8 : 24,
+              child: ClipRRect(
+                borderRadius: BorderRadius.circular(13),
+                child: Image.file(
+                  _payload.files[i],
+                  width: 80,
+                  height: 80,
+                  fit: BoxFit.cover,
+                ),
               ),
-              child: SizedBox(
-                width: double.infinity,
-                child: ElevatedButton.icon(
-                  onPressed: _selection == null || _isUploading
-                      ? null
-                      : _submit,
-                  icon: _isUploading
-                      ? SizedBox(
-                          width: 18,
-                          height: 18,
-                          child: CircularProgressIndicator(
-                            strokeWidth: 2,
-                            color: Colors.white,
-                            value: widget.files.isNotEmpty
-                                ? _uploaded / widget.files.length
-                                : null,
-                          ),
-                        )
-                      : Icon(_submitIcon),
-                  label: Text(_submitLabel),
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: _submitColor,
-                    foregroundColor: Colors.white,
-                    disabledBackgroundColor: Colors.grey[800],
-                    disabledForegroundColor: Colors.grey[500],
-                    padding: const EdgeInsets.symmetric(vertical: 16),
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(14),
+            ),
+            if (_payload.files.length > 1)
+              Positioned(
+                top: 4,
+                left: 4,
+                child: Container(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 6,
+                    vertical: 2,
+                  ),
+                  decoration: BoxDecoration(
+                    color: Colors.black.withValues(alpha: 0.75),
+                    borderRadius: BorderRadius.circular(6),
+                  ),
+                  child: Text(
+                    '${i + 1}',
+                    style: const TextStyle(
+                      color: Color(0xFFFFD700),
+                      fontSize: 10,
+                      fontWeight: FontWeight.bold,
                     ),
                   ),
                 ),
               ),
-            ),
           ],
         ),
       ),
     );
   }
+
+  Widget _buildPlatformBadge() {
+    if (_payload.isYouTube) {
+      return Container(
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+        decoration: BoxDecoration(
+          color: const Color(0xFFFF0000).withValues(alpha: 0.15),
+          borderRadius: BorderRadius.circular(8),
+          border: Border.all(
+            color: const Color(0xFFFF334B).withValues(alpha: 0.4),
+          ),
+        ),
+        child: const Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(Icons.play_circle_fill, color: Color(0xFFFF334B), size: 14),
+            SizedBox(width: 5),
+            Text(
+              'YOUTUBE',
+              style: TextStyle(
+                color: Color(0xFFFF334B),
+                fontSize: 10,
+                fontWeight: FontWeight.w900,
+                letterSpacing: 0.5,
+              ),
+            ),
+          ],
+        ),
+      );
+    }
+
+    if (_payload.isXTwitter) {
+      return Container(
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+        decoration: BoxDecoration(
+          color: const Color(0xFF1DA1F2).withValues(alpha: 0.15),
+          borderRadius: BorderRadius.circular(8),
+          border: Border.all(
+            color: const Color(0xFF1DA1F2).withValues(alpha: 0.4),
+          ),
+        ),
+        child: const Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(Icons.tag_rounded, color: Color(0xFF1DA1F2), size: 14),
+            SizedBox(width: 5),
+            Text(
+              'X / TWITTER',
+              style: TextStyle(
+                color: Color(0xFF1DA1F2),
+                fontSize: 10,
+                fontWeight: FontWeight.w900,
+                letterSpacing: 0.5,
+              ),
+            ),
+          ],
+        ),
+      );
+    }
+
+    if (_payload.isWebLink) {
+      return Container(
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+        decoration: BoxDecoration(
+          color: const Color(0xFF00C853).withValues(alpha: 0.15),
+          borderRadius: BorderRadius.circular(8),
+          border: Border.all(
+            color: const Color(0xFF00E676).withValues(alpha: 0.4),
+          ),
+        ),
+        child: const Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(Icons.link_rounded, color: Color(0xFF00E676), size: 14),
+            SizedBox(width: 5),
+            Text(
+              'WEB LINK',
+              style: TextStyle(
+                color: Color(0xFF00E676),
+                fontSize: 10,
+                fontWeight: FontWeight.w900,
+                letterSpacing: 0.5,
+              ),
+            ),
+          ],
+        ),
+      );
+    }
+
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+      decoration: BoxDecoration(
+        color: const Color(0xFF9D4EDD).withValues(alpha: 0.15),
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(
+          color: const Color(0xFF9D4EDD).withValues(alpha: 0.4),
+        ),
+      ),
+      child: const Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(Icons.notes_rounded, color: Color(0xFFC77DFF), size: 14),
+          SizedBox(width: 5),
+          Text(
+            'SHARED TEXT',
+            style: TextStyle(
+              color: Color(0xFFC77DFF),
+              fontSize: 10,
+              fontWeight: FontWeight.w900,
+              letterSpacing: 0.5,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildTargetToggleBar() {
+    return Container(
+      margin: const EdgeInsets.fromLTRB(16, 6, 16, 6),
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+      decoration: BoxDecoration(
+        color: const Color(0xFF141122),
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: Colors.white.withValues(alpha: 0.07)),
+      ),
+      child: Row(
+        children: [
+          Text(
+            'Share Destination:',
+            style: TextStyle(color: Colors.grey[400], fontSize: 12),
+          ),
+          const SizedBox(width: 12),
+          _TargetChip(
+            label: 'Gallery',
+            icon: Icons.photo_library_rounded,
+            selected: _target == _ShareTarget.gallery,
+            color: const Color(0xFFFFD700),
+            onTap: () => setState(() => _target = _ShareTarget.gallery),
+          ),
+          const SizedBox(width: 8),
+          _TargetChip(
+            label: 'Chat',
+            icon: Icons.chat_bubble_rounded,
+            selected: _target == _ShareTarget.groupChat,
+            color: const Color(0xFF9D4EDD),
+            onTap: () => setState(() => _target = _ShareTarget.groupChat),
+          ),
+          const Spacer(),
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+            decoration: BoxDecoration(
+              color: Colors.white.withValues(alpha: 0.08),
+              borderRadius: BorderRadius.circular(8),
+            ),
+            child: Text(
+              '${_payload.files.length} photo${_payload.files.length == 1 ? '' : 's'}',
+              style: const TextStyle(
+                color: Color(0xFFFFD700),
+                fontSize: 11,
+                fontWeight: FontWeight.bold,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildModeInfoBanner() {
+    return Container(
+      margin: const EdgeInsets.fromLTRB(16, 6, 16, 6),
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+      decoration: BoxDecoration(
+        color: const Color(0xFF141122),
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: Colors.white.withValues(alpha: 0.07)),
+      ),
+      child: Row(
+        children: [
+          Icon(
+            _isDirectTab ? Icons.person_rounded : Icons.chat_rounded,
+            size: 16,
+            color: const Color(0xFFC77DFF),
+          ),
+          const SizedBox(width: 8),
+          Text(
+            _isDirectTab
+                ? 'Select a contact for direct message'
+                : 'Select a group to send message',
+            style: TextStyle(color: Colors.grey[300], fontSize: 12),
+          ),
+          const Spacer(),
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+            decoration: BoxDecoration(
+              color: Colors.white.withValues(alpha: 0.08),
+              borderRadius: BorderRadius.circular(8),
+            ),
+            child: Text(
+              _payload.displayTitle,
+              style: const TextStyle(
+                color: Color(0xFFFFD700),
+                fontSize: 11,
+                fontWeight: FontWeight.bold,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildSelectedDestinationBanner() {
+    final selection = _selection!;
+    return Container(
+      width: double.infinity,
+      margin: const EdgeInsets.fromLTRB(16, 4, 16, 6),
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+      decoration: BoxDecoration(
+        color: _submitColor.withValues(alpha: 0.12),
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(
+          color: _submitColor.withValues(alpha: 0.4),
+          width: 1.2,
+        ),
+      ),
+      child: Row(
+        children: [
+          Container(
+            decoration: BoxDecoration(
+              shape: BoxShape.circle,
+              border: Border.all(color: _submitColor, width: 1.5),
+            ),
+            child: CircleAvatar(
+              backgroundImage: selection.pic.isNotEmpty
+                  ? NetworkImage(selection.pic)
+                  : null,
+              radius: 15,
+              backgroundColor: const Color(0xFF1E1A2E),
+              onBackgroundImageError:
+                  selection.pic.isNotEmpty ? (_, __) {} : null,
+              child: selection.pic.isEmpty
+                  ? Icon(
+                      selection.isGroup ? Icons.group : Icons.person,
+                      size: 14,
+                      color: Colors.white54,
+                    )
+                  : null,
+            ),
+          ),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                if (selection.isGroup && selection.group != null)
+                  QueendomEmblemHelper.buildRichTitle(
+                    title: selection.group!.nameWithPosition,
+                    family: selection.group!.family,
+                    fallbackFamily: 'Main',
+                    style: const TextStyle(
+                      color: Colors.white,
+                      fontSize: 13,
+                      fontWeight: FontWeight.bold,
+                    ),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  )
+                else
+                  Text(
+                    selection.name,
+                    style: const TextStyle(
+                      color: Colors.white,
+                      fontSize: 13,
+                      fontWeight: FontWeight.bold,
+                    ),
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                Text(
+                  _target == _ShareTarget.gallery
+                      ? 'Will be uploaded to gallery'
+                      : 'Will be sent as chat message',
+                  style: TextStyle(
+                    color: Colors.grey[300],
+                    fontSize: 11,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          IconButton(
+            icon: const Icon(
+              Icons.close_rounded,
+              size: 18,
+              color: Colors.white70,
+            ),
+            onPressed: () => setState(() => _selection = null),
+            padding: EdgeInsets.zero,
+            constraints: const BoxConstraints(),
+          ),
+        ],
+      ),
+    );
+  }
 }
 
-// ── Per-tab group search wrapper ──────────────────────────────────────────────
+// ── Searchable Group Tab ─────────────────────────────────────────────────────
 
 class _SearchableGroupTab extends StatefulWidget {
   final Stream<List<GroupModel>> stream;
@@ -686,7 +1266,7 @@ class _SearchableGroupTabState extends State<_SearchableGroupTab>
   }
 }
 
-// ── Per-tab contact search wrapper ────────────────────────────────────────────
+// ── Searchable Contact Tab ───────────────────────────────────────────────────
 
 class _SearchableContactTab extends StatefulWidget {
   final Stream<List<ChatContact>> stream;
@@ -765,31 +1345,35 @@ class _SearchBar extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Container(
-      color: Colors.grey[900],
-      padding: const EdgeInsets.fromLTRB(16, 10, 16, 10),
+      color: Colors.transparent,
+      padding: const EdgeInsets.fromLTRB(16, 8, 16, 8),
       child: TextField(
         controller: controller,
         onChanged: onChanged,
         style: const TextStyle(color: Colors.white, fontSize: 14),
         decoration: InputDecoration(
-          hintText: 'Search...',
-          hintStyle: TextStyle(color: Colors.grey[500], fontSize: 14),
-          prefixIcon: Icon(Icons.search, color: Colors.grey[500], size: 20),
+          hintText: 'Search groups, families or contacts...',
+          hintStyle: TextStyle(color: Colors.grey[500], fontSize: 13),
+          prefixIcon: Icon(Icons.search_rounded, color: Colors.grey[400], size: 20),
           suffixIcon: query.isNotEmpty
               ? IconButton(
-                  icon: Icon(Icons.clear, color: Colors.grey[500], size: 18),
+                  icon: Icon(Icons.clear_rounded, color: Colors.grey[400], size: 18),
                   onPressed: onClear,
                 )
               : null,
           filled: true,
-          fillColor: Colors.grey[850],
+          fillColor: const Color(0xFF141122),
           contentPadding: const EdgeInsets.symmetric(
             horizontal: 16,
             vertical: 10,
           ),
-          border: OutlineInputBorder(
-            borderRadius: BorderRadius.circular(12),
-            borderSide: BorderSide.none,
+          enabledBorder: OutlineInputBorder(
+            borderRadius: BorderRadius.circular(14),
+            borderSide: BorderSide(color: Colors.white.withValues(alpha: 0.08)),
+          ),
+          focusedBorder: OutlineInputBorder(
+            borderRadius: BorderRadius.circular(14),
+            borderSide: const BorderSide(color: Color(0xFFFFD700), width: 1.2),
           ),
         ),
       ),
@@ -797,7 +1381,7 @@ class _SearchBar extends StatelessWidget {
   }
 }
 
-// ── Group list ────────────────────────────────────────────────────────────────
+// ── Group List ────────────────────────────────────────────────────────────────
 
 class _GroupList extends StatelessWidget {
   final Stream<List<GroupModel>> stream;
@@ -827,16 +1411,22 @@ class _GroupList extends StatelessWidget {
         final groups = searchQuery.isEmpty
             ? all
             : all
-                  .where(
-                    (g) =>
-                        g.name.toLowerCase().contains(
-                          searchQuery.toLowerCase(),
-                        ) ||
-                        (g.family ?? '').toLowerCase().contains(
-                          searchQuery.toLowerCase(),
-                        ),
-                  )
-                  .toList();
+                .where(
+                  (g) =>
+                      g.nameWithPosition.toLowerCase().contains(
+                            searchQuery.toLowerCase(),
+                          ) ||
+                      g.name.toLowerCase().contains(
+                            searchQuery.toLowerCase(),
+                          ) ||
+                      (g.family ?? '').toLowerCase().contains(
+                            searchQuery.toLowerCase(),
+                          ) ||
+                      (g.position ?? '').toLowerCase().contains(
+                            searchQuery.toLowerCase(),
+                          ),
+                )
+                .toList();
 
         if (all.isEmpty) {
           return Center(
@@ -849,11 +1439,11 @@ class _GroupList extends StatelessWidget {
             child: Column(
               mainAxisAlignment: MainAxisAlignment.center,
               children: [
-                Icon(Icons.search_off, size: 40, color: Colors.grey[700]),
+                Icon(Icons.search_off_rounded, size: 40, color: Colors.grey[700]),
                 const SizedBox(height: 12),
                 Text(
                   'No results for "$searchQuery"',
-                  style: TextStyle(color: Colors.grey[500], fontSize: 14),
+                  style: TextStyle(color: Colors.grey[400], fontSize: 14),
                 ),
               ],
             ),
@@ -861,57 +1451,186 @@ class _GroupList extends StatelessWidget {
         }
 
         return ListView.separated(
-          // ── FIX: dismiss keyboard when user scrolls the list ──
           keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
           physics: const AlwaysScrollableScrollPhysics(),
-          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
           itemCount: groups.length,
-          separatorBuilder: (_, __) =>
-              Divider(color: Colors.grey[800], height: 1),
+          separatorBuilder: (_, __) => Divider(
+            color: Colors.white.withValues(alpha: 0.05),
+            height: 1,
+          ),
           itemBuilder: (context, index) {
             final group = groups[index];
             final isSelected = selectedGroup?.groupId == group.groupId;
 
-            return ListTile(
-              contentPadding: const EdgeInsets.symmetric(
-                horizontal: 4,
-                vertical: 6,
-              ),
-              leading: Container(
+            return InkWell(
+              onTap: () => onSelect(group),
+              borderRadius: BorderRadius.circular(14),
+              child: Container(
+                margin: const EdgeInsets.symmetric(vertical: 2),
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 8,
+                  vertical: 8,
+                ),
                 decoration: BoxDecoration(
-                  shape: BoxShape.circle,
+                  color: isSelected
+                      ? const Color(0xFFFFD700).withValues(alpha: 0.08)
+                      : Colors.transparent,
+                  borderRadius: BorderRadius.circular(14),
                   border: Border.all(
-                    color: isSelected ? tabColor : Colors.transparent,
-                    width: 2,
+                    color: isSelected
+                        ? const Color(0xFFFFD700).withValues(alpha: 0.5)
+                        : Colors.transparent,
+                    width: 1.2,
                   ),
                 ),
-                child: CircleAvatar(
-                  backgroundImage: NetworkImage(group.groupPic),
-                  radius: 24,
-                  backgroundColor: Colors.grey[800],
+                child: Row(
+                  children: [
+                    Stack(
+                      clipBehavior: Clip.none,
+                      children: [
+                        Container(
+                          decoration: BoxDecoration(
+                            shape: BoxShape.circle,
+                            border: Border.all(
+                              color: isSelected
+                                  ? const Color(0xFFFFD700)
+                                  : Colors.white.withValues(alpha: 0.15),
+                              width: isSelected ? 2 : 1,
+                            ),
+                          ),
+                          child: CircleAvatar(
+                            backgroundImage: group.groupPic.isNotEmpty
+                                ? NetworkImage(group.groupPic)
+                                : null,
+                            radius: 22,
+                            backgroundColor: const Color(0xFF1E1A2E),
+                            onBackgroundImageError:
+                                group.groupPic.isNotEmpty ? (_, __) {} : null,
+                            child: group.groupPic.isEmpty
+                                ? const Icon(Icons.group, color: Colors.white54)
+                                : null,
+                          ),
+                        ),
+                        if (group.position != null &&
+                            group.position!.isNotEmpty &&
+                            group.position != 'None')
+                          Positioned(
+                            bottom: -2,
+                            right: -2,
+                            child: QueendomEmblemWidget(
+                              position: group.position,
+                              size: 16,
+                            ),
+                          ),
+                      ],
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Row(
+                            children: [
+                              Flexible(
+                                child: searchQuery.isEmpty
+                                    ? QueendomEmblemHelper.buildRichTitle(
+                                        title: group.nameWithPosition,
+                                        family: group.family,
+                                        fallbackFamily: 'Main',
+                                        style: const TextStyle(
+                                          color: Colors.white,
+                                          fontSize: 14,
+                                          fontWeight: FontWeight.w600,
+                                        ),
+                                        maxLines: 1,
+                                        overflow: TextOverflow.ellipsis,
+                                      )
+                                    : _HighlightedText(
+                                        text: group.nameWithPosition,
+                                        query: searchQuery,
+                                      ),
+                              ),
+                              if (group.position != null &&
+                                  group.position!.isNotEmpty &&
+                                  group.position != 'None' &&
+                                  !group.nameWithPosition.toLowerCase().contains(group.position!.toLowerCase())) ...[
+                                const SizedBox(width: 6),
+                                Container(
+                                  padding: const EdgeInsets.symmetric(
+                                    horizontal: 6,
+                                    vertical: 2,
+                                  ),
+                                  decoration: BoxDecoration(
+                                    color: const Color(0xFF281E40),
+                                    borderRadius: BorderRadius.circular(6),
+                                    border: Border.all(
+                                      color: const Color(0xFF5D438A),
+                                      width: 0.8,
+                                    ),
+                                  ),
+                                  child: Text(
+                                    group.position!,
+                                    style: const TextStyle(
+                                      color: Color(0xFFFFD700),
+                                      fontSize: 9,
+                                      fontWeight: FontWeight.bold,
+                                    ),
+                                  ),
+                                ),
+                              ],
+                            ],
+                          ),
+                          const SizedBox(height: 3),
+                          Row(
+                            children: [
+                              if (group.family != null &&
+                                  group.family!.isNotEmpty &&
+                                  group.family != 'None') ...[
+                                Text(
+                                  '${group.family} Family',
+                                  style: TextStyle(
+                                    color: Colors.grey[400],
+                                    fontSize: 11,
+                                  ),
+                                ),
+                                const SizedBox(width: 6),
+                                Text(
+                                  '•',
+                                  style: TextStyle(
+                                    color: Colors.grey[600],
+                                    fontSize: 11,
+                                  ),
+                                ),
+                                const SizedBox(width: 6),
+                              ],
+                              Text(
+                                '${group.membersUid.length} members',
+                                style: TextStyle(
+                                  color: Colors.grey[500],
+                                  fontSize: 11,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    isSelected
+                        ? const Icon(
+                            Icons.check_circle_rounded,
+                            color: Color(0xFFFFD700),
+                            size: 22,
+                          )
+                        : Icon(
+                            Icons.radio_button_unchecked_rounded,
+                            color: Colors.grey[700],
+                            size: 22,
+                          ),
+                  ],
                 ),
               ),
-              title: _HighlightedText(text: group.name, query: searchQuery),
-              subtitle:
-                  group.family != null &&
-                      group.family!.isNotEmpty &&
-                      group.family != 'None'
-                  ? _HighlightedText(
-                      text: '${group.family} Family',
-                      query: searchQuery,
-                      baseStyle: TextStyle(
-                        color: Colors.grey[500],
-                        fontSize: 11,
-                      ),
-                    )
-                  : Text(
-                      '${group.membersUid.length} members',
-                      style: TextStyle(color: Colors.grey[500], fontSize: 11),
-                    ),
-              trailing: isSelected
-                  ? Icon(Icons.check_circle, color: tabColor)
-                  : Icon(Icons.radio_button_unchecked, color: Colors.grey[600]),
-              onTap: () => onSelect(group),
             );
           },
         );
@@ -920,7 +1639,7 @@ class _GroupList extends StatelessWidget {
   }
 }
 
-// ── Contact list ──────────────────────────────────────────────────────────────
+// ── Contact List ──────────────────────────────────────────────────────────────
 
 class _ContactList extends StatelessWidget {
   final Stream<List<ChatContact>> stream;
@@ -950,12 +1669,12 @@ class _ContactList extends StatelessWidget {
         final contacts = searchQuery.isEmpty
             ? all
             : all
-                  .where(
-                    (c) => c.name.toLowerCase().contains(
-                      searchQuery.toLowerCase(),
-                    ),
-                  )
-                  .toList();
+                .where(
+                  (c) => c.name.toLowerCase().contains(
+                        searchQuery.toLowerCase(),
+                      ),
+                )
+                .toList();
 
         if (all.isEmpty) {
           return Center(
@@ -968,11 +1687,11 @@ class _ContactList extends StatelessWidget {
             child: Column(
               mainAxisAlignment: MainAxisAlignment.center,
               children: [
-                Icon(Icons.search_off, size: 40, color: Colors.grey[700]),
+                Icon(Icons.search_off_rounded, size: 40, color: Colors.grey[700]),
                 const SizedBox(height: 12),
                 Text(
                   'No results for "$searchQuery"',
-                  style: TextStyle(color: Colors.grey[500], fontSize: 14),
+                  style: TextStyle(color: Colors.grey[400], fontSize: 14),
                 ),
               ],
             ),
@@ -980,67 +1699,108 @@ class _ContactList extends StatelessWidget {
         }
 
         return ListView.separated(
-          // ── FIX: dismiss keyboard when user scrolls the list ──
           keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
           physics: const AlwaysScrollableScrollPhysics(),
-          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
           itemCount: contacts.length,
-          separatorBuilder: (_, __) =>
-              Divider(color: Colors.grey[800], height: 1),
+          separatorBuilder: (_, __) => Divider(
+            color: Colors.white.withValues(alpha: 0.05),
+            height: 1,
+          ),
           itemBuilder: (context, index) {
             final contact = contacts[index];
             final isSelected = selectedContact?.uid == contact.uid;
 
-            return ListTile(
-              contentPadding: const EdgeInsets.symmetric(
-                horizontal: 4,
-                vertical: 6,
-              ),
-              leading: Container(
+            return InkWell(
+              onTap: () => onSelect(contact),
+              borderRadius: BorderRadius.circular(14),
+              child: Container(
+                margin: const EdgeInsets.symmetric(vertical: 2),
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 8,
+                  vertical: 8,
+                ),
                 decoration: BoxDecoration(
-                  shape: BoxShape.circle,
+                  color: isSelected
+                      ? const Color(0xFF9D4EDD).withValues(alpha: 0.12)
+                      : Colors.transparent,
+                  borderRadius: BorderRadius.circular(14),
                   border: Border.all(
                     color: isSelected
-                        ? Colors.purpleAccent
+                        ? const Color(0xFFC77DFF).withValues(alpha: 0.6)
                         : Colors.transparent,
-                    width: 2,
+                    width: 1.2,
                   ),
                 ),
-                child: CircleAvatar(
-                  backgroundImage:
-                      contact.profilePic != null &&
-                          contact.profilePic!.isNotEmpty
-                      ? NetworkImage(contact.profilePic!)
-                      : null,
-                  radius: 24,
-                  backgroundColor: Colors.grey[800],
-                  child:
-                      contact.profilePic == null || contact.profilePic!.isEmpty
-                      ? Text(
-                          contact.name.isNotEmpty
-                              ? contact.name[0].toUpperCase()
-                              : '?',
-                          style: const TextStyle(
-                            color: Colors.white,
-                            fontSize: 18,
-                            fontWeight: FontWeight.bold,
+                child: Row(
+                  children: [
+                    Container(
+                      decoration: BoxDecoration(
+                        shape: BoxShape.circle,
+                        border: Border.all(
+                          color: isSelected
+                              ? const Color(0xFFC77DFF)
+                              : Colors.white.withValues(alpha: 0.15),
+                          width: isSelected ? 2 : 1,
+                        ),
+                      ),
+                      child: CircleAvatar(
+                        backgroundImage: contact.profilePic != null &&
+                                contact.profilePic!.isNotEmpty
+                            ? NetworkImage(contact.profilePic!)
+                            : null,
+                        radius: 22,
+                        backgroundColor: const Color(0xFF1E1A2E),
+                        onBackgroundImageError: (contact.profilePic != null &&
+                                contact.profilePic!.isNotEmpty)
+                            ? (_, __) {}
+                            : null,
+                        child: contact.profilePic == null ||
+                                contact.profilePic!.isEmpty
+                            ? const Icon(Icons.person, color: Colors.white54)
+                            : null,
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          _HighlightedText(
+                            text: contact.name,
+                            query: searchQuery,
                           ),
-                        )
-                      : null,
+                          const SizedBox(height: 3),
+                          Text(
+                            (contact.lastMessage != null &&
+                                    contact.lastMessage!.isNotEmpty)
+                                ? contact.lastMessage!
+                                : 'Tap to select contact',
+                            style: TextStyle(
+                              color: Colors.grey[400],
+                              fontSize: 11,
+                            ),
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    isSelected
+                        ? const Icon(
+                            Icons.check_circle_rounded,
+                            color: Color(0xFFC77DFF),
+                            size: 22,
+                          )
+                        : Icon(
+                            Icons.radio_button_unchecked_rounded,
+                            color: Colors.grey[700],
+                            size: 22,
+                          ),
+                  ],
                 ),
               ),
-              title: _HighlightedText(text: contact.name, query: searchQuery),
-              subtitle: Text(
-                contact.lastMessage != null && contact.lastMessage!.isNotEmpty
-                    ? contact.lastMessage!
-                    : 'No messages yet',
-                style: TextStyle(color: Colors.grey[500], fontSize: 11),
-                overflow: TextOverflow.ellipsis,
-              ),
-              trailing: isSelected
-                  ? const Icon(Icons.check_circle, color: Colors.purpleAccent)
-                  : Icon(Icons.radio_button_unchecked, color: Colors.grey[600]),
-              onTap: () => onSelect(contact),
             );
           },
         );
@@ -1049,28 +1809,24 @@ class _ContactList extends StatelessWidget {
   }
 }
 
-// ── Highlighted search text ───────────────────────────────────────────────────
+// ── Highlighted Search Text ───────────────────────────────────────────────────
 
 class _HighlightedText extends StatelessWidget {
   final String text;
   final String query;
-  final TextStyle? baseStyle;
 
   const _HighlightedText({
     required this.text,
     required this.query,
-    this.baseStyle,
   });
 
   @override
   Widget build(BuildContext context) {
-    final style =
-        baseStyle ??
-        const TextStyle(
-          color: Colors.white,
-          fontSize: 14,
-          fontWeight: FontWeight.w500,
-        );
+    const style = TextStyle(
+      color: Colors.white,
+      fontSize: 14,
+      fontWeight: FontWeight.w600,
+    );
 
     if (query.isEmpty) return Text(text, style: style);
 
@@ -1087,9 +1843,9 @@ class _HighlightedText extends StatelessWidget {
           TextSpan(
             text: text.substring(index, index + query.length),
             style: style.copyWith(
-              color: tabColor,
+              color: const Color(0xFFFFD700),
               fontWeight: FontWeight.bold,
-              backgroundColor: tabColor.withOpacity(0.15),
+              backgroundColor: const Color(0xFFFFD700).withValues(alpha: 0.2),
             ),
           ),
           TextSpan(text: text.substring(index + query.length), style: style),
@@ -1099,7 +1855,7 @@ class _HighlightedText extends StatelessWidget {
   }
 }
 
-// ── Target chip ───────────────────────────────────────────────────────────────
+// ── Target Chip ───────────────────────────────────────────────────────────────
 
 class _TargetChip extends StatelessWidget {
   final String label;
@@ -1124,23 +1880,25 @@ class _TargetChip extends StatelessWidget {
         duration: const Duration(milliseconds: 200),
         padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
         decoration: BoxDecoration(
-          color: selected ? color.withOpacity(0.15) : Colors.grey[800],
-          borderRadius: BorderRadius.circular(20),
+          color: selected
+              ? color.withValues(alpha: 0.18)
+              : Colors.white.withValues(alpha: 0.05),
+          borderRadius: BorderRadius.circular(12),
           border: Border.all(
-            color: selected ? color : Colors.grey[700]!,
-            width: 1.5,
+            color: selected ? color : Colors.white.withValues(alpha: 0.1),
+            width: 1.2,
           ),
         ),
         child: Row(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Icon(icon, size: 14, color: selected ? color : Colors.grey),
+            Icon(icon, size: 14, color: selected ? color : Colors.grey[400]),
             const SizedBox(width: 6),
             Text(
               label,
               style: TextStyle(
-                color: selected ? color : Colors.grey,
-                fontSize: 13,
+                color: selected ? color : Colors.grey[400],
+                fontSize: 12,
                 fontWeight: selected ? FontWeight.bold : FontWeight.normal,
               ),
             ),

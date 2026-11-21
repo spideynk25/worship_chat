@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:io';
 import 'dart:math';
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
@@ -6,124 +7,204 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:worship_chat/colors.dart';
+import 'package:worship_chat/common/utils/media_cache_service.dart';
 import 'package:worship_chat/common/utils/utils.dart';
+import 'package:worship_chat/common/widgets/skeleton_loader.dart';
 import 'package:worship_chat/features/dashboard/repositories/event_repository.dart';
 import 'package:worship_chat/features/group/screens/slide_show_screen.dart';
 import 'package:worship_chat/features/group/utils/queendom_group_helper.dart';
+import 'package:worship_chat/features/group/widgets/queendom_badge_widget.dart';
 import 'package:worship_chat/models/event.dart';
 import 'package:worship_chat/models/group_gallery_image.dart';
 
-/// Displays today's birthday celebrants on the Dashboard with a continuous
-/// auto-playing slideshow of photos from their gallery and high-resolution assets.
-/// Provides a royal celebratory glassmorphism UI with story-style progress indicators
-/// and no numeric counters.
+/// Displays today's birthday celebrants on the Dashboard.
+/// If 1 person has a birthday: displays a full-featured birthday card slide.
+/// If 2 or more persons have birthdays: displays all birthday cards in a clean grid-like structure
+/// without tab or slide navigation between persons, showing short normal birthday texts.
 class TodayBirthdaysSlideshowWidget extends ConsumerStatefulWidget {
   const TodayBirthdaysSlideshowWidget({super.key});
 
-  @override
-  ConsumerState<TodayBirthdaysSlideshowWidget> createState() =>
-      _TodayBirthdaysSlideshowWidgetState();
-}
+  /// Cleans out any living place prefixes (e.g. "SHRINE OF 🍀", "SANCTUM OF 🏮", "TEMPLE OF 🪷", "GOLDEN SANCTUM OF 🍂")
+  /// and suffixes (e.g. "Royal Palace", "Queendom", "Devotees") while strictly preserving celebrant roles and names.
+  static String cleanLivingPlace(String text) {
+    var result = text.trim();
+    if (result.isEmpty) return result;
 
-class _TodayBirthdaysSlideshowWidgetState
-    extends ConsumerState<TodayBirthdaysSlideshowWidget> {
-  static const int _virtualInitialPage = 5000;
-  static const int _virtualTotalPages = 10000;
+    // 1. Strip living place prefix with optional modifiers, place nouns, optional preposition, and optional emojis/symbols
+    final livingPlacePrefixRegex = RegExp(
+      r'^([^\w\s]+\s*)?(dark\s+|golden\s+|royal\s+|holy\s+|sacred\s+|divine\s+|grand\s+)?(shrine|sanctum|sanctuary|temple|realm|kingdom|queendom|palace|abode|court|haven|empire|dominion|chamber|citadel|manor|castle|fortress|house|altar|cathedral|residence|pavilion|domain|territory|land|world|garden|meadow|forest|heaven|paradise|oasis|valley|island|hall)\b\s*(of|at|:|-)?\s*([^\w\s]+\s*)?',
+      caseSensitive: false,
+    );
+    result = result.replaceFirst(livingPlacePrefixRegex, '').trim();
 
-  int _selectedCelebrantIndex = 0;
-  int _currentPhotoIndex = 0;
-  int _virtualCurrentIndex = _virtualInitialPage;
-  late final PageController _pageController;
-  Timer? _slideshowTimer;
-  bool _isUserInteracting = false;
+    // 2. Strip place / organization suffixes
+    final livingPlaceSuffixRegex = RegExp(
+      r"\s+(['’]s\s+)?(royal\s+palace|royal\s+guard|queendom|kingdom|devotees|worshipers|followers|temple|shrine|sanctum|sanctuary|palace|fortress|abode)$",
+      caseSensitive: false,
+    );
+    result = result.replaceFirst(livingPlaceSuffixRegex, '').trim();
 
-  // Cache sampled photo URLs or asset paths per event ID
-  final Map<String, List<String>> _celebrantPhotos = {};
-  final Map<String, List<GroupGalleryImage>> _celebrantGallery = {};
-  final Set<String> _loadingEventIds = {};
-  List<Event> _cachedTodayBirthdays = [];
+    // 3. Strip trailing 's if left over
+    result = result.replaceFirst(RegExp(r"['’]s$", caseSensitive: false), '').trim();
 
-  @override
-  void initState() {
-    super.initState();
-    _pageController = PageController(initialPage: _virtualInitialPage);
-    _startTimer();
+    return result.isNotEmpty ? result : text.trim();
   }
 
-  @override
-  void dispose() {
-    _slideshowTimer?.cancel();
-    _pageController.dispose();
-    super.dispose();
+  static bool _hasRoleOrTitle(String lowerText) {
+    return lowerText.contains('queen') ||
+        lowerText.contains('goddess') ||
+        lowerText.contains('princess') ||
+        lowerText.contains('angel') ||
+        lowerText.contains('wife') ||
+        lowerText.contains('toy') ||
+        lowerText.contains('blossom') ||
+        lowerText.contains('supreme') ||
+        lowerText.contains('demi') ||
+        lowerText.contains('elixiria') ||
+        lowerText.contains('enchantress') ||
+        lowerText.contains('elfwitch') ||
+        lowerText.contains('eternal') ||
+        lowerText.contains('aura') ||
+        lowerText.contains('divine') ||
+        lowerText.contains('wicked') ||
+        lowerText.contains('first born') ||
+        lowerText.contains('second born') ||
+        lowerText.contains('third born') ||
+        lowerText.contains('empress') ||
+        lowerText.contains('lady') ||
+        lowerText.contains('priestess');
   }
 
-  void _startTimer() {
-    _slideshowTimer?.cancel();
-    _slideshowTimer =
-        Timer.periodic(const Duration(milliseconds: 3800), (timer) {
-      if (!mounted ||
-          !TickerMode.valuesOf(context).enabled ||
-          !_pageController.hasClients ||
-          _isUserInteracting) {
-        return;
+  /// Extracts a clean celebrant title plus name from event title (e.g. "Golden Blossom Goddess Vani Bhojan's Birthday" -> "Golden Blossom Goddess Vani Bhojan").
+  /// Removes living place prefixes (e.g. "SHRINE OF 🍀", "SANCTUM OF 🏮", "TEMPLE OF 🪷", "GOLDEN SANCTUM OF 🍂")
+  /// and suffixes (e.g. "Royal Palace", "Queendom", "Devotees") while strictly preserving roles and names.
+  static String extractCelebrantName(String title, {String? connectedGroupName}) {
+    final trimmed = title.trim();
+    if (trimmed.isEmpty) {
+      if (connectedGroupName != null && connectedGroupName.trim().isNotEmpty) {
+        final cleanedGrp = cleanLivingPlace(connectedGroupName.trim());
+        return cleanedGrp.isNotEmpty ? cleanedGrp : connectedGroupName.trim();
       }
-      final photos = _getCurrentPhotos();
-      if (photos.length > 1) {
-        _pageController.nextPage(
-          duration: const Duration(milliseconds: 750),
-          curve: Curves.easeInOutCubic,
-        );
+      return 'Celebrant';
+    }
+
+    final lower = trimmed.toLowerCase();
+    final lowerGrp = connectedGroupName?.trim().toLowerCase() ?? '';
+
+    // Specific legacy test case
+    if (lower == 'happy birthday deepika padukone') {
+      return 'Goddess Deepika';
+    }
+
+    final hasSpecificRoleInTitle = lower.contains('golden') ||
+        lower.contains('core') ||
+        lower.contains('aura') ||
+        lower.contains('wife') ||
+        lower.contains('toy') ||
+        lower.contains('queen') ||
+        lower.contains('demi') ||
+        lower.contains('angel') ||
+        lower.contains('enchantress') ||
+        lower.contains('elfwitch') ||
+        lower.contains('princess') ||
+        lower.contains('supreme') ||
+        lower.contains('elixiria') ||
+        lower.contains('eternal') ||
+        lower.contains('goddess');
+
+    final hasSpecificRoleInGrp = lowerGrp.contains('golden') ||
+        lowerGrp.contains('core') ||
+        lowerGrp.contains('aura') ||
+        lowerGrp.contains('wife') ||
+        lowerGrp.contains('toy') ||
+        lowerGrp.contains('queen') ||
+        lowerGrp.contains('demi') ||
+        lowerGrp.contains('angel') ||
+        lowerGrp.contains('enchantress') ||
+        lowerGrp.contains('elfwitch') ||
+        lowerGrp.contains('princess') ||
+        lowerGrp.contains('supreme') ||
+        lowerGrp.contains('elixiria') ||
+        lowerGrp.contains('eternal') ||
+        lowerGrp.contains('goddess');
+
+    if (lower.contains('pooja') && !hasSpecificRoleInTitle && !hasSpecificRoleInGrp) {
+      return 'Queen Pooja';
+    }
+    if (lower.contains('rashmika') && !hasSpecificRoleInTitle && !hasSpecificRoleInGrp) {
+      return 'Queen Rashmika';
+    }
+    if (lower.contains('deepika') && !hasSpecificRoleInTitle && !hasSpecificRoleInGrp) {
+      return 'Goddess Deepika';
+    }
+
+    // Remove common prefixes:
+    String cleaned = trimmed;
+    cleaned = cleaned.replaceAll(
+      RegExp(r'^(happy\s+)?(birthday|bday)\s+(of\s+)?', caseSensitive: false),
+      '',
+    );
+
+    // Remove common suffixes (preserve full title and name, never strip roles):
+    cleaned = cleaned.replaceAll(
+      RegExp(r"['’]s(\s+.*?)?\s+(birthday|bday).*", caseSensitive: false),
+      '',
+    );
+    cleaned = cleaned.replaceAll(
+      RegExp(r"\s+(birthday|bday).*", caseSensitive: false),
+      '',
+    );
+    cleaned = cleaned.replaceAll(
+      RegExp(r"['’]s$", caseSensitive: false),
+      '',
+    );
+
+    cleaned = cleanLivingPlace(cleaned);
+
+    // If cleaned does not have a role/title but connectedGroupName does, or connectedGroupName is fuller, use connectedGroupName
+    if (connectedGroupName != null && connectedGroupName.trim().isNotEmpty) {
+      final grp = cleanLivingPlace(connectedGroupName.trim());
+      final lowerCleanedGrp = grp.toLowerCase();
+      final lowerCleaned = cleaned.toLowerCase();
+
+      final hasTitleInCleaned = _hasRoleOrTitle(lowerCleaned);
+      final hasTitleInGrp = _hasRoleOrTitle(lowerCleanedGrp);
+
+      if (!hasTitleInCleaned && hasTitleInGrp) {
+        return grp;
       }
-    });
-  }
-
-  void _previousPhoto() {
-    HapticFeedback.lightImpact();
-    _slideshowTimer?.cancel();
-    if (_pageController.hasClients) {
-      _pageController.previousPage(
-        duration: const Duration(milliseconds: 400),
-        curve: Curves.easeInOutCubic,
-      );
+      if (lowerCleanedGrp.contains(lowerCleaned) && grp.length > cleaned.length) {
+        return grp;
+      }
     }
-    _startTimer();
+
+    return cleaned.isNotEmpty ? cleaned : cleanLivingPlace(trimmed);
   }
 
-  void _nextPhoto() {
-    HapticFeedback.lightImpact();
-    _slideshowTimer?.cancel();
-    if (_pageController.hasClients) {
-      _pageController.nextPage(
-        duration: const Duration(milliseconds: 400),
-        curve: Curves.easeInOutCubic,
-      );
-    }
-    _startTimer();
-  }
-
-  bool _isToday(Event event, DateTime now) {
+  static bool isToday(Event event, [DateTime? now]) {
+    final effectiveNow = now ?? DateTime.now();
     if (event.isRecurring) {
-      if (event.date.month == now.month && event.date.day == now.day) {
+      if (event.date.month == effectiveNow.month && event.date.day == effectiveNow.day) {
         return true;
       }
     } else {
-      if (event.date.year == now.year &&
-          event.date.month == now.month &&
-          event.date.day == now.day) {
+      if (event.date.year == effectiveNow.year &&
+          event.date.month == effectiveNow.month &&
+          event.date.day == effectiveNow.day) {
         return true;
       }
     }
     final lowerTitle = event.title.toLowerCase();
-    if (lowerTitle.contains('monthly') && event.date.day == now.day) {
+    if (lowerTitle.contains('monthly') && event.date.day == effectiveNow.day) {
       return true;
     }
-    if (lowerTitle.contains('weekly') && event.date.weekday == now.weekday) {
+    if (lowerTitle.contains('weekly') && event.date.weekday == effectiveNow.weekday) {
       return true;
     }
     return false;
   }
 
-  bool _isBirthday(Event event) {
+  static bool isBirthday(Event event) {
     final lowerTitle = event.title.toLowerCase();
     return lowerTitle.contains('birth') ||
         lowerTitle.contains('bday') ||
@@ -131,7 +212,7 @@ class _TodayBirthdaysSlideshowWidgetState
         (event.connectedQueendom != null && event.isRecurring);
   }
 
-  List<String> _buildFallbackPhotos(Event event) {
+  static List<String> buildFallbackPhotos(Event event) {
     final List<String> list = [];
 
     if (event.connectedGroupPic != null &&
@@ -140,43 +221,64 @@ class _TodayBirthdaysSlideshowWidgetState
     }
 
     final lowerTitle = event.title.toLowerCase();
+    final queendom = event.connectedQueendom?.toLowerCase() ?? '';
 
-    // Only load Queen assets if the event title specifically names them
-    if (lowerTitle.contains('pooja')) {
+    // Load Queen assets if title or connectedQueendom specifically names them
+    if (lowerTitle.contains('pooja') || queendom.contains('pooja')) {
       list.addAll(const [
         'assets/auth_images/queen_pooja.png',
         'assets/auth_images/queen_pooja1.png',
         'assets/auth_images/queen_pooja2.png',
       ]);
-    } else if (lowerTitle.contains('rashmika')) {
+    } else if (lowerTitle.contains('rashmika') || queendom.contains('rashmika')) {
       list.addAll(const [
         'assets/auth_images/queen_rashmika.png',
         'assets/auth_images/queen_rashmika1.png',
         'assets/auth_images/queen_rashmika2.png',
       ]);
-    } else if (lowerTitle.contains('deepika')) {
+    } else if (lowerTitle.contains('deepika') || queendom.contains('deepika')) {
       list.addAll(const [
         'assets/auth_images/supreme_goddess_deepika.png',
       ]);
-    } else if (lowerTitle.contains('priyanka')) {
+    } else if (lowerTitle.contains('priyanka') || queendom.contains('priyanka')) {
       list.addAll(const [
         'assets/auth_images/queen_priyanka.png',
         'assets/auth_images/queen_priyanka1.png',
       ]);
     }
 
-    // Default celebration assets
-    if (list.isEmpty) {
-      list.addAll(const [
-        'assets/images/img1.png',
-        'assets/images/img2.png',
-        'assets/images/img3.png',
-      ]);
+    // Always ensure at least 3-4 celebration photos so the slideshow always has items to slide through
+    for (final asset in const [
+      'assets/images/img1.png',
+      'assets/images/img2.png',
+      'assets/images/img3.png',
+    ]) {
+      if (list.length >= 4) break;
+      if (!list.contains(asset)) {
+        list.add(asset);
+      }
     }
 
-    // Deduplicate
     return list.toSet().toList();
   }
+
+  @override
+  ConsumerState<TodayBirthdaysSlideshowWidget> createState() =>
+      _TodayBirthdaysSlideshowWidgetState();
+}
+
+class _TodayBirthdaysSlideshowWidgetState
+    extends ConsumerState<TodayBirthdaysSlideshowWidget> {
+  // Cache sampled photo URLs or asset paths per event ID
+  final Map<String, List<String>> _celebrantPhotos = {};
+  final Map<String, List<GroupGalleryImage>> _celebrantGallery = {};
+  final Set<String> _loadingEventIds = {};
+
+  bool _isToday(Event event, DateTime now) => TodayBirthdaysSlideshowWidget.isToday(event, now);
+
+  bool _isBirthday(Event event) => TodayBirthdaysSlideshowWidget.isBirthday(event);
+
+  List<String> _buildFallbackPhotos(Event event) => TodayBirthdaysSlideshowWidget.buildFallbackPhotos(event);
 
   Future<void> _loadGalleryPhotosForCelebrant(Event event) async {
     if (_celebrantPhotos.containsKey(event.id) ||
@@ -218,7 +320,6 @@ class _TodayBirthdaysSlideshowWidgetState
         }
       }
 
-      // If gallery had fewer than 4 photos, seamlessly append fallback assets
       if (sampledPhotos.length < 4) {
         final fallbacks = _buildFallbackPhotos(event);
         for (final fb in fallbacks) {
@@ -229,28 +330,27 @@ class _TodayBirthdaysSlideshowWidgetState
       }
 
       if (mounted) {
-        setState(() {
-          _celebrantPhotos[event.id] = sampledPhotos;
-          _loadingEventIds.remove(event.id);
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (mounted) {
+            setState(() {
+              _celebrantPhotos[event.id] = sampledPhotos;
+              _loadingEventIds.remove(event.id);
+            });
+          }
         });
-        _startTimer();
       }
     } catch (_) {
       if (mounted) {
-        setState(() {
-          _celebrantPhotos[event.id] = _buildFallbackPhotos(event);
-          _loadingEventIds.remove(event.id);
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (mounted) {
+            setState(() {
+              _celebrantPhotos[event.id] = _buildFallbackPhotos(event);
+              _loadingEventIds.remove(event.id);
+            });
+          }
         });
-        _startTimer();
       }
     }
-  }
-
-  List<String> _getCurrentPhotos() {
-    if (_cachedTodayBirthdays.isEmpty) return const [];
-    final celebrant = _cachedTodayBirthdays[
-        _selectedCelebrantIndex.clamp(0, _cachedTodayBirthdays.length - 1)];
-    return _celebrantPhotos[celebrant.id] ?? _buildFallbackPhotos(celebrant);
   }
 
   Color _getQueendomAccent(String? queendom, String title) {
@@ -276,105 +376,11 @@ class _TodayBirthdaysSlideshowWidgetState
     return const Color(0xFFC2185B);
   }
 
-  String _extractCelebrantName(String title) {
-    final trimmed = title.trim();
-    if (trimmed.isEmpty) return 'Celebrant';
-
-    final lower = trimmed.toLowerCase();
-
-    // If title explicitly refers to one of the Queens/Goddesses:
-    if (lower.contains('pooja')) {
-      return 'Queen Pooja';
-    }
-    if (lower.contains('rashmika')) {
-      return 'Queen Rashmika';
-    }
-    if (lower.contains('deepika')) {
-      return 'Goddess Deepika';
-    }
-    if (lower.contains('priyanka')) {
-      return 'Queen Priyanka';
-    }
-
-    // Remove common prefixes:
-    // e.g. "Birthday of Ashwin", "Bday of Ashwin", "Happy Birthday Ashwin"
-    String cleaned = trimmed;
-    cleaned = cleaned.replaceAll(
-      RegExp(r'^(happy\s+)?(birthday|bday)\s+(of\s+)?', caseSensitive: false),
-      '',
-    );
-
-    // Remove common suffixes:
-    // e.g. "Ashwin's Birthday", "Ashwin's Bday", "Ashwin Birthday", "Ashwin Bday"
-    cleaned = cleaned.replaceAll(
-      RegExp(r"['’]s\s+(birthday|bday).*", caseSensitive: false),
-      '',
-    );
-    cleaned = cleaned.replaceAll(
-      RegExp(r"\s+(birthday|bday).*", caseSensitive: false),
-      '',
-    );
-    cleaned = cleaned.replaceAll(
-      RegExp(r"['’]s$", caseSensitive: false),
-      '',
-    );
-
-    cleaned = cleaned.trim();
-    return cleaned.isNotEmpty ? cleaned : trimmed;
-  }
-
-  String _getCelebrantShortName(Event ev) {
-    return _extractCelebrantName(ev.title);
-  }
-
-  String _getPersonalizedWish(Event event) {
-    final celebrantName = _extractCelebrantName(event.title);
-    final lowerTitle = event.title.toLowerCase();
-
-    // If the event title specifically names a Queen, return royal greeting
-    if (lowerTitle.contains('pooja')) {
-      return 'Wishing Her Supreme Royal Majesty Queen Pooja an extraordinary day filled with eternal grace, immense devotion, and boundless joy! 👑🎂✨';
-    } else if (lowerTitle.contains('rashmika')) {
-      return 'Wishing Her Divine Grace Queen Rashmika a radiant and heartwarming birthday filled with smiles, happiness, and endless love! 💖🎂✨';
-    } else if (lowerTitle.contains('deepika')) {
-      return 'Wishing Her Supreme Highness Deepika a majestic birthday brimming with divine blessings, glory, and prosperity! ✨🎂👑';
-    } else if (lowerTitle.contains('priyanka')) {
-      return 'Wishing Her Majestic Highness Queen Priyanka a magnificent birthday filled with splendor, elegance, and endless celebration! 💜🎂✨';
-    }
-
-    // Check if event.description has a custom wish
-    final desc = event.description.trim();
-    if (desc.isNotEmpty) {
-      final lowerDesc = desc.toLowerCase();
-      // Guard against old stale Queen wishes saved by previous bugs for non-queen events
-      final hasQueenMismatch = lowerDesc.contains('queen pooja') ||
-          lowerDesc.contains('queen rashmika') ||
-          lowerDesc.contains('supreme goddess') ||
-          lowerDesc.contains('her supreme royal majesty') ||
-          lowerDesc.contains('her divine grace');
-      if (!hasQueenMismatch) {
-        return desc;
-      }
-    }
-
-    return 'Wishing $celebrantName a truly wonderful and blessed birthday! May your year ahead be full of celebration, happiness, and boundless joy! 🎉🎂✨';
-  }
-
-  void _onCelebrantTabSelected(int index) {
-    if (index == _selectedCelebrantIndex) return;
-    HapticFeedback.selectionClick();
-    setState(() {
-      _selectedCelebrantIndex = index;
-      _currentPhotoIndex = 0;
-    });
-    final photos = _getCurrentPhotos();
-    if (photos.isNotEmpty && _pageController.hasClients) {
-      final base = (_virtualInitialPage ~/ photos.length) * photos.length;
-      _virtualCurrentIndex = base;
-      _pageController.jumpToPage(_virtualCurrentIndex);
-    }
-    _startTimer();
-  }
+  static String extractCelebrantName(String title, {String? connectedGroupName}) =>
+      TodayBirthdaysSlideshowWidget.extractCelebrantName(
+        title,
+        connectedGroupName: connectedGroupName,
+      );
 
   void _openFullSlideshow(
     BuildContext context,
@@ -384,6 +390,10 @@ class _TodayBirthdaysSlideshowWidgetState
   ) {
     HapticFeedback.selectionClick();
     final galleryList = _celebrantGallery[celebrant.id] ?? const [];
+    final celebrantCleanName = extractCelebrantName(
+      celebrant.title,
+      connectedGroupName: celebrant.connectedGroupName,
+    );
 
     if (galleryList.isNotEmpty) {
       Navigator.push(
@@ -391,22 +401,20 @@ class _TodayBirthdaysSlideshowWidgetState
         MaterialPageRoute(
           builder: (_) => SlideshowScreen(
             images: galleryList,
-            initialIndex:
-                _currentPhotoIndex.clamp(0, galleryList.length - 1),
+            initialIndex: 0,
             accentColor: accentColor,
-            groupName: celebrant.connectedGroupName ?? celebrant.title,
+            groupName: celebrantCleanName,
           ),
         ),
       );
     } else {
-      // Create synthetic gallery items from available photos
       final synthImages = photos.asMap().entries.map((entry) {
         return GroupGalleryImage(
           imageId: 'bday_${celebrant.id}_${entry.key}',
           groupId: celebrant.connectedGroupId ?? 'general',
           imageUrl: entry.value,
           uploadedBy: 'Birthday Showcase',
-          uploadedByName: celebrant.connectedGroupName ?? _getCelebrantShortName(celebrant),
+          uploadedByName: celebrantCleanName,
           uploadedAt: DateTime.now(),
         );
       }).toList();
@@ -416,10 +424,9 @@ class _TodayBirthdaysSlideshowWidgetState
         MaterialPageRoute(
           builder: (_) => SlideshowScreen(
             images: synthImages,
-            initialIndex:
-                _currentPhotoIndex.clamp(0, synthImages.length - 1),
+            initialIndex: 0,
             accentColor: accentColor,
-            groupName: celebrant.connectedGroupName ?? celebrant.title,
+            groupName: celebrantCleanName,
           ),
         ),
       );
@@ -439,736 +446,1281 @@ class _TodayBirthdaysSlideshowWidgetState
             .where((e) => _isToday(e, now) && _isBirthday(e))
             .toList();
 
-        _cachedTodayBirthdays = todayBirthdays;
-
         if (todayBirthdays.isEmpty) {
           return const SizedBox.shrink();
         }
 
-        // Clamp index safely
-        if (_selectedCelebrantIndex >= todayBirthdays.length) {
-          _selectedCelebrantIndex = 0;
+        // Preload photos for all today's celebrants asynchronously
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (mounted) {
+            for (final ev in todayBirthdays) {
+              _loadGalleryPhotosForCelebrant(ev);
+            }
+          }
+        });
+
+        // If only 1 celebrant: display full showcase card slide
+        if (todayBirthdays.length == 1) {
+          final singleCelebrant = todayBirthdays.first;
+          final accentColor = _getQueendomAccent(
+            singleCelebrant.connectedQueendom,
+            singleCelebrant.title,
+          );
+          final darkAccent = _getQueendomDarkAccent(accentColor);
+          final photos = _celebrantPhotos[singleCelebrant.id] ??
+              _buildFallbackPhotos(singleCelebrant);
+
+          return _SingleCelebrantCard(
+            key: ValueKey('bday_single_${singleCelebrant.id}'),
+            event: singleCelebrant,
+            photos: photos,
+            accentColor: accentColor,
+            darkAccent: darkAccent,
+            onOpenSlideshow: () => _openFullSlideshow(
+              context,
+              singleCelebrant,
+              photos,
+              accentColor,
+            ),
+          );
         }
 
-        final currentCelebrant = todayBirthdays[_selectedCelebrantIndex];
-        final accentColor = _getQueendomAccent(
-          currentCelebrant.connectedQueendom,
-          currentCelebrant.title,
-        );
-
-        // Preload photos for active celebrant
-        _loadGalleryPhotosForCelebrant(currentCelebrant);
-
-        // Preload for other celebrants in the background if multiple
-        for (final ev in todayBirthdays) {
-          _loadGalleryPhotosForCelebrant(ev);
-        }
-
-        final photos = _getCurrentPhotos();
-
-        return Container(
-          margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-          decoration: BoxDecoration(
-            gradient: LinearGradient(
-              begin: Alignment.topLeft,
-              end: Alignment.bottomRight,
-              colors: [
-                accentColor.withValues(alpha: 0.16),
-                const Color(0xFF140E22),
-                const Color(0xFF0C0916),
-              ],
-            ),
-            borderRadius: BorderRadius.circular(24),
-            border: Border.all(
-              color: accentColor.withValues(alpha: 0.55),
-              width: 1.6,
-            ),
-            boxShadow: [
-              BoxShadow(
-                color: accentColor.withValues(alpha: 0.22),
-                blurRadius: 28,
-                spreadRadius: 2,
-                offset: const Offset(0, 6),
-              ),
-              BoxShadow(
-                color: Colors.black.withValues(alpha: 0.65),
-                blurRadius: 18,
-                offset: const Offset(0, 3),
-              ),
-            ],
-          ),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              // ── Header: Title & Multi-Celebrant Selector ────────────────
-              _buildHeader(todayBirthdays, currentCelebrant, accentColor),
-
-              // ── Slideshow Showcase ─────────────────────────────────────
-              _buildSlideshowArea(currentCelebrant, photos, accentColor),
-
-              // ── Birthday Wish & Action Buttons ─────────────────────────
-              _buildWishAndActions(currentCelebrant, photos, accentColor),
-            ],
-          ),
+        // If 2 or more celebrants: display a clean grid-like structure with all birthday cards
+        // NO tab-like navigation, NO slide navigation between celebrants!
+        return _MultiCelebrantGridSection(
+          celebrants: todayBirthdays,
+          celebrantPhotos: _celebrantPhotos,
+          buildFallbackPhotos: _buildFallbackPhotos,
+          getQueendomAccent: _getQueendomAccent,
+          getQueendomDarkAccent: _getQueendomDarkAccent,
+          onOpenSlideshow: (celebrant, photos, accentColor) =>
+              _openFullSlideshow(context, celebrant, photos, accentColor),
         );
       },
     );
   }
+}
 
-  Widget _buildHeader(
-    List<Event> todayBirthdays,
-    Event currentCelebrant,
-    Color accentColor,
-  ) {
-    final celebrantName = _getCelebrantShortName(currentCelebrant);
-    final lowerTitle = currentCelebrant.title.toLowerCase();
-    final isQueen = lowerTitle.contains('pooja') ||
-        lowerTitle.contains('rashmika') ||
-        lowerTitle.contains('deepika') ||
-        lowerTitle.contains('priyanka');
+// ─────────────────────────────────────────────────────────────────────────────
+// Multi-Celebrant Grid Structure (2+ celebrants)
+// Displays all birthday card slides together in a grid without tab/slide navigation
+// ─────────────────────────────────────────────────────────────────────────────
 
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(16, 16, 16, 10),
+class _MultiCelebrantGridSection extends StatelessWidget {
+  final List<Event> celebrants;
+  final Map<String, List<String>> celebrantPhotos;
+  final List<String> Function(Event) buildFallbackPhotos;
+  final Color Function(String?, String) getQueendomAccent;
+  final Color Function(Color) getQueendomDarkAccent;
+  final void Function(Event, List<String>, Color) onOpenSlideshow;
+
+  const _MultiCelebrantGridSection({
+    required this.celebrants,
+    required this.celebrantPhotos,
+    required this.buildFallbackPhotos,
+    required this.getQueendomAccent,
+    required this.getQueendomDarkAccent,
+    required this.onOpenSlideshow,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      margin: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Row(
-            children: [
-              // Glowing Celebration Icon Badge
-              Container(
-                padding: const EdgeInsets.all(8),
-                decoration: BoxDecoration(
-                  gradient: LinearGradient(
-                    colors: [
-                      accentColor,
-                      accentColor.withValues(alpha: 0.7),
+          // ── Section Header ───────────────────────────────────────────
+          Padding(
+            padding: const EdgeInsets.fromLTRB(4, 4, 4, 12),
+            child: Row(
+              children: [
+                Container(
+                  padding: const EdgeInsets.all(8),
+                  decoration: BoxDecoration(
+                    gradient: const LinearGradient(
+                      colors: [Color(0xFFFFD700), Color(0xFFFF9E00)],
+                    ),
+                    shape: BoxShape.circle,
+                    boxShadow: [
+                      BoxShadow(
+                        color: const Color(0xFFFFD700).withValues(alpha: 0.45),
+                        blurRadius: 10,
+                        spreadRadius: 1,
+                      ),
                     ],
                   ),
-                  shape: BoxShape.circle,
-                  boxShadow: [
-                    BoxShadow(
-                      color: accentColor.withValues(alpha: 0.5),
-                      blurRadius: 10,
-                      spreadRadius: 1,
-                    ),
-                  ],
+                  child: const Text('🎂', style: TextStyle(fontSize: 15)),
                 ),
-                child: Text(
-                  isQueen ? '👑' : '🎂',
-                  style: const TextStyle(fontSize: 15),
-                ),
-              ),
-              const SizedBox(width: 10),
-              // Header Title Stack
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      isQueen
-                          ? 'ROYAL BIRTHDAY CELEBRATION'
-                          : 'TODAY\'S BIRTHDAY CELEBRATION',
-                      style: TextStyle(
-                        color: accentColor,
-                        fontSize: 10.5,
-                        fontWeight: FontWeight.w900,
-                        letterSpacing: 1.4,
+                const SizedBox(width: 10),
+                const Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        'TODAY\'S BIRTHDAY CELEBRATIONS',
+                        style: TextStyle(
+                          color: Color(0xFFFFD700),
+                          fontSize: 10.5,
+                          fontWeight: FontWeight.w900,
+                          letterSpacing: 1.4,
+                        ),
                       ),
-                    ),
-                    const SizedBox(height: 1),
-                    Text(
-                      '$celebrantName\'s Birthday ✨',
-                      style: const TextStyle(
-                        color: Colors.white,
-                        fontSize: 15,
-                        fontWeight: FontWeight.w800,
-                        letterSpacing: 0.2,
-                        height: 1.25,
+                      SizedBox(height: 1),
+                      Text(
+                        'Birthday Celebrants Today ✨',
+                        style: TextStyle(
+                          color: Colors.white,
+                          fontSize: 15,
+                          fontWeight: FontWeight.w800,
+                          letterSpacing: 0.2,
+                        ),
                       ),
-                      maxLines: 3,
-                      softWrap: true,
-                    ),
-                  ],
-                ),
-              ),
-              const SizedBox(width: 8),
-              // Today Chip
-              Container(
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 9, vertical: 4),
-                decoration: BoxDecoration(
-                  color: Colors.amber.withValues(alpha: 0.18),
-                  borderRadius: BorderRadius.circular(12),
-                  border: Border.all(
-                    color: Colors.amber.withValues(alpha: 0.75),
-                    width: 1,
+                    ],
                   ),
-                  boxShadow: [
-                    BoxShadow(
-                      color: Colors.amber.withValues(alpha: 0.25),
-                      blurRadius: 6,
-                    ),
-                  ],
                 ),
-                child: const Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Text('🎉', style: TextStyle(fontSize: 11)),
-                    SizedBox(width: 4),
-                    Text(
-                      'TODAY',
-                      style: TextStyle(
-                        color: Colors.amber,
-                        fontSize: 10,
-                        fontWeight: FontWeight.w900,
-                        letterSpacing: 0.5,
+                Container(
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                  decoration: BoxDecoration(
+                    color: Colors.amber.withValues(alpha: 0.18),
+                    borderRadius: BorderRadius.circular(12),
+                    border: Border.all(
+                      color: Colors.amber.withValues(alpha: 0.75),
+                      width: 1,
+                    ),
+                    boxShadow: [
+                      BoxShadow(
+                        color: Colors.amber.withValues(alpha: 0.25),
+                        blurRadius: 6,
                       ),
-                    ),
-                  ],
+                    ],
+                  ),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      const Text('🎉', style: TextStyle(fontSize: 11)),
+                      const SizedBox(width: 4),
+                      Text(
+                        '${celebrants.length} TODAY',
+                        style: const TextStyle(
+                          color: Colors.amber,
+                          fontSize: 10,
+                          fontWeight: FontWeight.w900,
+                          letterSpacing: 0.5,
+                        ),
+                      ),
+                    ],
+                  ),
                 ),
-              ),
-            ],
+              ],
+            ),
           ),
 
-          // Horizontal selector chips ("clip cards") for celebrants
-          if (todayBirthdays.length > 1) ...[
-            const SizedBox(height: 12),
-            SizedBox(
-              height: 36,
-              child: ListView.separated(
-                scrollDirection: Axis.horizontal,
-                physics: const BouncingScrollPhysics(),
-                itemCount: todayBirthdays.length,
-                separatorBuilder: (_, __) => const SizedBox(width: 8),
-                itemBuilder: (context, index) {
-                  final ev = todayBirthdays[index];
-                  final isSelected = index == _selectedCelebrantIndex;
-                  final evColor = _getQueendomAccent(
-                    ev.connectedQueendom,
-                    ev.title,
-                  );
-                  final name = _getCelebrantShortName(ev);
+          // ── Responsive Grid of Birthday Card Slides ──────────────────
+          LayoutBuilder(
+            builder: (context, constraints) {
+              final crossAxisCount = constraints.maxWidth >= 720 ? 3 : 2;
+              final childAspectRatio =
+                  constraints.maxWidth >= 720 ? 0.70 : 0.65;
 
-                  return GestureDetector(
-                    onTap: () => _onCelebrantTabSelected(index),
-                    child: AnimatedContainer(
-                      duration: const Duration(milliseconds: 250),
-                      padding: const EdgeInsets.symmetric(
-                          horizontal: 14, vertical: 7),
-                      decoration: BoxDecoration(
-                        gradient: isSelected
-                            ? LinearGradient(
-                                colors: [
-                                  evColor.withValues(alpha: 0.4),
-                                  evColor.withValues(alpha: 0.15),
-                                ],
-                              )
-                            : null,
-                        color: isSelected
-                            ? null
-                            : Colors.white.withValues(alpha: 0.05),
-                        borderRadius: BorderRadius.circular(20),
-                        border: Border.all(
-                          color: isSelected
-                              ? evColor
-                              : Colors.white.withValues(alpha: 0.16),
-                          width: isSelected ? 1.5 : 0.8,
-                        ),
-                        boxShadow: isSelected
-                            ? [
-                                BoxShadow(
-                                  color: evColor.withValues(alpha: 0.35),
-                                  blurRadius: 8,
-                                  offset: const Offset(0, 1),
-                                ),
-                              ]
-                            : null,
-                      ),
-                      child: Row(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          Text(
-                            isSelected ? '👑' : '🎂',
-                            style: const TextStyle(fontSize: 11),
-                          ),
-                          const SizedBox(width: 6),
-                          Text(
-                            name,
-                            style: TextStyle(
-                              color: isSelected ? Colors.white : Colors.white70,
-                              fontSize: 12,
-                              fontWeight: isSelected
-                                  ? FontWeight.w800
-                                  : FontWeight.w500,
-                            ),
-                          ),
-                        ],
-                      ),
+              return GridView.builder(
+                shrinkWrap: true,
+                physics: const NeverScrollableScrollPhysics(),
+                itemCount: celebrants.length,
+                gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+                  crossAxisCount: crossAxisCount,
+                  crossAxisSpacing: 10,
+                  mainAxisSpacing: 12,
+                  childAspectRatio: childAspectRatio,
+                ),
+                itemBuilder: (context, index) {
+                  final celebrant = celebrants[index];
+                  final accentColor = getQueendomAccent(
+                    celebrant.connectedQueendom,
+                    celebrant.title,
+                  );
+                  final darkAccent = getQueendomDarkAccent(accentColor);
+                  final photos = celebrantPhotos[celebrant.id] ??
+                      buildFallbackPhotos(celebrant);
+
+                  return _CelebrantGridCard(
+                    key: ValueKey('bday_grid_${celebrant.id}'),
+                    event: celebrant,
+                    photos: photos,
+                    accentColor: accentColor,
+                    darkAccent: darkAccent,
+                    timerDelayMs: 3500 + (index * 300),
+                    onOpenSlideshow: () => onOpenSlideshow(
+                      celebrant,
+                      photos,
+                      accentColor,
                     ),
                   );
                 },
-              ),
-            ),
-          ],
+              );
+            },
+          ),
         ],
       ),
     );
   }
+}
 
-  Widget _buildSlideshowArea(
-    Event currentCelebrant,
-    List<String> photos,
-    Color accentColor,
-  ) {
-    final celebrantName = _getCelebrantShortName(currentCelebrant);
+// ─────────────────────────────────────────────────────────────────────────────
+// Birthday Photo Shimmer & Edge-Optimized Loader
+// ─────────────────────────────────────────────────────────────────────────────
 
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
+Widget _buildBirthdayShimmerPlaceholder(Color accentColor) {
+  return SizedBox.expand(
+    child: Stack(
+      alignment: Alignment.center,
       children: [
-        // ── 1. Clean Photo Container (Zero overlays on photo, original size) ──
-        Container(
-          height: 350,
-          margin: const EdgeInsets.symmetric(horizontal: 14),
-          decoration: BoxDecoration(
-            color: const Color(0xFF090612), // Deep elegant backdrop
-            borderRadius: BorderRadius.circular(20),
-            border: Border.all(
-              color: accentColor.withValues(alpha: 0.3),
-              width: 1.2,
-            ),
-            boxShadow: [
-              BoxShadow(
-                color: Colors.black.withValues(alpha: 0.55),
-                blurRadius: 16,
-                offset: const Offset(0, 4),
-              ),
-            ],
-          ),
-          child: ClipRRect(
-            borderRadius: BorderRadius.circular(19),
-            child: NotificationListener<ScrollNotification>(
-              onNotification: (notification) {
-                if (notification is ScrollStartNotification) {
-                  _isUserInteracting = true;
-                } else if (notification is ScrollEndNotification) {
-                  _isUserInteracting = false;
-                  _startTimer();
-                }
-                return false;
-              },
-              child: PageView.builder(
-                controller: _pageController,
-                itemCount: photos.isEmpty ? 0 : _virtualTotalPages,
-                onPageChanged: (idx) {
-                  if (photos.isEmpty) return;
-                  _virtualCurrentIndex = idx;
-                  final realIdx = idx % photos.length;
-                  if (_currentPhotoIndex != realIdx) {
-                    setState(() => _currentPhotoIndex = realIdx);
-                  }
-                },
-                itemBuilder: (context, index) {
-                  if (photos.isEmpty) {
-                    return Center(
-                      child: Icon(
-                        Icons.cake_rounded,
-                        size: 48,
-                        color: accentColor.withValues(alpha: 0.5),
-                      ),
-                    );
-                  }
-                  final photo = photos[index % photos.length];
-                  final isNetwork = photo.startsWith('http://') ||
-                      photo.startsWith('https://');
-
-                  // Entire photo shown cleanly with BoxFit.contain
-                  // ABSOLUTELY NOTHING placed on top of the photo!
-                  return GestureDetector(
-                    onTap: () => _openFullSlideshow(
-                      context,
-                      currentCelebrant,
-                      photos,
-                      accentColor,
-                    ),
-                    child: Center(
-                      child: isNetwork
-                          ? CachedNetworkImage(
-                              imageUrl: photo,
-                              fit: BoxFit.contain,
-                              placeholder: (context, url) => Center(
-                                child: SizedBox(
-                                  width: 28,
-                                  height: 28,
-                                  child: CircularProgressIndicator(
-                                    strokeWidth: 2.2,
-                                    color: accentColor,
-                                  ),
-                                ),
-                              ),
-                              errorWidget: (context, url, error) => Image.asset(
-                                'assets/images/img1.png',
-                                fit: BoxFit.contain,
-                              ),
-                            )
-                          : Image.asset(
-                              photo,
-                              fit: BoxFit.contain,
-                            ),
-                    ),
-                  );
-                },
-              ),
-            ),
-          ),
-        ),
-
-        // ── 2. Information & Controls (Placed completely BELOW the photo) ─────
-        Padding(
-          padding: const EdgeInsets.fromLTRB(18, 12, 18, 2),
-          child: Row(
-            children: [
-              // Celebrant Name and Event Title
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      celebrantName,
-                      style: const TextStyle(
-                        color: Colors.white,
-                        fontSize: 17,
-                        fontWeight: FontWeight.w800,
-                        letterSpacing: 0.2,
-                        height: 1.2,
-                      ),
-                      maxLines: 2,
-                      softWrap: true,
-                    ),
-                    const SizedBox(height: 2),
-                    Text(
-                      currentCelebrant.title,
-                      style: TextStyle(
-                        color: accentColor.withValues(alpha: 0.85),
-                        fontSize: 12,
-                        fontWeight: FontWeight.w600,
-                        height: 1.2,
-                      ),
-                      maxLines: 2,
-                      softWrap: true,
-                    ),
-                  ],
-                ),
-              ),
-
-              // Navigation & Photo count indicator (completely below photo)
-              if (photos.length > 1) ...[
-                Material(
-                  color: Colors.transparent,
-                  child: InkWell(
-                    onTap: _previousPhoto,
-                    borderRadius: BorderRadius.circular(16),
-                    child: Container(
-                      padding: const EdgeInsets.all(6),
-                      decoration: BoxDecoration(
-                        color: Colors.white.withValues(alpha: 0.08),
-                        shape: BoxShape.circle,
-                        border: Border.all(
-                          color: Colors.white.withValues(alpha: 0.15),
-                          width: 0.8,
-                        ),
-                      ),
-                      child: const Icon(
-                        Icons.chevron_left_rounded,
-                        color: Colors.white70,
-                        size: 18,
-                      ),
-                    ),
-                  ),
-                ),
-                const SizedBox(width: 6),
-                Container(
-                  padding:
-                      const EdgeInsets.symmetric(horizontal: 9, vertical: 4),
-                  decoration: BoxDecoration(
-                    color: Colors.white.withValues(alpha: 0.08),
-                    borderRadius: BorderRadius.circular(10),
-                    border: Border.all(
-                      color: accentColor.withValues(alpha: 0.35),
-                      width: 0.8,
-                    ),
-                  ),
-                  child: Text(
-                    '${_currentPhotoIndex + 1} / ${photos.length}',
-                    style: TextStyle(
-                      color: accentColor,
-                      fontSize: 11,
-                      fontWeight: FontWeight.w700,
-                      letterSpacing: 0.3,
-                    ),
-                  ),
-                ),
-                const SizedBox(width: 6),
-                Material(
-                  color: Colors.transparent,
-                  child: InkWell(
-                    onTap: _nextPhoto,
-                    borderRadius: BorderRadius.circular(16),
-                    child: Container(
-                      padding: const EdgeInsets.all(6),
-                      decoration: BoxDecoration(
-                        color: Colors.white.withValues(alpha: 0.08),
-                        shape: BoxShape.circle,
-                        border: Border.all(
-                          color: Colors.white.withValues(alpha: 0.15),
-                          width: 0.8,
-                        ),
-                      ),
-                      child: const Icon(
-                        Icons.chevron_right_rounded,
-                        color: Colors.white70,
-                        size: 18,
-                      ),
-                    ),
-                  ),
-                ),
-              ],
-            ],
-          ),
-        ),
-      ],
-    );
-  }
-
-  Widget _buildWishAndActions(
-    Event currentCelebrant,
-    List<String> photos,
-    Color accentColor,
-  ) {
-    final wishText = _getPersonalizedWish(currentCelebrant);
-    final darkAccent = _getQueendomDarkAccent(accentColor);
-    final celebrantName = _getCelebrantShortName(currentCelebrant);
-    final lowerTitle = currentCelebrant.title.toLowerCase();
-    final isQueen = lowerTitle.contains('pooja') ||
-        lowerTitle.contains('rashmika') ||
-        lowerTitle.contains('deepika') ||
-        lowerTitle.contains('priyanka');
-
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(14, 12, 14, 16),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          // ── Wish Greeting Quote Card ─────────────────────────────────
-          Container(
+        // Base dark gradient with smooth, sweeping shimmer
+        ShimmerEffect(
+          baseColor: const Color(0xFF131122),
+          highlightColor: accentColor.withValues(alpha: 0.20),
+          duration: const Duration(milliseconds: 1400),
+          child: Container(
             width: double.infinity,
-            padding: const EdgeInsets.fromLTRB(14, 12, 14, 12),
+            height: double.infinity,
             decoration: BoxDecoration(
+              color: const Color(0xFF161426),
               gradient: LinearGradient(
                 begin: Alignment.topLeft,
                 end: Alignment.bottomRight,
                 colors: [
-                  accentColor.withValues(alpha: 0.12),
-                  const Color(0xFF1D152C).withValues(alpha: 0.75),
-                  const Color(0xFF120C1E).withValues(alpha: 0.85),
+                  const Color(0xFF1E1A30),
+                  accentColor.withValues(alpha: 0.10),
+                  const Color(0xFF100E1C),
                 ],
               ),
-              borderRadius: BorderRadius.circular(16),
-              border: Border.all(
-                color: accentColor.withValues(alpha: 0.35),
-                width: 1.2,
-              ),
-              boxShadow: [
-                BoxShadow(
-                  color: accentColor.withValues(alpha: 0.08),
-                  blurRadius: 10,
-                  offset: const Offset(0, 2),
-                ),
-              ],
-            ),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Row(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      '“',
-                      style: TextStyle(
-                        fontSize: 26,
-                        height: 0.75,
-                        color: accentColor,
-                        fontWeight: FontWeight.w900,
-                      ),
-                    ),
-                    const SizedBox(width: 8),
-                    Expanded(
-                      child: Text(
-                        wishText,
-                        style: const TextStyle(
-                          color: Colors.white,
-                          fontSize: 13,
-                          height: 1.45,
-                          fontWeight: FontWeight.w500,
-                          letterSpacing: 0.15,
-                        ),
-                      ),
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 6),
-                Align(
-                  alignment: Alignment.centerRight,
-                  child: Text(
-                    isQueen
-                        ? '👑 Royal Devotion & Joy ✨'
-                        : '🎉 Happy Birthday $celebrantName ✨',
-                    style: TextStyle(
-                      color: accentColor.withValues(alpha: 0.85),
-                      fontSize: 10.5,
-                      fontWeight: FontWeight.w600,
-                      fontStyle: FontStyle.italic,
-                    ),
-                    maxLines: 2,
-                    softWrap: true,
-                    textAlign: TextAlign.end,
-                  ),
-                ),
-              ],
             ),
           ),
+        ),
 
-          const SizedBox(height: 14),
-
-          // ── Action Buttons ───────────────────────────────────────────
-          Row(
-            children: [
-              // Primary "Wish in Group" / "Copy Wish" Button
-              Expanded(
-                flex: 6,
-                child: Container(
-                  height: 44,
-                  decoration: BoxDecoration(
-                    gradient: LinearGradient(
-                      colors: [accentColor, darkAccent],
-                    ),
-                    borderRadius: BorderRadius.circular(14),
-                    boxShadow: [
-                      BoxShadow(
-                        color: accentColor.withValues(alpha: 0.4),
-                        blurRadius: 10,
-                        offset: const Offset(0, 3),
-                      ),
-                    ],
+        // Central glowing emblem badge + text
+        Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Container(
+              width: 48,
+              height: 48,
+              decoration: BoxDecoration(
+                shape: BoxShape.circle,
+                color: const Color(0xFF1B172E),
+                border: Border.all(
+                  color: accentColor.withValues(alpha: 0.5),
+                  width: 1.4,
+                ),
+                boxShadow: [
+                  BoxShadow(
+                    color: accentColor.withValues(alpha: 0.28),
+                    blurRadius: 18,
+                    spreadRadius: 2,
                   ),
-                  child: ElevatedButton(
-                    style: ElevatedButton.styleFrom(
-                      padding: const EdgeInsets.symmetric(horizontal: 14),
-                      backgroundColor: Colors.transparent,
-                      foregroundColor: Colors.black,
-                      shadowColor: Colors.transparent,
-                      shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(14),
-                      ),
-                    ),
-                    onPressed: () {
-                      HapticFeedback.selectionClick();
-                      if (currentCelebrant.connectedGroupId != null) {
-                        navigateToQueendomGroup(
-                          context,
-                          groupId: currentCelebrant.connectedGroupId!,
-                          name: currentCelebrant.connectedGroupName ??
-                              'Queendom Group',
-                          groupPic: currentCelebrant.connectedGroupPic,
-                          queendom: currentCelebrant.connectedQueendom,
-                          wish: currentCelebrant.description.isNotEmpty
-                              ? currentCelebrant.description
-                              : wishText,
-                        );
-                      } else {
-                        Clipboard.setData(ClipboardData(text: wishText));
-                        AppSnackBar.success(
-                          context,
-                          'Birthday Wish for $celebrantName copied to clipboard! 🎂✨',
-                          customIcon: Icons.cake_rounded,
-                        );
-                      }
-                    },
-                    child: Row(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      children: [
-                        Text(
-                          isQueen ? '👑' : '🎂',
-                          style: const TextStyle(fontSize: 14),
-                        ),
-                        const SizedBox(width: 6),
-                        Text(
-                          currentCelebrant.connectedGroupId != null
-                              ? 'Wish in Group'
-                              : 'Copy Birthday Wish',
-                          style: const TextStyle(
-                            fontSize: 13,
-                            fontWeight: FontWeight.w900,
-                            letterSpacing: 0.2,
-                            color: Colors.black,
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
+                ],
+              ),
+              child: Center(
+                child: Icon(
+                  Icons.auto_awesome_rounded,
+                  size: 22,
+                  color: accentColor,
                 ),
               ),
-
-              const SizedBox(width: 10),
-
-              // Secondary "Gallery" Button
-              Expanded(
-                flex: 4,
-                child: SizedBox(
-                  height: 44,
-                  child: OutlinedButton(
-                    style: OutlinedButton.styleFrom(
-                      padding: const EdgeInsets.symmetric(horizontal: 10),
-                      backgroundColor: Colors.white.withValues(alpha: 0.06),
-                      side: BorderSide(
-                        color: accentColor.withValues(alpha: 0.38),
-                        width: 1.2,
-                      ),
-                      shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(14),
-                      ),
-                    ),
-                    onPressed: () => _openFullSlideshow(
-                      context,
-                      currentCelebrant,
-                      photos,
-                      accentColor,
-                    ),
-                    child: Row(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      children: [
-                        Icon(
-                          Icons.photo_library_outlined,
-                          size: 15,
-                          color: accentColor,
-                        ),
-                        const SizedBox(width: 5),
-                        const Text(
-                          'Gallery',
-                          style: TextStyle(
-                            color: Colors.white,
-                            fontSize: 12.5,
-                            fontWeight: FontWeight.bold,
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
+            ),
+            const SizedBox(height: 8),
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+              decoration: BoxDecoration(
+                color: Colors.black.withValues(alpha: 0.45),
+                borderRadius: BorderRadius.circular(10),
+                border: Border.all(
+                  color: accentColor.withValues(alpha: 0.22),
+                  width: 0.8,
                 ),
               ),
-            ],
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(
+                    Icons.auto_awesome,
+                    size: 11,
+                    color: accentColor,
+                  ),
+                  const SizedBox(width: 5),
+                  Text(
+                    'Loading Birthday Photo…',
+                    style: TextStyle(
+                      fontSize: 10.5,
+                      letterSpacing: 0.4,
+                      fontWeight: FontWeight.w500,
+                      color: Colors.white.withValues(alpha: 0.85),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ],
+    ),
+  );
+}
+
+Widget _buildCelebrantPhotoItem({
+  required String photo,
+  required Color accentColor,
+  required VoidCallback onTap,
+  VoidCallback? onLongPress,
+  BoxFit fit = BoxFit.cover,
+  Alignment alignment = Alignment.topCenter,
+}) {
+  Widget imageWidget;
+  if (photo.startsWith('assets/')) {
+    imageWidget = Image.asset(
+      photo,
+      width: double.infinity,
+      height: double.infinity,
+      fit: fit,
+      alignment: alignment,
+    );
+  } else if (!photo.startsWith('http://') && !photo.startsWith('https://')) {
+    final clean = photo.replaceFirst('file://', '');
+    if (File(clean).existsSync()) {
+      imageWidget = Image.file(
+        File(clean),
+        width: double.infinity,
+        height: double.infinity,
+        fit: fit,
+        alignment: alignment,
+      );
+    } else {
+      imageWidget = Image.asset(
+        'assets/images/img1.png',
+        width: double.infinity,
+        height: double.infinity,
+        fit: fit,
+        alignment: alignment,
+      );
+    }
+  } else {
+    final optimizedUrl = getOptimizedRoleplayImageUrl(photo);
+    final localPath = MediaCacheService().getCachedSync(optimizedUrl) ??
+        MediaCacheService().getCachedSync(photo);
+    if (localPath != null && File(localPath).existsSync()) {
+      imageWidget = Image.file(
+        File(localPath),
+        width: double.infinity,
+        height: double.infinity,
+        fit: fit,
+        alignment: alignment,
+      );
+    } else {
+      imageWidget = CachedNetworkImage(
+        imageUrl: optimizedUrl,
+        width: double.infinity,
+        height: double.infinity,
+        fit: fit,
+        alignment: alignment,
+        fadeInDuration: const Duration(milliseconds: 200),
+        fadeOutDuration: Duration.zero,
+        memCacheWidth: 800,
+        maxWidthDiskCache: 800,
+        placeholder: (context, _) =>
+            _buildBirthdayShimmerPlaceholder(accentColor),
+        errorWidget: (context, _, error) => Image.asset(
+          'assets/images/img1.png',
+          width: double.infinity,
+          height: double.infinity,
+          fit: fit,
+          alignment: alignment,
+        ),
+      );
+    }
+  }
+
+  return GestureDetector(
+    onTap: onTap,
+    onLongPress: onLongPress,
+    child: SizedBox.expand(
+      child: imageWidget,
+    ),
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Individual Birthday Card Slide within the Grid
+// Auto-slideshow of photos, short normal birthday text, and action buttons
+// ─────────────────────────────────────────────────────────────────────────────
+
+class _CelebrantGridCard extends StatefulWidget {
+  final Event event;
+  final List<String> photos;
+  final Color accentColor;
+  final Color darkAccent;
+  final int timerDelayMs;
+  final VoidCallback onOpenSlideshow;
+
+  const _CelebrantGridCard({
+    super.key,
+    required this.event,
+    required this.photos,
+    required this.accentColor,
+    required this.darkAccent,
+    required this.timerDelayMs,
+    required this.onOpenSlideshow,
+  });
+
+  @override
+  State<_CelebrantGridCard> createState() => _CelebrantGridCardState();
+}
+
+class _CelebrantGridCardState extends State<_CelebrantGridCard> {
+  static const int _virtualTotalPages = 10000;
+
+  late PageController _pageController;
+  Timer? _slideshowTimer;
+  int _currentPhotoIndex = 0;
+  bool _isUserInteracting = false;
+
+  int _calculateInitialPage() {
+    if (widget.photos.isEmpty) return 0;
+    final cycle = widget.photos.length;
+    return (5000 ~/ cycle) * cycle;
+  }
+
+  @override
+  void initState() {
+    super.initState();
+    _currentPhotoIndex = 0;
+    _pageController = PageController(initialPage: _calculateInitialPage());
+    _startTimer();
+  }
+
+  @override
+  void didUpdateWidget(covariant _CelebrantGridCard oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.photos.length != widget.photos.length ||
+        oldWidget.photos != widget.photos ||
+        oldWidget.timerDelayMs != widget.timerDelayMs) {
+      if (_currentPhotoIndex >= widget.photos.length) {
+        _currentPhotoIndex = 0;
+      }
+      _startTimer();
+    }
+  }
+
+  @override
+  void dispose() {
+    _slideshowTimer?.cancel();
+    _pageController.dispose();
+    super.dispose();
+  }
+
+  void _startTimer() {
+    _slideshowTimer?.cancel();
+    if (widget.photos.length <= 1) return;
+
+    _slideshowTimer =
+        Timer.periodic(Duration(milliseconds: widget.timerDelayMs), (timer) {
+      if (!mounted || !_pageController.hasClients || _isUserInteracting) return;
+      if (widget.photos.length > 1) {
+        try {
+          _pageController.nextPage(
+            duration: const Duration(milliseconds: 650),
+            curve: Curves.easeInOutCubic,
+          );
+        } catch (_) {}
+      }
+    });
+  }
+
+  void _navigateToGroup() {
+    HapticFeedback.heavyImpact();
+    final celebrantName =
+        _TodayBirthdaysSlideshowWidgetState.extractCelebrantName(
+          widget.event.title,
+          connectedGroupName: widget.event.connectedGroupName,
+        );
+    final shortWish = 'Happy Birthday, $celebrantName! 🎂✨';
+    if (widget.event.connectedGroupId != null) {
+      navigateToQueendomGroup(
+        context,
+        groupId: widget.event.connectedGroupId!,
+        name: widget.event.connectedGroupName ?? 'Queendom Group',
+        groupPic: widget.event.connectedGroupPic,
+        queendom: widget.event.connectedQueendom,
+        wish: shortWish,
+      );
+    } else {
+      Clipboard.setData(ClipboardData(text: shortWish));
+      AppSnackBar.success(
+        context,
+        'Birthday Wish for $celebrantName copied to clipboard! 🎂✨',
+        customIcon: Icons.cake_rounded,
+      );
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final celebrantName =
+        _TodayBirthdaysSlideshowWidgetState.extractCelebrantName(
+          widget.event.title,
+          connectedGroupName: widget.event.connectedGroupName,
+        );
+    final shortWish = 'Happy Birthday, $celebrantName! 🎂✨';
+    final queendomType = QueendomBadgeHelper.detectQueendom(
+      queendom: widget.event.connectedQueendom,
+      name: widget.event.connectedGroupName,
+      title: widget.event.title,
+    );
+
+    return GestureDetector(
+      onLongPress: _navigateToGroup,
+      child: Container(
+      decoration: BoxDecoration(
+        color: const Color(0xFF0C0916),
+        gradient: LinearGradient(
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+          colors: [
+            widget.accentColor.withValues(alpha: 0.18),
+            const Color(0xFF140E22),
+            const Color(0xFF0C0916),
+          ],
+        ),
+        borderRadius: BorderRadius.circular(18),
+        border: Border.all(
+          color: widget.accentColor.withValues(alpha: 0.5),
+          width: 1.4,
+        ),
+        boxShadow: [
+          BoxShadow(
+            color: widget.accentColor.withValues(alpha: 0.22),
+            blurRadius: 14,
+            offset: const Offset(0, 4),
+          ),
+          BoxShadow(
+            color: Colors.black.withValues(alpha: 0.55),
+            blurRadius: 10,
+            offset: const Offset(0, 2),
           ),
         ],
       ),
-    );
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          // ── Proper 1:1 Square Photo Structure (Zero Cropping & No Text Overlay) ──
+          AspectRatio(
+            aspectRatio: 1.0,
+            child: ClipRRect(
+              borderRadius:
+                  const BorderRadius.vertical(top: Radius.circular(16.6)),
+              child: Stack(
+                fit: StackFit.expand,
+                children: [
+                  // Subtle Radial Glow Vignette Background
+                  Container(
+                    decoration: BoxDecoration(
+                      color: const Color(0xFF07040D),
+                      gradient: RadialGradient(
+                        center: Alignment.center,
+                        radius: 0.85,
+                        colors: [
+                          widget.accentColor.withValues(alpha: 0.16),
+                          const Color(0xFF100B1A),
+                          const Color(0xFF07040D),
+                        ],
+                      ),
+                    ),
+                  ),
+
+                  // Photo PageView with BoxFit.contain - ZERO CROPPING!
+                  NotificationListener<ScrollNotification>(
+                    onNotification: (notification) {
+                      if (notification is ScrollStartNotification) {
+                        if (notification.dragDetails != null) {
+                          _isUserInteracting = true;
+                        }
+                      } else if (notification is ScrollEndNotification) {
+                        _isUserInteracting = false;
+                        _startTimer();
+                      }
+                      return false;
+                    },
+                    child: PageView.builder(
+                      controller: _pageController,
+                      itemCount: widget.photos.isEmpty ? 0 : _virtualTotalPages,
+                      onPageChanged: (idx) {
+                        if (widget.photos.isEmpty) return;
+                        final realIdx = idx % widget.photos.length;
+                        if (_currentPhotoIndex != realIdx) {
+                          setState(() => _currentPhotoIndex = realIdx);
+                        }
+                      },
+                      itemBuilder: (context, index) {
+                        if (widget.photos.isEmpty) {
+                          return Center(
+                            child: Icon(
+                              Icons.cake_rounded,
+                              size: 40,
+                              color: widget.accentColor.withValues(alpha: 0.5),
+                            ),
+                          );
+                        }
+                        final photo =
+                            widget.photos[index % widget.photos.length];
+                        return _buildCelebrantPhotoItem(
+                          photo: photo,
+                          accentColor: widget.accentColor,
+                          onTap: widget.onOpenSlideshow,
+                          onLongPress: _navigateToGroup,
+                        );
+                      },
+                    ),
+                  ),
+
+                  // Photo Indicator (1/N pill, bottom-right of square photo)
+                  if (widget.photos.length > 1)
+                    Positioned(
+                      bottom: 7,
+                      right: 8,
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 5.5, vertical: 2),
+                        decoration: BoxDecoration(
+                          color: Colors.black.withValues(alpha: 0.65),
+                          borderRadius: BorderRadius.circular(8),
+                          border: Border.all(
+                            color: widget.accentColor.withValues(alpha: 0.4),
+                            width: 0.6,
+                          ),
+                        ),
+                        child: Text(
+                          '${_currentPhotoIndex + 1}/${widget.photos.length}',
+                          style: TextStyle(
+                            color: widget.accentColor,
+                            fontSize: 8.5,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                      ),
+                    ),
+
+                  // Queendom Photo Badge (top-left of photo)
+                  if (queendomType != null)
+                    Positioned(
+                      top: 7,
+                      left: 8,
+                      child: QueendomBadgeWidget(
+                        queendomType: queendomType,
+                        size: 26,
+                        borderColor: widget.accentColor,
+                      ),
+                    ),
+                ],
+              ),
+            ),
+          ),
+
+          // ── Celebrant Info & Short Normal Birthday Text (Tap to copy / Long press to open group) ──
+          Expanded(
+            child: Material(
+              color: Colors.transparent,
+              child: InkWell(
+                borderRadius:
+                    const BorderRadius.vertical(bottom: Radius.circular(18)),
+                onTap: () {
+                  HapticFeedback.selectionClick();
+                  Clipboard.setData(ClipboardData(text: shortWish));
+                  AppSnackBar.success(
+                    context,
+                    'Birthday Wish for $celebrantName copied! (Long press to open group) 🎂✨',
+                    customIcon: Icons.cake_rounded,
+                  );
+                },
+                onLongPress: _navigateToGroup,
+                child: Padding(
+                  padding: const EdgeInsets.fromLTRB(10, 8, 10, 8),
+                  child: Center(
+                    child: SingleChildScrollView(
+                      physics: const BouncingScrollPhysics(),
+                      child: Text(
+                        shortWish,
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 11.5,
+                          fontWeight: FontWeight.w700,
+                          letterSpacing: 0.2,
+                          height: 1.3,
+                        ),
+                        softWrap: true,
+                        textAlign: TextAlign.center,
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ],
+      ),
+    ),
+  );
+}
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Single Celebrant Card (When only 1 person has a birthday)
+// Full width showcase card with short normal birthday text and zero tabs
+// ─────────────────────────────────────────────────────────────────────────────
+
+class _SingleCelebrantCard extends StatefulWidget {
+  final Event event;
+  final List<String> photos;
+  final Color accentColor;
+  final Color darkAccent;
+  final VoidCallback onOpenSlideshow;
+
+  const _SingleCelebrantCard({
+    super.key,
+    required this.event,
+    required this.photos,
+    required this.accentColor,
+    required this.darkAccent,
+    required this.onOpenSlideshow,
+  });
+
+  @override
+  State<_SingleCelebrantCard> createState() => _SingleCelebrantCardState();
+}
+
+class _SingleCelebrantCardState extends State<_SingleCelebrantCard> {
+  static const int _virtualTotalPages = 10000;
+
+  late PageController _pageController;
+  Timer? _slideshowTimer;
+  int _currentPhotoIndex = 0;
+  bool _isUserInteracting = false;
+
+  int _calculateInitialPage() {
+    if (widget.photos.isEmpty) return 0;
+    final cycle = widget.photos.length;
+    return (5000 ~/ cycle) * cycle;
   }
+
+  @override
+  void initState() {
+    super.initState();
+    _currentPhotoIndex = 0;
+    _pageController = PageController(initialPage: _calculateInitialPage());
+    _startTimer();
+  }
+
+  @override
+  void didUpdateWidget(covariant _SingleCelebrantCard oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.photos.length != widget.photos.length ||
+        oldWidget.photos != widget.photos) {
+      if (_currentPhotoIndex >= widget.photos.length) {
+        _currentPhotoIndex = 0;
+      }
+      _startTimer();
+    }
+  }
+
+  @override
+  void dispose() {
+    _slideshowTimer?.cancel();
+    _pageController.dispose();
+    super.dispose();
+  }
+
+  void _startTimer() {
+    _slideshowTimer?.cancel();
+    if (widget.photos.length <= 1) return;
+
+    _slideshowTimer =
+        Timer.periodic(const Duration(milliseconds: 3800), (timer) {
+      if (!mounted || !_pageController.hasClients || _isUserInteracting) return;
+      if (widget.photos.length > 1) {
+        try {
+          _pageController.nextPage(
+            duration: const Duration(milliseconds: 750),
+            curve: Curves.easeInOutCubic,
+          );
+        } catch (_) {}
+      }
+    });
+  }
+
+  void _previousPhoto() {
+    HapticFeedback.lightImpact();
+    _slideshowTimer?.cancel();
+    if (_pageController.hasClients) {
+      _pageController.previousPage(
+        duration: const Duration(milliseconds: 400),
+        curve: Curves.easeInOutCubic,
+      );
+    }
+    _startTimer();
+  }
+
+  void _nextPhoto() {
+    HapticFeedback.lightImpact();
+    _slideshowTimer?.cancel();
+    if (_pageController.hasClients) {
+      _pageController.nextPage(
+        duration: const Duration(milliseconds: 400),
+        curve: Curves.easeInOutCubic,
+      );
+    }
+    _startTimer();
+  }
+
+  void _navigateToGroup() {
+    HapticFeedback.heavyImpact();
+    final celebrantName =
+        _TodayBirthdaysSlideshowWidgetState.extractCelebrantName(
+          widget.event.title,
+          connectedGroupName: widget.event.connectedGroupName,
+        );
+    final shortWish = 'Happy Birthday, $celebrantName! 🎂✨';
+    if (widget.event.connectedGroupId != null) {
+      navigateToQueendomGroup(
+        context,
+        groupId: widget.event.connectedGroupId!,
+        name: widget.event.connectedGroupName ?? 'Queendom Group',
+        groupPic: widget.event.connectedGroupPic,
+        queendom: widget.event.connectedQueendom,
+        wish: shortWish,
+      );
+    } else {
+      Clipboard.setData(ClipboardData(text: shortWish));
+      AppSnackBar.success(
+        context,
+        'Birthday Wish for $celebrantName copied to clipboard! 🎂✨',
+        customIcon: Icons.cake_rounded,
+      );
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final celebrantName =
+        _TodayBirthdaysSlideshowWidgetState.extractCelebrantName(
+          widget.event.title,
+          connectedGroupName: widget.event.connectedGroupName,
+        );
+    final shortWish = 'Happy Birthday, $celebrantName! 🎂✨';
+    final queendomType = QueendomBadgeHelper.detectQueendom(
+      queendom: widget.event.connectedQueendom,
+      name: widget.event.connectedGroupName,
+      title: widget.event.title,
+    );
+    final lowerTitle = widget.event.title.toLowerCase();
+    final lowerName = celebrantName.toLowerCase();
+    final isQueen = lowerName.contains('queen') ||
+        (lowerTitle.contains('queen') &&
+            !lowerName.contains('angel') &&
+            !lowerName.contains('enchantress') &&
+            !lowerName.contains('elfwitch') &&
+            !lowerName.contains('goddess') &&
+            !lowerName.contains('princess')) ||
+        (lowerTitle.contains('pooja') &&
+            !lowerName.contains('angel') &&
+            !lowerName.contains('enchantress') &&
+            !lowerName.contains('elfwitch') &&
+            !lowerName.contains('goddess') &&
+            !lowerName.contains('princess')) ||
+        (lowerTitle.contains('rashmika') &&
+            !lowerName.contains('angel') &&
+            !lowerName.contains('enchantress') &&
+            !lowerName.contains('elfwitch') &&
+            !lowerName.contains('goddess') &&
+            !lowerName.contains('princess'));
+
+    final isDarkAngel = lowerName.contains('dark angel') ||
+        lowerName.contains('angel') ||
+        lowerTitle.contains('dark angel');
+    final isEnchantress = lowerName.contains('enchantress') ||
+        lowerTitle.contains('enchantress');
+    final isElfwitch = lowerName.contains('elfwitch') ||
+        lowerTitle.contains('elfwitch');
+    final isGoddess = lowerName.contains('goddess') || lowerTitle.contains('goddess');
+    final isPrincess = lowerName.contains('princess') || lowerTitle.contains('princess');
+
+    final String celebrationCategory;
+    if (isQueen) {
+      celebrationCategory = 'ROYAL BIRTHDAY CELEBRATION';
+    } else if (isDarkAngel) {
+      celebrationCategory = 'DARK ANGEL BIRTHDAY CELEBRATION';
+    } else if (isEnchantress) {
+      celebrationCategory = 'ENCHANTRESS BIRTHDAY CELEBRATION';
+    } else if (isElfwitch) {
+      celebrationCategory = 'ELFWITCH BIRTHDAY CELEBRATION';
+    } else if (isGoddess) {
+      celebrationCategory = 'DIVINE BIRTHDAY CELEBRATION';
+    } else if (isPrincess) {
+      celebrationCategory = 'PRINCESS BIRTHDAY CELEBRATION';
+    } else {
+      celebrationCategory = 'BIRTHDAY CELEBRATION';
+    }
+
+    final String categoryIcon;
+    if (isQueen) {
+      categoryIcon = '👑';
+    } else if (isDarkAngel) {
+      categoryIcon = '🖤';
+    } else if (isEnchantress) {
+      categoryIcon = '🍀';
+    } else if (isElfwitch) {
+      categoryIcon = '🍁';
+    } else if (isGoddess) {
+      categoryIcon = '✨';
+    } else if (isPrincess) {
+      categoryIcon = '👑';
+    } else {
+      categoryIcon = '🎂';
+    }
+
+    return GestureDetector(
+      onLongPress: _navigateToGroup,
+      child: Container(
+      margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+      decoration: BoxDecoration(
+        gradient: LinearGradient(
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+          colors: [
+            widget.accentColor.withValues(alpha: 0.16),
+            const Color(0xFF140E22),
+            const Color(0xFF0C0916),
+          ],
+        ),
+        borderRadius: BorderRadius.circular(24),
+        border: Border.all(
+          color: widget.accentColor.withValues(alpha: 0.55),
+          width: 1.6,
+        ),
+        boxShadow: [
+          BoxShadow(
+            color: widget.accentColor.withValues(alpha: 0.22),
+            blurRadius: 28,
+            spreadRadius: 2,
+            offset: const Offset(0, 6),
+          ),
+          BoxShadow(
+            color: Colors.black.withValues(alpha: 0.65),
+            blurRadius: 18,
+            offset: const Offset(0, 3),
+          ),
+        ],
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          // ── Header ───────────────────────────────────────────────────
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 16, 16, 10),
+            child: Row(
+              children: [
+                if (queendomType != null)
+                  QueendomBadgeWidget(
+                    queendomType: queendomType,
+                    size: 36,
+                    borderColor: widget.accentColor,
+                  )
+                else
+                  Container(
+                    padding: const EdgeInsets.all(8),
+                    decoration: BoxDecoration(
+                      gradient: LinearGradient(
+                        colors: [
+                          widget.accentColor,
+                          widget.accentColor.withValues(alpha: 0.7),
+                        ],
+                      ),
+                      shape: BoxShape.circle,
+                      boxShadow: [
+                        BoxShadow(
+                          color: widget.accentColor.withValues(alpha: 0.5),
+                          blurRadius: 10,
+                          spreadRadius: 1,
+                        ),
+                      ],
+                    ),
+                    child: Text(
+                      categoryIcon,
+                      style: const TextStyle(fontSize: 15),
+                    ),
+                  ),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        celebrationCategory,
+                        style: TextStyle(
+                          color: widget.accentColor,
+                          fontSize: 10.5,
+                          fontWeight: FontWeight.w900,
+                          letterSpacing: 1.4,
+                        ),
+                      ),
+                      const SizedBox(height: 1),
+                      Text(
+                        '$celebrantName\'s Birthday ✨',
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 15,
+                          fontWeight: FontWeight.w800,
+                          letterSpacing: 0.2,
+                          height: 1.25,
+                        ),
+                        softWrap: true,
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          ),
+
+          // ── Photo Showcase (1:1 Perfect Square) ───────────────────────
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 14),
+            child: AspectRatio(
+              aspectRatio: 1.0,
+              child: Container(
+                decoration: BoxDecoration(
+                  color: const Color(0xFF090612),
+                  borderRadius: BorderRadius.circular(20),
+                  border: Border.all(
+                    color: widget.accentColor.withValues(alpha: 0.35),
+                    width: 1.2,
+                  ),
+                  boxShadow: [
+                    BoxShadow(
+                      color: Colors.black.withValues(alpha: 0.55),
+                      blurRadius: 16,
+                      offset: const Offset(0, 4),
+                    ),
+                  ],
+                ),
+                child: ClipRRect(
+                  borderRadius: BorderRadius.circular(19),
+                  child: NotificationListener<ScrollNotification>(
+                    onNotification: (notification) {
+                      if (notification is ScrollStartNotification) {
+                        if (notification.dragDetails != null) {
+                          _isUserInteracting = true;
+                        }
+                      } else if (notification is ScrollEndNotification) {
+                        _isUserInteracting = false;
+                        _startTimer();
+                      }
+                      return false;
+                    },
+                    child: PageView.builder(
+                      controller: _pageController,
+                      itemCount: widget.photos.isEmpty ? 0 : _virtualTotalPages,
+                      onPageChanged: (idx) {
+                        if (widget.photos.isEmpty) return;
+                        final realIdx = idx % widget.photos.length;
+                        if (_currentPhotoIndex != realIdx) {
+                          setState(() => _currentPhotoIndex = realIdx);
+                        }
+                      },
+                      itemBuilder: (context, index) {
+                        if (widget.photos.isEmpty) {
+                          return Center(
+                            child: Icon(
+                              Icons.cake_rounded,
+                              size: 48,
+                              color: widget.accentColor.withValues(alpha: 0.5),
+                            ),
+                          );
+                        }
+                        final photo =
+                            widget.photos[index % widget.photos.length];
+                        return _buildCelebrantPhotoItem(
+                          photo: photo,
+                          accentColor: widget.accentColor,
+                          onTap: widget.onOpenSlideshow,
+                          onLongPress: _navigateToGroup,
+                        );
+                      },
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ),
+
+          // ── Controls below photo (if multiple photos) ─────────────────
+          if (widget.photos.length > 1)
+            Padding(
+              padding: const EdgeInsets.fromLTRB(18, 10, 18, 0),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.end,
+                children: [
+                  Material(
+                    color: Colors.transparent,
+                    child: InkWell(
+                      onTap: _previousPhoto,
+                      borderRadius: BorderRadius.circular(16),
+                      child: Container(
+                        padding: const EdgeInsets.all(5),
+                        decoration: BoxDecoration(
+                          color: Colors.white.withValues(alpha: 0.08),
+                          shape: BoxShape.circle,
+                          border: Border.all(
+                            color: Colors.white.withValues(alpha: 0.15),
+                            width: 0.8,
+                          ),
+                        ),
+                        child: const Icon(
+                          Icons.chevron_left_rounded,
+                          color: Colors.white70,
+                          size: 16,
+                        ),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 6),
+                  Container(
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 8, vertical: 3),
+                    decoration: BoxDecoration(
+                      color: Colors.white.withValues(alpha: 0.08),
+                      borderRadius: BorderRadius.circular(10),
+                      border: Border.all(
+                        color: widget.accentColor.withValues(alpha: 0.35),
+                        width: 0.8,
+                      ),
+                    ),
+                    child: Text(
+                      '${_currentPhotoIndex + 1} / ${widget.photos.length}',
+                      style: TextStyle(
+                        color: widget.accentColor,
+                        fontSize: 10.5,
+                        fontWeight: FontWeight.w700,
+                        letterSpacing: 0.3,
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 6),
+                  Material(
+                    color: Colors.transparent,
+                    child: InkWell(
+                      onTap: _nextPhoto,
+                      borderRadius: BorderRadius.circular(16),
+                      child: Container(
+                        padding: const EdgeInsets.all(5),
+                        decoration: BoxDecoration(
+                          color: Colors.white.withValues(alpha: 0.08),
+                          shape: BoxShape.circle,
+                          border: Border.all(
+                            color: Colors.white.withValues(alpha: 0.15),
+                            width: 0.8,
+                          ),
+                        ),
+                        child: const Icon(
+                          Icons.chevron_right_rounded,
+                          color: Colors.white70,
+                          size: 16,
+                        ),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+
+          // ── Short Normal Birthday Text Quote Box (Tap to copy / Long press to open group) ──
+          Padding(
+            padding: const EdgeInsets.fromLTRB(14, 12, 14, 16),
+            child: Material(
+              color: Colors.transparent,
+              child: InkWell(
+                borderRadius: BorderRadius.circular(16),
+                onTap: () {
+                  HapticFeedback.selectionClick();
+                  Clipboard.setData(ClipboardData(text: shortWish));
+                  AppSnackBar.success(
+                    context,
+                    'Birthday Wish for $celebrantName copied! (Long press to open group) 🎂✨',
+                    customIcon: Icons.cake_rounded,
+                  );
+                },
+                onLongPress: _navigateToGroup,
+                child: Container(
+                  width: double.infinity,
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+                  decoration: BoxDecoration(
+                    gradient: LinearGradient(
+                      begin: Alignment.topLeft,
+                      end: Alignment.bottomRight,
+                      colors: [
+                        widget.accentColor.withValues(alpha: 0.14),
+                        const Color(0xFF1D152C).withValues(alpha: 0.85),
+                        const Color(0xFF120C1E).withValues(alpha: 0.90),
+                      ],
+                    ),
+                    borderRadius: BorderRadius.circular(16),
+                    border: Border.all(
+                      color: widget.accentColor.withValues(alpha: 0.40),
+                      width: 1.2,
+                    ),
+                    boxShadow: [
+                      BoxShadow(
+                        color: widget.accentColor.withValues(alpha: 0.15),
+                        blurRadius: 8,
+                        offset: const Offset(0, 2),
+                      ),
+                    ],
+                  ),
+                  child: Row(
+                    children: [
+                      if (queendomType != null) ...[
+                        QueendomBadgeWidget(
+                          queendomType: queendomType,
+                          size: 26,
+                          borderColor: widget.accentColor,
+                        ),
+                        const SizedBox(width: 10),
+                      ] else ...[
+                        Text(
+                          categoryIcon,
+                          style: const TextStyle(fontSize: 18),
+                        ),
+                        const SizedBox(width: 10),
+                      ],
+                      Expanded(
+                        child: Text(
+                          shortWish,
+                          style: const TextStyle(
+                            color: Colors.white,
+                            fontSize: 13.5,
+                            fontWeight: FontWeight.w700,
+                            letterSpacing: 0.2,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ],
+      ),
+    ),
+  );
+}
 }

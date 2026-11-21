@@ -6,6 +6,7 @@ import 'package:flutter/services.dart';
 import 'package:open_filex/open_filex.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:worship_chat/colors.dart';
+import 'package:worship_chat/common/utils/background_task_service.dart';
 import 'package:worship_chat/common/utils/media_cache_service.dart';
 import 'package:worship_chat/common/utils/utils.dart';
 
@@ -221,7 +222,9 @@ class _DocumentMessageWidgetState extends State<DocumentMessageWidget> {
 
     final url = widget.fileUrl;
     if (url == null || url.isEmpty) {
-      AppSnackBar.warning(context, 'File is still uploading or unavailable');
+      if (mounted) {
+        AppSnackBar.warning(context, 'File is still uploading or unavailable');
+      }
       return;
     }
 
@@ -232,39 +235,58 @@ class _DocumentMessageWidgetState extends State<DocumentMessageWidget> {
     });
 
     try {
-      final ext = _getFileExtension().toLowerCase();
       final dir = await getApplicationDocumentsDirectory();
       final cleanName = widget.fileName.replaceAll(RegExp(r'[^\w\.\-]'), '_');
       final targetPath = '${dir.path}/$cleanName';
 
-      final dio = Dio();
-      await dio.download(
-        url,
-        targetPath,
-        onReceiveProgress: (received, total) {
-          if (total > 0 && mounted) {
-            setState(() {
-              _downloadProgress = received / total;
-            });
+      await BackgroundTaskService.instance.runWithBackgroundTask(
+        title: 'Downloading Document',
+        initialMessage: 'Downloading ${widget.fileName}...',
+        successMessage: 'Document downloaded',
+        task: (updateProgress) async {
+          final dio = Dio(
+            BaseOptions(
+              connectTimeout: const Duration(seconds: 45),
+              receiveTimeout: const Duration(seconds: 120),
+            ),
+          );
+          await dio.download(
+            url,
+            targetPath,
+            onReceiveProgress: (received, total) {
+              if (total > 0) {
+                final pct = (received / total * 100).toInt();
+                updateProgress(
+                  'Downloading ${widget.fileName} ($pct%)...',
+                  progress: received,
+                  maxProgress: total,
+                );
+                if (mounted) {
+                  setState(() {
+                    _downloadProgress = received / total;
+                  });
+                }
+              }
+            },
+          );
+
+          final downloaded = File(targetPath);
+          if (await downloaded.exists()) {
+            final size = await downloaded.length();
+            MediaCacheService().registerLocalMapping(url, targetPath);
+            if (mounted) {
+              setState(() {
+                _localPath = targetPath;
+                _fileSizeBytes = size;
+                _isDownloading = false;
+              });
+            }
+
+            final result = await OpenFilex.open(targetPath);
+            log('Downloaded and opened file: ${result.message}');
           }
         },
       );
-
-      final downloaded = File(targetPath);
-      if (await downloaded.exists()) {
-        final size = await downloaded.length();
-        MediaCacheService().registerLocalMapping(url, targetPath);
-        if (mounted) {
-          setState(() {
-            _localPath = targetPath;
-            _fileSizeBytes = size;
-            _isDownloading = false;
-          });
-        }
-
-        final result = await OpenFilex.open(targetPath);
-        log('Downloaded and opened file: ${result.message}');
-      }
     } catch (e) {
       log('Error downloading document: $e');
       if (mounted) {

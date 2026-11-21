@@ -6,6 +6,8 @@ import 'package:worship_chat/colors.dart';
 import 'package:worship_chat/common/widgets/skeleton_loader.dart';
 import 'package:worship_chat/features/group/controller/group_controller.dart';
 import 'package:worship_chat/features/group/screens/group_chat_screen.dart';
+import 'package:worship_chat/common/utils/app_capabilities.dart';
+import 'package:worship_chat/features/group/screens/group_gallery_screen.dart';
 import 'package:worship_chat/features/group/utils/queendom_emblem_helper.dart';
 import 'package:worship_chat/features/group/widgets/royal_avatar_decoration.dart';
 import 'package:worship_chat/models/group.dart';
@@ -16,8 +18,14 @@ class GroupList extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    // Get current user ID
-    final currentUserId = FirebaseAuth.instance.currentUser?.uid;
+    // Get current user ID safely
+    final currentUserId = () {
+      try {
+        return FirebaseAuth.instance.currentUser?.uid;
+      } catch (_) {
+        return null;
+      }
+    }();
 
     return Padding(
       padding: const EdgeInsets.only(top: 10),
@@ -72,8 +80,8 @@ class GroupList extends ConsumerWidget {
                     decoration: BoxDecoration(
                       gradient: LinearGradient(
                         colors: [
-                          tabColor.withOpacity(0.3),
-                          tabColor.withOpacity(0.1),
+                          tabColor.withValues(alpha: 0.3),
+                          tabColor.withValues(alpha: 0.1),
                         ],
                       ),
                     ),
@@ -133,33 +141,44 @@ class GroupList extends ConsumerWidget {
                             log(
                               'Navigating to group: ${groupChatListData.groupId}',
                             );
-                            Navigator.push(
-                              context,
-                              MaterialPageRoute(
-                                builder: (context) => GroupChatScreen(
-                                  groupPic: groupChatListData.groupPic,
-                                  chatBackgroundUrl:
-                                      groupChatListData.chatBackgroundUrl,
-                                  name: groupChatListData.nameWithPosition,
-                                  groupId: groupChatListData.groupId,
-                                  fcmToken:
-                                      groupChatListData.fcmTokens
-                                          as List<String>,
-                                  membersUid:
-                                      groupChatListData.membersUid
-                                          as List<String>,
-                                  wish: groupChatListData.wish,
-                                  queendom: groupChatListData.queendom,
-                                  color: null,
-                                  type: "others",
+                            if (!AppCapabilities.current.chatEnabled) {
+                              Navigator.push(
+                                context,
+                                MaterialPageRoute(
+                                  builder: (context) => GroupGalleryScreen(
+                                    groupId: groupChatListData.groupId,
+                                    groupName: groupChatListData.nameWithPosition,
+                                    accentColor: tabColor,
+                                  ),
                                 ),
-                              ),
-                            );
+                              );
+                            } else {
+                              Navigator.push(
+                                context,
+                                MaterialPageRoute(
+                                  builder: (context) => GroupChatScreen(
+                                    groupPic: groupChatListData.groupPic,
+                                    chatBackgroundUrl:
+                                        groupChatListData.chatBackgroundUrl,
+                                    name: groupChatListData.nameWithPosition,
+                                    groupId: groupChatListData.groupId,
+                                    fcmToken:
+                                        groupChatListData.fcmTokens,
+                                    membersUid:
+                                        groupChatListData.membersUid,
+                                    wish: groupChatListData.wish,
+                                    queendom: groupChatListData.queendom,
+                                    color: null,
+                                    type: "others",
+                                  ),
+                                ),
+                              );
+                            }
                           },
                           child: Container(
                             // Add subtle background for unseen messages
-                            color: hasUnseenForCurrentUser
-                                ? tabColor.withOpacity(0.05)
+                            color: (hasUnseenForCurrentUser && AppCapabilities.current.chatEnabled)
+                                ? tabColor.withValues(alpha: 0.05)
                                 : null,
                             child: Padding(
                               padding: const EdgeInsets.only(bottom: 8.0),
@@ -187,7 +206,7 @@ class GroupList extends ConsumerWidget {
                                       ),
                                     ),
                                     // Unread indicator dot next to name
-                                    if (hasUnseenForCurrentUser)
+                                    if (hasUnseenForCurrentUser && AppCapabilities.current.chatEnabled)
                                       Container(
                                         margin: const EdgeInsets.only(left: 8),
                                         width: 8,
@@ -202,75 +221,101 @@ class GroupList extends ConsumerWidget {
                                 subtitle: Padding(
                                   padding: const EdgeInsets.only(top: 6),
                                   child: Text(
-                                    groupChatListData.lastMessage ?? "",
+                                    AppCapabilities.current.chatEnabled
+                                        ? groupChatListData.lastMessage
+                                        : '${groupChatListData.galleryCount} photos',
                                     maxLines: 1,
                                     overflow: TextOverflow.ellipsis,
                                     style: TextStyle(
                                       fontSize: 15,
-                                      fontWeight: hasUnseenForCurrentUser
+                                      fontWeight: (hasUnseenForCurrentUser && AppCapabilities.current.chatEnabled)
                                           ? FontWeight.w600
                                           : FontWeight.normal,
-                                      color: hasUnseenForCurrentUser
-                                          ? Colors.white.withOpacity(0.9)
+                                      color: (hasUnseenForCurrentUser && AppCapabilities.current.chatEnabled)
+                                          ? Colors.white.withValues(alpha: 0.9)
                                           : greyColor,
                                     ),
                                   ),
                                 ),
-                                leading: RoyalAvatarDecoration(
-                                  avatarRadius: 26,
-                                  position: groupChatListData.position,
-                                  livingPlace: groupChatListData.effectiveLivingPlace,
-                                  accentColor: tabColor,
-                                  badge:
-                                      QueendomFamilyEmblemHelper.buildFamilyEmblemBadge(
-                                    family: groupChatListData.family,
-                                    fallbackText:
-                                        groupChatListData.effectiveLivingPlace,
-                                    accentColor: tabColor,
-                                    size: 14.0,
-                                    overlayWidget: hasUnseenForCurrentUser
-                                        ? Container(
-                                            width: 9,
-                                            height: 9,
-                                            decoration: BoxDecoration(
-                                              color: Colors.redAccent,
-                                              shape: BoxShape.circle,
-                                              border: Border.all(
-                                                color: backgroundColor,
-                                                width: 1.5,
-                                              ),
-                                            ),
-                                          )
-                                        : null,
-                                  ) ??
-                                      (hasUnseenForCurrentUser
-                                          ? Container(
-                                              width: 14,
-                                              height: 14,
-                                              decoration: BoxDecoration(
-                                                color: Colors.red,
-                                                shape: BoxShape.circle,
-                                                border: Border.all(
-                                                  color: backgroundColor,
-                                                  width: 2,
-                                                ),
-                                              ),
+                                leading: Builder(
+                                  builder: (context) {
+                                    final isWifeOrToy = groupChatListData.isWifeSubGroup ||
+                                        groupChatListData.isFuckToySubGroup ||
+                                        QueendomEmblemHelper.isWifeOrFuckToy(groupChatListData.position) ||
+                                        QueendomEmblemHelper.isWifeOrFuckToy(groupChatListData.effectiveLivingPlace) ||
+                                        QueendomEmblemHelper.isWifeOrFuckToy(groupChatListData.name);
+                                    return RoyalAvatarDecoration(
+                                      avatarRadius: 26,
+                                      isWifeOrFuckToy: isWifeOrToy,
+                                      position: isWifeOrToy ? null : groupChatListData.position,
+                                      livingPlace: isWifeOrToy ? null : groupChatListData.effectiveLivingPlace,
+                                      accentColor: tabColor,
+                                      badge: isWifeOrToy
+                                          ? ((hasUnseenForCurrentUser && AppCapabilities.current.chatEnabled)
+                                              ? Container(
+                                                  width: 14,
+                                                  height: 14,
+                                                  decoration: BoxDecoration(
+                                                    color: Colors.red,
+                                                    shape: BoxShape.circle,
+                                                    border: Border.all(
+                                                      color: backgroundColor,
+                                                      width: 2,
+                                                    ),
+                                                  ),
+                                                )
+                                              : null)
+                                          : (QueendomFamilyEmblemHelper.buildFamilyEmblemBadge(
+                                              family: groupChatListData.family,
+                                              fallbackText:
+                                                  groupChatListData.effectiveLivingPlace,
+                                              accentColor: tabColor,
+                                              size: 14.0,
+                                              overlayWidget: (hasUnseenForCurrentUser && AppCapabilities.current.chatEnabled)
+                                                  ? Container(
+                                                      width: 9,
+                                                      height: 9,
+                                                      decoration: BoxDecoration(
+                                                        color: Colors.redAccent,
+                                                        shape: BoxShape.circle,
+                                                        border: Border.all(
+                                                          color: backgroundColor,
+                                                          width: 1.5,
+                                                        ),
+                                                      ),
+                                                    )
+                                                  : null,
+                                            ) ??
+                                            ((hasUnseenForCurrentUser && AppCapabilities.current.chatEnabled)
+                                                ? Container(
+                                                    width: 14,
+                                                    height: 14,
+                                                    decoration: BoxDecoration(
+                                                      color: Colors.red,
+                                                      shape: BoxShape.circle,
+                                                      border: Border.all(
+                                                        color: backgroundColor,
+                                                        width: 2,
+                                                      ),
+                                                    ),
+                                                  )
+                                                : null)),
+                                      badgeBottomOffset: 0,
+                                      badgeRightOffset: 0,
+                                      child: profileImage.isNotEmpty
+                                          ? CircleAvatar(
+                                              radius: 26,
+                                              backgroundImage: NetworkImage(profileImage),
+                                              onBackgroundImageError: (error, stackTrace) {
+                                                log('Error loading profile image: $error');
+                                              },
                                             )
-                                          : null),
-                                  badgeBottomOffset: 0,
-                                  badgeRightOffset: 0,
-                                  child: profileImage != null && profileImage.isNotEmpty
-                                      ? CircleAvatar(
-                                          radius: 26,
-                                          backgroundImage: NetworkImage(profileImage),
-                                          onBackgroundImageError: (error, stackTrace) {
-                                            log('Error loading profile image: $error');
-                                          },
-                                        )
-                                      : const CircleAvatar(
-                                          radius: 26,
-                                          child: Icon(Icons.group),
-                                        ),
+                                          : const CircleAvatar(
+                                              radius: 26,
+                                              child: Icon(Icons.group),
+                                            ),
+                                    );
+                                  },
                                 ),
                                 trailing: Column(
                                   mainAxisAlignment: MainAxisAlignment.center,
@@ -306,7 +351,7 @@ class GroupList extends ConsumerWidget {
                                           ),
                                           boxShadow: [
                                             BoxShadow(
-                                              color: tabColor.withOpacity(0.3),
+                                              color: tabColor.withValues(alpha: 0.3),
                                               blurRadius: 4,
                                               offset: const Offset(0, 2),
                                             ),

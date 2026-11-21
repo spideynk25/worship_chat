@@ -114,7 +114,8 @@ class MessageReplyPreview extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final messageReply = ref.watch(messageReplyProvider);
-    final isPhoto = messageReply!.messageType == 'image';
+    final isPhoto = messageReply!.messageType == 'image' ||
+        messageReply.messageType == 'roleplay';
     final isVideo = messageReply.messageType == 'video';
     final isMedia = isPhoto || isVideo;
     final fileData = messageReply.fileMessageData;
@@ -125,15 +126,15 @@ class MessageReplyPreview extends ConsumerWidget {
         borderRadius: const BorderRadius.vertical(top: Radius.circular(16)),
         border: Border(
           top: BorderSide(
-            color: Colors.white.withValues(alpha: 0.08),
+            color: Colors.white.withValues(alpha: 0.06),
             width: 1,
           ),
           left: BorderSide(
-            color: Colors.white.withValues(alpha: 0.04),
+            color: Colors.white.withValues(alpha: 0.06),
             width: 1,
           ),
           right: BorderSide(
-            color: Colors.white.withValues(alpha: 0.04),
+            color: Colors.white.withValues(alpha: 0.06),
             width: 1,
           ),
         ),
@@ -148,10 +149,12 @@ class MessageReplyPreview extends ConsumerWidget {
             Container(
               width: 3.5,
               decoration: BoxDecoration(
-                gradient: const LinearGradient(
+                gradient: LinearGradient(
                   begin: Alignment.topCenter,
                   end: Alignment.bottomCenter,
-                  colors: [tabColor, accentOrange],
+                  colors: messageReply.messageType == 'wish'
+                      ? const [Color(0xFFFFDF73), Color(0xFFB8781B)]
+                      : const [tabColor, accentOrange],
                 ),
                 borderRadius: BorderRadius.circular(2),
               ),
@@ -223,6 +226,50 @@ class MessageReplyPreview extends ConsumerWidget {
                                 ),
                               ],
                             )
+                          else if (messageReply.messageType == 'roleplay')
+                            Row(
+                              children: [
+                                const Icon(
+                                  Icons.theater_comedy,
+                                  size: 14,
+                                  color: Color(0xFFFFD700),
+                                ),
+                                const SizedBox(width: 4),
+                                const Flexible(
+                                  child: Text(
+                                    'Roleplay memory',
+                                    style: TextStyle(
+                                      fontSize: 13,
+                                      fontWeight: FontWeight.w600,
+                                      color: Color(0xFFFFD700),
+                                    ),
+                                    overflow: TextOverflow.ellipsis,
+                                  ),
+                                ),
+                              ],
+                            )
+                          else if (messageReply.messageType == 'wish')
+                            Row(
+                              children: [
+                                const Icon(
+                                  Icons.auto_awesome,
+                                  size: 14,
+                                  color: Color(0xFFFFD700),
+                                ),
+                                const SizedBox(width: 4),
+                                Flexible(
+                                  child: Text(
+                                    messageReply.isMe ? 'Your wish' : 'Royal wish',
+                                    style: const TextStyle(
+                                      fontSize: 13,
+                                      fontWeight: FontWeight.w600,
+                                      color: Color(0xFFFFD700),
+                                    ),
+                                    overflow: TextOverflow.ellipsis,
+                                  ),
+                                ),
+                              ],
+                            )
                           else
                             Text(
                               messageReply.isMe ? 'You' : 'Replying to',
@@ -244,6 +291,21 @@ class MessageReplyPreview extends ConsumerWidget {
                                   context,
                                 ).colorScheme.onSurface.withValues(alpha: 0.5),
                               ),
+                            )
+                          else if (messageReply.messageType == 'wish')
+                            Text(
+                              messageReply.message,
+                              style: TextStyle(
+                                fontSize: 13.5,
+                                fontStyle: FontStyle.italic,
+                                fontWeight: FontWeight.w600,
+                                color: Theme.of(
+                                  context,
+                                ).colorScheme.onSurface.withValues(alpha: 0.90),
+                                height: 1.35,
+                              ),
+                              maxLines: 2,
+                              overflow: TextOverflow.ellipsis,
                             )
                           else
                             Text(

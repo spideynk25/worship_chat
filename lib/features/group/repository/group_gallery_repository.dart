@@ -4,6 +4,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:uuid/uuid.dart';
+import 'package:worship_chat/common/utils/background_task_service.dart';
 import 'package:worship_chat/common/utils/file_messages.dart';
 import 'package:worship_chat/common/utils/utils.dart';
 import 'package:worship_chat/models/group_gallery_image.dart';
@@ -36,6 +37,27 @@ class GroupGalleryRepository {
         });
   }
 
+  /// Fetches gallery images across multiple group IDs for multi-gallery shuffling
+  Future<List<GroupGalleryImage>> getMultiGalleryImages(List<String> groupIds) async {
+    final allImages = <GroupGalleryImage>[];
+    for (final id in groupIds) {
+      try {
+        final snapshot = await firestore
+            .collection('groups')
+            .doc(id)
+            .collection('gallery')
+            .get();
+        final images = snapshot.docs
+            .map((doc) => GroupGalleryImage.fromMap(doc.data()))
+            .toList();
+        allImages.addAll(images);
+      } catch (e) {
+        log('Error fetching multi-gallery for group $id: $e');
+      }
+    }
+    return allImages;
+  }
+
   // ── Upload multiple images ────────────────────────────────────────────────
   /// Returns the count of successfully uploaded images.
   Future<int> uploadImages({
@@ -51,58 +73,167 @@ class GroupGalleryRepository {
       return 0;
     }
 
-    int successCount = 0;
+    if (imageFiles.isEmpty) return 0;
 
-    for (int i = 0; i < imageFiles.length; i++) {
-      try {
-        final file = imageFiles[i];
+    return await BackgroundTaskService.instance.runWithBackgroundTask<int>(
+      title: 'Uploading to Gallery',
+      initialMessage: 'Uploading 1 of ${imageFiles.length} photos...',
+      successMessage: '${imageFiles.length} photo${imageFiles.length == 1 ? '' : 's'} added to gallery',
+      task: (updateProgress) async {
+        int successCount = 0;
 
-        // Upload to Cloudinary (reuse existing util)
-        final imageUrl = await uploadImageToCloudinary(file, 'gallery');
-        if (imageUrl == null || imageUrl.isEmpty) {
-          log('⚠️ Cloudinary upload returned null for file $i');
-          continue;
+        for (int i = 0; i < imageFiles.length; i++) {
+          try {
+            final file = imageFiles[i];
+            updateProgress(
+              'Uploading photo ${i + 1} of ${imageFiles.length}...',
+              progress: i,
+              maxProgress: imageFiles.length,
+            );
+
+            // Upload to Cloudinary (reuse existing util)
+            final imageUrl = await uploadImageToCloudinary(file, 'gallery');
+            if (imageUrl == null || imageUrl.isEmpty) {
+              log('⚠️ Cloudinary upload returned null for file $i');
+              continue;
+            }
+
+            final imageId = const Uuid().v1();
+            final galleryImage = GroupGalleryImage(
+              imageId: imageId,
+              groupId: groupId,
+              imageUrl: imageUrl,
+              uploadedBy: currentUserId,
+              uploadedByName: uploaderName,
+              uploadedAt: DateTime.now(),
+              caption: (caption != null && caption.trim().isNotEmpty)
+                  ? caption.trim()
+                  : null,
+            );
+
+            await firestore
+                .collection('groups')
+                .doc(groupId)
+                .collection('gallery')
+                .doc(imageId)
+                .set(galleryImage.toMap());
+
+            successCount++;
+            log('✅ Uploaded gallery image ${i + 1}/${imageFiles.length}');
+            onProgress?.call(successCount, imageFiles.length);
+            updateProgress(
+              'Uploaded $successCount of ${imageFiles.length} photos',
+              progress: successCount,
+              maxProgress: imageFiles.length,
+            );
+          } catch (e) {
+            log('❌ Error uploading gallery image $i: $e');
+          }
         }
 
-        final imageId = const Uuid().v1();
-        final galleryImage = GroupGalleryImage(
-          imageId: imageId,
-          groupId: groupId,
-          imageUrl: imageUrl,
-          uploadedBy: currentUserId,
-          uploadedByName: uploaderName,
-          uploadedAt: DateTime.now(),
-          caption: (caption != null && caption.trim().isNotEmpty)
-              ? caption.trim()
-              : null,
-        );
+        // Update group doc with gallery count
+        try {
+          await firestore.collection('groups').doc(groupId).update({
+            'galleryCount': FieldValue.increment(successCount),
+            'lastGalleryUpdate': DateTime.now().millisecondsSinceEpoch,
+          });
+        } catch (e) {
+          log('⚠️ Could not update galleryCount on group doc: $e');
+        }
 
-        await firestore
-            .collection('groups')
-            .doc(groupId)
-            .collection('gallery')
-            .doc(imageId)
-            .set(galleryImage.toMap());
+        return successCount;
+      },
+    );
+  }
 
-        successCount++;
-        log('✅ Uploaded gallery image ${i + 1}/${imageFiles.length}');
-        onProgress?.call(successCount, imageFiles.length);
-      } catch (e) {
-        log('❌ Error uploading gallery image $i: $e');
-      }
+  // ── Upload multiple videos ────────────────────────────────────────────────
+  /// Returns the count of successfully uploaded videos.
+  Future<int> uploadVideos({
+    required String groupId,
+    required List<File> videoFiles,
+    required String uploaderName,
+    String? caption,
+    void Function(int uploaded, int total)? onProgress,
+  }) async {
+    final currentUserId = auth.currentUser?.uid;
+    if (currentUserId == null) {
+      log('❌ uploadVideos: no current user');
+      return 0;
     }
 
-    // Update group doc with gallery count
-    try {
-      await firestore.collection('groups').doc(groupId).update({
-        'galleryCount': FieldValue.increment(successCount),
-        'lastGalleryUpdate': DateTime.now().millisecondsSinceEpoch,
-      });
-    } catch (e) {
-      log('⚠️ Could not update galleryCount on group doc: $e');
-    }
+    if (videoFiles.isEmpty) return 0;
 
-    return successCount;
+    return await BackgroundTaskService.instance.runWithBackgroundTask<int>(
+      title: 'Uploading to Gallery',
+      initialMessage: 'Uploading 1 of ${videoFiles.length} videos...',
+      successMessage:
+          '${videoFiles.length} video${videoFiles.length == 1 ? '' : 's'} added to gallery',
+      task: (updateProgress) async {
+        int successCount = 0;
+
+        for (int i = 0; i < videoFiles.length; i++) {
+          try {
+            final file = videoFiles[i];
+            updateProgress(
+              'Uploading video ${i + 1} of ${videoFiles.length}...',
+              progress: i,
+              maxProgress: videoFiles.length,
+            );
+
+            // Upload video to Cloudinary
+            final videoUrl = await uploadVideoToCloudinary(file, 'gallery');
+            if (videoUrl == null || videoUrl.isEmpty) {
+              log('⚠️ Cloudinary video upload returned null for file $i');
+              continue;
+            }
+
+            final imageId = const Uuid().v1();
+            final galleryVideo = GroupGalleryImage(
+              imageId: imageId,
+              groupId: groupId,
+              imageUrl: videoUrl,
+              uploadedBy: currentUserId,
+              uploadedByName: uploaderName,
+              uploadedAt: DateTime.now(),
+              caption: (caption != null && caption.trim().isNotEmpty)
+                  ? caption.trim()
+                  : null,
+              mediaType: 'video',
+            );
+
+            await firestore
+                .collection('groups')
+                .doc(groupId)
+                .collection('gallery')
+                .doc(imageId)
+                .set(galleryVideo.toMap());
+
+            successCount++;
+            log('✅ Uploaded gallery video ${i + 1}/${videoFiles.length}');
+            onProgress?.call(successCount, videoFiles.length);
+            updateProgress(
+              'Uploaded $successCount of ${videoFiles.length} videos',
+              progress: successCount,
+              maxProgress: videoFiles.length,
+            );
+          } catch (e) {
+            log('❌ Error uploading gallery video $i: $e');
+          }
+        }
+
+        // Update group doc with gallery count
+        try {
+          await firestore.collection('groups').doc(groupId).update({
+            'galleryCount': FieldValue.increment(successCount),
+            'lastGalleryUpdate': DateTime.now().millisecondsSinceEpoch,
+          });
+        } catch (e) {
+          log('⚠️ Could not update galleryCount on group doc: $e');
+        }
+
+        return successCount;
+      },
+    );
   }
 
   // ── Add single image from existing URL (Forwarding) ──────────────────────
@@ -125,7 +256,14 @@ class GroupGalleryRepository {
 
     try {
       final imageId = const Uuid().v1();
-      final cleanUrl = getOriginalHighQualityImageUrl(imageUrl.trim());
+      final isVideo = imageUrl.contains('/video/upload') ||
+          imageUrl.toLowerCase().endsWith('.mp4') ||
+          imageUrl.toLowerCase().endsWith('.mov') ||
+          imageUrl.toLowerCase().endsWith('.webm') ||
+          imageUrl.toLowerCase().endsWith('.m4v');
+      final cleanUrl = isVideo
+          ? imageUrl.trim()
+          : getOriginalHighQualityImageUrl(imageUrl.trim());
       final galleryImage = GroupGalleryImage(
         imageId: imageId,
         groupId: groupId,
@@ -136,6 +274,7 @@ class GroupGalleryRepository {
         caption: (caption != null && caption.trim().isNotEmpty)
             ? caption.trim()
             : null,
+        mediaType: isVideo ? 'video' : 'image',
       );
 
       await firestore

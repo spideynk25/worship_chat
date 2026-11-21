@@ -4,13 +4,16 @@ import 'package:cached_network_image/cached_network_image.dart';
 import 'package:dio/dio.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:gallery_saver_plus/gallery_saver.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:photo_view/photo_view.dart';
 import 'package:photo_view/photo_view_gallery.dart';
+import 'package:video_player/video_player.dart';
 import 'package:worship_chat/colors.dart';
+import 'package:worship_chat/common/utils/google_lens_service.dart';
 import 'package:worship_chat/common/utils/utils.dart';
 import 'package:worship_chat/common/widgets/loader.dart';
 import 'package:worship_chat/features/auth/controller/auth_controller.dart';
@@ -18,6 +21,8 @@ import 'package:worship_chat/features/bookmark/controller/bookmark_controller.da
 import 'package:worship_chat/features/group/controller/group_gallery_controller.dart';
 import 'package:worship_chat/features/group/screens/slide_show_screen.dart';
 import 'package:worship_chat/features/chat/widgets/forward_message_sheet.dart';
+import 'package:worship_chat/features/group/services/gallery_media_service.dart';
+import 'package:worship_chat/features/group/widgets/multi_gallery_shuffle_sheet.dart';
 import 'package:worship_chat/models/group_gallery_image.dart';
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -41,7 +46,7 @@ class GroupGalleryScreen extends ConsumerStatefulWidget {
 }
 
 class _GroupGalleryScreenState extends ConsumerState<GroupGalleryScreen>
-    with SingleTickerProviderStateMixin {
+    with TickerProviderStateMixin {
   final ValueNotifier<bool> _isUploadingNotifier = ValueNotifier(false);
   final ValueNotifier<int> _uploadedCountNotifier = ValueNotifier(0);
   final ValueNotifier<int> _totalToUploadNotifier = ValueNotifier(0);
@@ -49,6 +54,7 @@ class _GroupGalleryScreenState extends ConsumerState<GroupGalleryScreen>
   List<GroupGalleryImage>? _shuffledImages;
   bool _isShuffled = false;
 
+  late TabController _tabController;
   late final AnimationController _fabAnimController;
   late final Animation<double> _fabScaleAnim;
 
@@ -62,6 +68,10 @@ class _GroupGalleryScreenState extends ConsumerState<GroupGalleryScreen>
   @override
   void initState() {
     super.initState();
+    _tabController = TabController(length: 2, vsync: this);
+    _tabController.addListener(() {
+      if (mounted) setState(() {});
+    });
     _fabAnimController = AnimationController(
       vsync: this,
       duration: const Duration(milliseconds: 350),
@@ -75,6 +85,7 @@ class _GroupGalleryScreenState extends ConsumerState<GroupGalleryScreen>
 
   @override
   void dispose() {
+    _tabController.dispose();
     _fabAnimController.dispose();
     _isUploadingNotifier.dispose();
     _uploadedCountNotifier.dispose();
@@ -154,6 +165,157 @@ class _GroupGalleryScreenState extends ConsumerState<GroupGalleryScreen>
     }
   }
 
+  Future<void> _pickVideos() async {
+    try {
+      final files = await GalleryMediaService().pickVideos();
+      if (files.isEmpty) return;
+      _showVideoUploadSheet(files);
+    } catch (e) {
+      log('video picker error: $e');
+      _snack('Could not open video picker.');
+    }
+  }
+
+  void _showVideoUploadSheet(List<File> files) {
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (_) => _UploadSheet(
+        files: files,
+        accentColor: _accent,
+        isVideo: true,
+        onConfirm: () => _startVideoUpload(files),
+        onCancel: () {},
+      ),
+    );
+  }
+
+  Future<void> _startVideoUpload(List<File> files) async {
+    if (files.isEmpty) return;
+    final userData = await ref.read(userDataAuthProvider.future);
+    if (userData == null) return;
+
+    _isUploadingNotifier.value = true;
+    _uploadedCountNotifier.value = 0;
+    _totalToUploadNotifier.value = files.length;
+
+    final count = await ref
+        .read(groupGalleryControllerProvider)
+        .uploadVideos(
+          groupId: widget.groupId,
+          videoFiles: files,
+          uploaderName: userData.name ?? 'Unknown',
+          caption: null,
+          onProgress: (uploaded, total) {
+            _uploadedCountNotifier.value = uploaded;
+          },
+        );
+
+    if (mounted) {
+      _isUploadingNotifier.value = false;
+      _snack(count > 0 ? '✅ $count videos uploaded!' : '⚠️ Video upload failed.');
+    }
+  }
+
+  bool _isDownloadingZip = false;
+
+  void _startSlideshow(List<GroupGalleryImage> images) {
+    final photos = images.where((m) => m.isImage).toList();
+    final activeImages = _isShuffled && _shuffledImages != null
+        ? _shuffledImages!.where((m) => m.isImage).toList()
+        : photos;
+    if (activeImages.isEmpty) {
+      _snack('No photos available for slideshow');
+      return;
+    }
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => SlideshowScreen(
+          images: activeImages,
+          initialIndex: 0,
+          accentColor: _accent,
+          groupName: widget.groupName,
+        ),
+      ),
+    );
+  }
+
+  void _showDownloadZipDialog(List<GroupGalleryImage> images) {
+    if (images.isEmpty) return;
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: const Color(0xFF1E1A2E),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        title: const Text(
+          'Download Gallery',
+          style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
+        ),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              'Download all ${images.length} photos from ${widget.groupName} as a ZIP archive?',
+              style: const TextStyle(color: Colors.white70, fontSize: 14),
+            ),
+            const SizedBox(height: 8),
+            const Text(
+              'Includes original high-quality photos',
+              style: TextStyle(color: Colors.white38, fontSize: 12),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('Cancel', style: TextStyle(color: Colors.white60)),
+          ),
+          ElevatedButton(
+            onPressed: () {
+              Navigator.pop(ctx);
+              _downloadAllAsZip(images);
+            },
+            style: ElevatedButton.styleFrom(
+              backgroundColor: _accent,
+              foregroundColor: Colors.white,
+            ),
+            child: const Text('Download ZIP'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _downloadAllAsZip(List<GroupGalleryImage> images) async {
+    if (_isDownloadingZip || images.isEmpty) return;
+    setState(() => _isDownloadingZip = true);
+    _snack('📦 Downloading ${images.length} photos as ZIP...');
+
+    try {
+      final result = await GalleryMediaService().downloadGalleryAsZip(
+        groupName: widget.groupName,
+        images: images,
+      );
+
+      if (!mounted) return;
+      if (result.status == GalleryZipStatus.saved) {
+        _snack('✅ ZIP saved to ${result.displayLocation ?? "Downloads"}!');
+      } else if (result.status == GalleryZipStatus.cancelled) {
+        _snack('ZIP download cancelled');
+      } else {
+        _snack('⚠️ ${result.errorMessage ?? "Failed to download ZIP"}');
+      }
+    } catch (e) {
+      log('Error downloading ZIP: $e');
+      if (mounted) _snack('⚠️ ZIP download error: $e');
+    } finally {
+      if (mounted) setState(() => _isDownloadingZip = false);
+    }
+  }
+
   void _snack(String msg) {
     if (!mounted) return;
     AppSnackBar.show(context, message: msg);
@@ -163,7 +325,10 @@ class _GroupGalleryScreenState extends ConsumerState<GroupGalleryScreen>
 
   @override
   Widget build(BuildContext context) {
-    final currentUserId = FirebaseAuth.instance.currentUser?.uid ?? '';
+    String currentUserId = '';
+    try {
+      currentUserId = FirebaseAuth.instance.currentUser?.uid ?? '';
+    } catch (_) {}
 
     return StreamBuilder<List<GroupGalleryImage>>(
       stream: ref
@@ -174,19 +339,27 @@ class _GroupGalleryScreenState extends ConsumerState<GroupGalleryScreen>
             !snapshot.hasData) {
           return Scaffold(
             backgroundColor: backgroundColor,
-            appBar: _buildAppBar([]),
+            appBar: _buildAppBar([], [], []),
             body: const Loader(),
           );
         }
 
         final originalImages = snapshot.data ?? [];
-        final displayImages = _isShuffled && _shuffledImages != null
-            ? _shuffledImages!
-            : originalImages;
+        final photos = originalImages.where((m) => m.isImage).toList();
+        final videos = originalImages.where((m) => m.isVideo).toList();
+
+        final displayPhotos = _isShuffled && _shuffledImages != null
+            ? _shuffledImages!.where((m) => m.isImage).toList()
+            : photos;
+        final displayVideos = _isShuffled && _shuffledImages != null
+            ? _shuffledImages!.where((m) => m.isVideo).toList()
+            : videos;
+
+        final isVideoTab = _tabController.index == 1;
 
         return Scaffold(
           backgroundColor: backgroundColor,
-          appBar: _buildAppBar(originalImages),
+          appBar: _buildAppBar(originalImages, photos, videos),
           floatingActionButton: ScaleTransition(
             scale: _fabScaleAnim,
             child: ValueListenableBuilder<bool>(
@@ -199,7 +372,9 @@ class _GroupGalleryScreenState extends ConsumerState<GroupGalleryScreen>
                       valueListenable: _totalToUploadNotifier,
                       builder: (context, total, _) {
                         return FloatingActionButton.extended(
-                          onPressed: isUploading ? null : _pickImages,
+                          onPressed: isUploading
+                              ? null
+                              : (isVideoTab ? _pickVideos : _pickImages),
                           backgroundColor: _accent,
                           icon: isUploading
                               ? SizedBox(
@@ -211,9 +386,13 @@ class _GroupGalleryScreenState extends ConsumerState<GroupGalleryScreen>
                                     strokeWidth: 2,
                                   ),
                                 )
-                              : const Icon(Icons.add_photo_alternate_outlined),
+                              : Icon(isVideoTab
+                                  ? Icons.videocam_rounded
+                                  : Icons.add_photo_alternate_outlined),
                           label: Text(
-                            isUploading ? '$uploaded / $total' : 'Add Photos',
+                            isUploading
+                                ? '$uploaded / $total'
+                                : (isVideoTab ? 'Add Videos' : 'Add Photos'),
                           ),
                         );
                       },
@@ -223,41 +402,71 @@ class _GroupGalleryScreenState extends ConsumerState<GroupGalleryScreen>
               },
             ),
           ),
-          body: _GalleryGrid(
-            images: displayImages,
-            groupId: widget.groupId,
-            groupName: widget.groupName,
-            accentColor: _accent,
-            currentUserId: currentUserId,
-            onDelete: (id) => ref
-                .read(groupGalleryControllerProvider)
-                .deleteImage(widget.groupId, id),
+          body: TabBarView(
+            controller: _tabController,
+            children: [
+              _GalleryGrid(
+                images: displayPhotos,
+                isVideo: false,
+                groupId: widget.groupId,
+                groupName: widget.groupName,
+                accentColor: _accent,
+                currentUserId: currentUserId,
+                onUpload: _pickImages,
+                onDelete: (id) => ref
+                    .read(groupGalleryControllerProvider)
+                    .deleteImage(widget.groupId, id),
+              ),
+              _GalleryGrid(
+                images: displayVideos,
+                isVideo: true,
+                groupId: widget.groupId,
+                groupName: widget.groupName,
+                accentColor: _accent,
+                currentUserId: currentUserId,
+                onUpload: _pickVideos,
+                onDelete: (id) => ref
+                    .read(groupGalleryControllerProvider)
+                    .deleteImage(widget.groupId, id),
+              ),
+            ],
           ),
         );
       },
     );
   }
 
-  PreferredSizeWidget _buildAppBar(List<GroupGalleryImage> images) {
+  PreferredSizeWidget _buildAppBar(
+    List<GroupGalleryImage> images,
+    List<GroupGalleryImage> photos,
+    List<GroupGalleryImage> videos,
+  ) {
+    final hasMedia = images.isNotEmpty;
     return AppBar(
       backgroundColor: appBarColor,
       elevation: 0,
+      titleSpacing: 0,
       leading: IconButton(
         icon: const Icon(Icons.arrow_back_ios_new_rounded, size: 18),
         onPressed: () => Navigator.pop(context),
       ),
       title: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisSize: MainAxisSize.min,
         children: [
           Row(
             mainAxisSize: MainAxisSize.min,
             children: [
-              Text(
-                'Gallery',
-                style: TextStyle(
-                  color: _accent,
-                  fontWeight: FontWeight.bold,
-                  fontSize: 18,
+              Flexible(
+                child: Text(
+                  'Gallery',
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    color: _accent,
+                    fontWeight: FontWeight.bold,
+                    fontSize: 18,
+                  ),
                 ),
               ),
               if (images.isNotEmpty) ...[
@@ -266,10 +475,10 @@ class _GroupGalleryScreenState extends ConsumerState<GroupGalleryScreen>
                   padding:
                       const EdgeInsets.symmetric(horizontal: 7, vertical: 1.5),
                   decoration: BoxDecoration(
-                    color: _accent.withOpacity(0.18),
+                    color: _accent.withValues(alpha: 0.18),
                     borderRadius: BorderRadius.circular(10),
                     border: Border.all(
-                      color: _accent.withOpacity(0.35),
+                      color: _accent.withValues(alpha: 0.35),
                       width: 1,
                     ),
                   ),
@@ -286,9 +495,7 @@ class _GroupGalleryScreenState extends ConsumerState<GroupGalleryScreen>
             ],
           ),
           Text(
-            images.isEmpty
-                ? widget.groupName
-                : '${widget.groupName} • ${images.length} ${images.length == 1 ? 'photo' : 'photos'}',
+            widget.groupName,
             style: TextStyle(color: Colors.grey[400], fontSize: 12),
             maxLines: 1,
             overflow: TextOverflow.ellipsis,
@@ -296,37 +503,13 @@ class _GroupGalleryScreenState extends ConsumerState<GroupGalleryScreen>
         ],
       ),
       actions: [
-        // ── Shuffle controls ───────────────────────────────
-        if (images.isNotEmpty) ...[
-          if (_isShuffled) ...[
-            IconButton(
-              icon: Icon(Icons.shuffle_rounded, color: _accent),
-              tooltip: 'Shuffle again',
-              onPressed: () => _shuffleImages(images),
-            ),
-            IconButton(
-              icon: const Icon(
-                Icons.format_list_numbered_rounded,
-                color: Colors.white70,
-              ),
-              tooltip: 'Restore order',
-              onPressed: _restoreOrder,
-            ),
-          ] else
-            IconButton(
-              icon: const Icon(Icons.shuffle_rounded, color: Colors.white54),
-              tooltip: 'Shuffle',
-              onPressed: () => _shuffleImages(images),
-            ),
-        ],
-
         // ── Upload progress ────────────────────────────────
         ValueListenableBuilder<bool>(
           valueListenable: _isUploadingNotifier,
           builder: (context, isUploading, _) {
             if (!isUploading) return const SizedBox.shrink();
             return Padding(
-              padding: const EdgeInsets.only(right: 16),
+              padding: const EdgeInsets.only(right: 14),
               child: Center(
                 child: ValueListenableBuilder<int>(
                   valueListenable: _uploadedCountNotifier,
@@ -335,12 +518,12 @@ class _GroupGalleryScreenState extends ConsumerState<GroupGalleryScreen>
                       valueListenable: _totalToUploadNotifier,
                       builder: (context, total, _) {
                         return SizedBox(
-                          width: 20,
-                          height: 20,
+                          width: 18,
+                          height: 18,
                           child: CircularProgressIndicator(
                             value: total > 0 ? uploaded / total : null,
                             color: _accent,
-                            strokeWidth: 2.5,
+                            strokeWidth: 2,
                           ),
                         );
                       },
@@ -352,6 +535,211 @@ class _GroupGalleryScreenState extends ConsumerState<GroupGalleryScreen>
           },
         ),
       ],
+      bottom: PreferredSize(
+        preferredSize: Size.fromHeight(hasMedia ? 94.0 : 46.0),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            if (hasMedia) _buildActionBar(images),
+            TabBar(
+              controller: _tabController,
+              indicatorColor: _accent,
+              indicatorWeight: 3,
+              labelColor: _accent,
+              unselectedLabelColor: Colors.grey[400],
+              dividerColor: Colors.transparent,
+              tabs: [
+                Tab(
+                  child: Row(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      const Text('Photos'),
+                      const SizedBox(width: 6),
+                      Container(
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 7, vertical: 1.5),
+                        decoration: BoxDecoration(
+                          color: _tabController.index == 0
+                              ? _accent.withValues(alpha: 0.2)
+                              : Colors.white.withValues(alpha: 0.06),
+                          borderRadius: BorderRadius.circular(10),
+                        ),
+                        child: Text(
+                          '${photos.length}',
+                          style: const TextStyle(
+                            fontSize: 11,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                Tab(
+                  child: Row(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      const Text('Videos'),
+                      const SizedBox(width: 6),
+                      Container(
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 7, vertical: 1.5),
+                        decoration: BoxDecoration(
+                          color: _tabController.index == 1
+                              ? _accent.withValues(alpha: 0.2)
+                              : Colors.white.withValues(alpha: 0.06),
+                          borderRadius: BorderRadius.circular(10),
+                        ),
+                        child: Text(
+                          '${videos.length}',
+                          style: const TextStyle(
+                            fontSize: 11,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildActionBar(List<GroupGalleryImage> images) {
+    return Padding(
+      padding: const EdgeInsets.only(top: 2, bottom: 8),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          // ── Shuffle ─────────────────────────
+          _buildActionIconButton(
+            icon: Icon(
+              Icons.shuffle_rounded,
+              color: _isShuffled ? _accent : Colors.white70,
+              size: 19,
+            ),
+            tooltip: _isShuffled
+                ? 'Shuffle again (multi-shuffle)'
+                : 'Shuffle',
+            isActive: _isShuffled,
+            onPressed: () {
+              HapticFeedback.lightImpact();
+              _shuffleImages(images);
+            },
+          ),
+
+          if (_isShuffled) ...[
+            const SizedBox(width: 14),
+            _buildActionIconButton(
+              icon: const Icon(
+                Icons.format_list_numbered_rounded,
+                color: Colors.white70,
+                size: 19,
+              ),
+              tooltip: 'Restore order',
+              onPressed: _restoreOrder,
+            ),
+          ],
+
+          const SizedBox(width: 14),
+
+          // ── Multi-Gallery Shuffle ─────────────────────
+          _buildActionIconButton(
+            icon: const Icon(
+              Icons.auto_awesome_motion_rounded,
+              color: Colors.white70,
+              size: 19,
+            ),
+            tooltip: 'Multi-Gallery Shuffle',
+            onPressed: () => MultiGalleryShuffleSheet.show(
+              context,
+              initialGroupId: widget.groupId,
+              accentColor: _accent,
+            ),
+          ),
+
+          const SizedBox(width: 14),
+
+          // ── Slideshow ─────────────────────────────────
+          _buildActionIconButton(
+            icon: const Icon(
+              Icons.slideshow_rounded,
+              color: Colors.white70,
+              size: 20,
+            ),
+            tooltip: 'Slideshow',
+            onPressed: () => _startSlideshow(images),
+          ),
+
+          const SizedBox(width: 14),
+
+          // ── Download all as ZIP ─────────────────────────
+          _buildActionIconButton(
+            icon: _isDownloadingZip
+                ? SizedBox(
+                    width: 16,
+                    height: 16,
+                    child: CircularProgressIndicator(
+                      color: _accent,
+                      strokeWidth: 2,
+                    ),
+                  )
+                : const Icon(
+                    Icons.download_rounded,
+                    color: Colors.white70,
+                    size: 19,
+                  ),
+            tooltip: 'Download all as ZIP',
+            onPressed: _isDownloadingZip
+                ? null
+                : () => _showDownloadZipDialog(images),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildActionIconButton({
+    required Widget icon,
+    required String tooltip,
+    required VoidCallback? onPressed,
+    bool isActive = false,
+  }) {
+    return Container(
+      width: 38,
+      height: 38,
+      decoration: BoxDecoration(
+        color: isActive
+            ? _accent.withValues(alpha: 0.22)
+            : Colors.white.withValues(alpha: 0.06),
+        shape: BoxShape.circle,
+        border: Border.all(
+          color: isActive
+              ? _accent.withValues(alpha: 0.6)
+              : Colors.white.withValues(alpha: 0.12),
+          width: 1,
+        ),
+        boxShadow: isActive
+            ? [
+                BoxShadow(
+                  color: _accent.withValues(alpha: 0.35),
+                  blurRadius: 8,
+                  offset: const Offset(0, 1),
+                ),
+              ]
+            : null,
+      ),
+      child: IconButton(
+        icon: icon,
+        tooltip: tooltip,
+        padding: EdgeInsets.zero,
+        constraints: const BoxConstraints(minWidth: 38, minHeight: 38),
+        onPressed: onPressed,
+      ),
     );
   }
 }
@@ -540,138 +928,171 @@ class _FullscreenViewerState extends ConsumerState<_FullscreenViewer> {
                       ),
                       child: SafeArea(
                         bottom: false,
-                        child: AppBar(
-                          backgroundColor: Colors.transparent,
-                          elevation: 0,
-                          leading: IconButton(
-                            icon: const Icon(
-                              Icons.arrow_back_ios_new_rounded,
-                              color: Colors.white,
-                            ),
-                            onPressed: () => Navigator.pop(context),
-                          ),
-                          title: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Text(
-                                '${_index + 1} of ${widget.images.length}',
-                                style: const TextStyle(
-                                  color: Colors.white,
-                                  fontSize: 14,
-                                  fontWeight: FontWeight.bold,
-                                ),
-                              ),
-                              Text(
-                                widget.groupName,
-                                style: const TextStyle(
-                                  color: Colors.white70,
-                                  fontSize: 11,
-                                ),
-                                maxLines: 1,
-                                overflow: TextOverflow.ellipsis,
-                              ),
-                            ],
-                          ),
-                          actions: [
-                            // ── Bookmark ───────────────────────────
-                            StreamBuilder<bool>(
-                              stream: isBookmarked,
-                              builder: (context, snap) {
-                                final bookmarked = snap.data ?? false;
-                                return IconButton(
-                                  icon: Icon(
-                                    bookmarked
-                                        ? Icons.bookmark
-                                        : Icons.bookmark_outline,
-                                    color: bookmarked
-                                        ? Colors.amber
-                                        : Colors.white,
-                                  ),
-                                  tooltip: bookmarked
-                                      ? 'Remove bookmark'
-                                      : 'Bookmark',
-                                  onPressed: _toggleBookmark,
-                                );
-                              },
-                            ),
-
-                            // ── Download ───────────────────────────
-                            IconButton(
-                              icon: _isDownloading
-                                  ? SizedBox(
-                                      width: 20,
-                                      height: 20,
-                                      child: CircularProgressIndicator(
-                                        strokeWidth: 2,
-                                        color: widget.accentColor,
-                                      ),
-                                    )
-                                  : const Icon(
-                                      Icons.download_rounded,
+                        child: Column(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Padding(
+                              padding: const EdgeInsets.symmetric(
+                                  horizontal: 8, vertical: 4),
+                              child: Row(
+                                children: [
+                                  IconButton(
+                                    icon: const Icon(
+                                      Icons.arrow_back_ios_new_rounded,
                                       color: Colors.white,
                                     ),
-                              tooltip: 'Save photo (HD)',
-                              onPressed: _isDownloading
-                                  ? null
-                                  : _downloadCurrent,
-                            ),
-
-                            // ── Forward ────────────────────────────
-                            IconButton(
-                              icon: const Icon(
-                                Icons.forward_rounded,
-                                color: Colors.white,
-                              ),
-                              tooltip: 'Forward photo',
-                              onPressed: () {
-                                ForwardMessageSheet.show(
-                                  context,
-                                  ForwardMessagePayload(
-                                    text: img.caption ?? '',
-                                    messageType: 'image',
-                                    fileMessageData: img.imageUrl,
-                                    caption: img.caption,
-                                    isFromGallery: true,
-                                    sourceGroupId: widget.groupId,
-                                    sourceGroupName: widget.groupName,
+                                    onPressed: () => Navigator.pop(context),
                                   ),
-                                );
-                              },
-                            ),
-
-                            // ── Slideshow ──────────────────────────
-                            IconButton(
-                              icon: const Icon(
-                                Icons.slideshow_rounded,
-                                color: Colors.white,
-                              ),
-                              tooltip: 'Slideshow',
-                              onPressed: () => Navigator.push(
-                                context,
-                                MaterialPageRoute(
-                                  builder: (_) => SlideshowScreen(
-                                    images: widget.images,
-                                    initialIndex: _index,
-                                    accentColor: widget.accentColor,
-                                    groupName: widget.groupName,
+                                  Expanded(
+                                    child: Column(
+                                      crossAxisAlignment:
+                                          CrossAxisAlignment.start,
+                                      mainAxisSize: MainAxisSize.min,
+                                      children: [
+                                        Text(
+                                          '${_index + 1} of ${widget.images.length}',
+                                          style: const TextStyle(
+                                            color: Colors.white,
+                                            fontSize: 14,
+                                            fontWeight: FontWeight.bold,
+                                          ),
+                                        ),
+                                        Text(
+                                          widget.groupName,
+                                          style: const TextStyle(
+                                            color: Colors.white70,
+                                            fontSize: 11,
+                                          ),
+                                          maxLines: 1,
+                                          overflow: TextOverflow.ellipsis,
+                                        ),
+                                      ],
+                                    ),
                                   ),
-                                ),
+                                ],
                               ),
                             ),
+                            Padding(
+                              padding: const EdgeInsets.symmetric(
+                                  horizontal: 8, vertical: 2),
+                              child: Row(
+                                mainAxisAlignment:
+                                    MainAxisAlignment.spaceEvenly,
+                                children: [
+                                  // ── Bookmark ───────────────────────────
+                                  StreamBuilder<bool>(
+                                    stream: isBookmarked,
+                                    builder: (context, snap) {
+                                      final bookmarked = snap.data ?? false;
+                                      return IconButton(
+                                        icon: Icon(
+                                          bookmarked
+                                              ? Icons.bookmark
+                                              : Icons.bookmark_outline,
+                                          color: bookmarked
+                                              ? Colors.amber
+                                              : Colors.white,
+                                        ),
+                                        tooltip: bookmarked
+                                            ? 'Remove bookmark'
+                                            : 'Bookmark',
+                                        onPressed: _toggleBookmark,
+                                      );
+                                    },
+                                  ),
 
-                            // ── Delete ─────────────────────────────
-                            IconButton(
-                              icon: const Icon(
-                                Icons.delete_outline,
-                                color: Colors.redAccent,
+                                  // ── Download ───────────────────────────
+                                  IconButton(
+                                    icon: _isDownloading
+                                        ? SizedBox(
+                                            width: 22,
+                                            height: 22,
+                                            child: CircularProgressIndicator(
+                                              strokeWidth: 2,
+                                              color: widget.accentColor,
+                                            ),
+                                          )
+                                        : const Icon(
+                                            Icons.download_rounded,
+                                            color: Colors.white,
+                                          ),
+                                    tooltip: 'Save photo (HD)',
+                                    onPressed: _isDownloading
+                                        ? null
+                                        : _downloadCurrent,
+                                  ),
+
+                                  // ── Forward ────────────────────────────
+                                  IconButton(
+                                    icon: const Icon(
+                                      Icons.forward_rounded,
+                                      color: Colors.white,
+                                    ),
+                                    tooltip: 'Forward photo',
+                                    onPressed: () {
+                                      ForwardMessageSheet.show(
+                                        context,
+                                        ForwardMessagePayload(
+                                          text: img.caption ?? '',
+                                          messageType: 'image',
+                                          fileMessageData: img.imageUrl,
+                                          caption: img.caption,
+                                          isFromGallery: true,
+                                          sourceGroupId: widget.groupId,
+                                          sourceGroupName: widget.groupName,
+                                        ),
+                                      );
+                                    },
+                                  ),
+
+                                  // ── Slideshow ──────────────────────────
+                                  IconButton(
+                                    icon: const Icon(
+                                      Icons.slideshow_rounded,
+                                      color: Colors.white,
+                                    ),
+                                    tooltip: 'Slideshow',
+                                    onPressed: () => Navigator.push(
+                                      context,
+                                      MaterialPageRoute(
+                                        builder: (_) => SlideshowScreen(
+                                          images: widget.images,
+                                          initialIndex: _index,
+                                          accentColor: widget.accentColor,
+                                          groupName: widget.groupName,
+                                        ),
+                                      ),
+                                    ),
+                                  ),
+
+                                  // ── Google Lens ────────────────────────
+                                  if (!img.isVideo)
+                                    IconButton(
+                                      icon: const GoogleLensIcon(),
+                                      tooltip: 'Search with Google Lens',
+                                      onPressed: () => GoogleLensService.search(
+                                        context: context,
+                                        imageUrl: img.imageUrl,
+                                      ),
+                                    ),
+
+                                  // ── Delete ─────────────────────────────
+                                  IconButton(
+                                    icon: const Icon(
+                                      Icons.delete_outline,
+                                      color: Colors.redAccent,
+                                    ),
+                                    tooltip: 'Delete photo',
+                                    onPressed: () async {
+                                      final ok = await _confirmDelete();
+                                      if (ok == true) {
+                                        await widget.onDelete(img.imageId);
+                                        if (context.mounted) Navigator.pop(context);
+                                      }
+                                    },
+                                  ),
+                                ],
                               ),
-                              onPressed: () async {
-                                final ok = await _confirmDelete();
-                                if (ok == true) {
-                                  await widget.onDelete(img.imageId);
-                                  if (mounted) Navigator.pop(context);
-                                }
-                              },
                             ),
                           ],
                         ),
@@ -679,7 +1100,7 @@ class _FullscreenViewerState extends ConsumerState<_FullscreenViewer> {
                     ),
                   ),
 
-                  // Bottom counter
+                  // ── Bottom Counter ───────────────────────────────────────
                   Positioned(
                     bottom: 0,
                     left: 0,
@@ -701,7 +1122,7 @@ class _FullscreenViewerState extends ConsumerState<_FullscreenViewer> {
                             textAlign: TextAlign.center,
                             style: const TextStyle(
                               color: Colors.white70,
-                              fontSize: 12,
+                              fontSize: 14,
                             ),
                           ),
                         ),
@@ -748,12 +1169,14 @@ class _FullscreenViewerState extends ConsumerState<_FullscreenViewer> {
 class _UploadSheet extends StatelessWidget {
   final List<File> files;
   final Color accentColor;
+  final bool isVideo;
   final VoidCallback onConfirm;
   final VoidCallback onCancel;
 
   const _UploadSheet({
     required this.files,
     required this.accentColor,
+    this.isVideo = false,
     required this.onConfirm,
     required this.onCancel,
   });
@@ -787,10 +1210,17 @@ class _UploadSheet extends StatelessWidget {
               padding: const EdgeInsets.symmetric(horizontal: 20),
               child: Row(
                 children: [
-                  Icon(Icons.photo_library_outlined, color: accentColor),
+                  Icon(
+                    isVideo
+                        ? Icons.videocam_rounded
+                        : Icons.photo_library_outlined,
+                    color: accentColor,
+                  ),
                   const SizedBox(width: 10),
                   Text(
-                    'Upload ${files.length} photo${files.length == 1 ? '' : 's'}',
+                    isVideo
+                        ? 'Upload ${files.length} video${files.length == 1 ? '' : 's'}'
+                        : 'Upload ${files.length} photo${files.length == 1 ? '' : 's'}',
                     style: const TextStyle(
                       fontSize: 16,
                       fontWeight: FontWeight.bold,
@@ -811,10 +1241,14 @@ class _UploadSheet extends StatelessWidget {
                     child: Row(
                       mainAxisSize: MainAxisSize.min,
                       children: [
-                        Icon(Icons.hd_outlined, size: 14, color: accentColor),
+                        Icon(
+                          isVideo ? Icons.videocam_rounded : Icons.hd_outlined,
+                          size: 14,
+                          color: accentColor,
+                        ),
                         const SizedBox(width: 4),
                         Text(
-                          'Original HD',
+                          isVideo ? 'Video HD' : 'Original HD',
                           style: TextStyle(
                             color: accentColor,
                             fontSize: 11,
@@ -842,13 +1276,24 @@ class _UploadSheet extends StatelessWidget {
                     decoration: BoxDecoration(
                       borderRadius: BorderRadius.circular(10),
                       border: Border.all(
-                        color: accentColor.withOpacity(0.4),
+                        color: accentColor.withValues(alpha: 0.4),
                         width: 1.5,
                       ),
                     ),
                     child: ClipRRect(
                       borderRadius: BorderRadius.circular(9),
-                      child: Image.file(files[index], fit: BoxFit.cover),
+                      child: isVideo
+                          ? Container(
+                              color: Colors.black54,
+                              child: const Center(
+                                child: Icon(
+                                  Icons.videocam_rounded,
+                                  color: Colors.white70,
+                                  size: 32,
+                                ),
+                              ),
+                            )
+                          : Image.file(files[index], fit: BoxFit.cover),
                     ),
                   );
                 },
@@ -888,7 +1333,9 @@ class _UploadSheet extends StatelessWidget {
                       },
                       icon: const Icon(Icons.cloud_upload_outlined, size: 18),
                       label: Text(
-                        'Upload ${files.length} Photo${files.length == 1 ? '' : 's'}',
+                        isVideo
+                            ? 'Upload ${files.length} Video${files.length == 1 ? '' : 's'}'
+                            : 'Upload ${files.length} Photo${files.length == 1 ? '' : 's'}',
                       ),
                       style: ElevatedButton.styleFrom(
                         backgroundColor: accentColor,
@@ -917,8 +1364,14 @@ class _UploadSheet extends StatelessWidget {
 
 class _EmptyGallery extends StatelessWidget {
   final Color accentColor;
+  final bool isVideo;
   final VoidCallback onUpload;
-  const _EmptyGallery({required this.accentColor, required this.onUpload});
+
+  const _EmptyGallery({
+    required this.accentColor,
+    this.isVideo = false,
+    required this.onUpload,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -927,14 +1380,16 @@ class _EmptyGallery extends StatelessWidget {
         mainAxisAlignment: MainAxisAlignment.center,
         children: [
           Icon(
-            Icons.photo_library_outlined,
+            isVideo
+                ? Icons.videocam_outlined
+                : Icons.photo_library_outlined,
             size: 52,
-            color: accentColor.withOpacity(0.6),
+            color: accentColor.withValues(alpha: 0.6),
           ),
           const SizedBox(height: 20),
-          const Text(
-            'No photos yet',
-            style: TextStyle(
+          Text(
+            isVideo ? 'No videos yet' : 'No photos yet',
+            style: const TextStyle(
               fontSize: 18,
               fontWeight: FontWeight.bold,
               color: Colors.white,
@@ -944,7 +1399,7 @@ class _EmptyGallery extends StatelessWidget {
           ElevatedButton(
             onPressed: onUpload,
             style: ElevatedButton.styleFrom(backgroundColor: accentColor),
-            child: const Text('Add Photos'),
+            child: Text(isVideo ? 'Add Videos' : 'Add Photos'),
           ),
         ],
       ),
@@ -958,25 +1413,33 @@ class _EmptyGallery extends StatelessWidget {
 
 class _GalleryGrid extends StatelessWidget {
   final List<GroupGalleryImage> images;
+  final bool isVideo;
   final String groupId;
   final String groupName;
   final Color accentColor;
   final String currentUserId;
+  final VoidCallback onUpload;
   final Future<void> Function(String imageId) onDelete;
 
   const _GalleryGrid({
     required this.images,
+    this.isVideo = false,
     required this.groupId,
     required this.groupName,
     required this.accentColor,
     required this.currentUserId,
+    required this.onUpload,
     required this.onDelete,
   });
 
   @override
   Widget build(BuildContext context) {
     if (images.isEmpty) {
-      return _EmptyGallery(accentColor: accentColor, onUpload: () {});
+      return _EmptyGallery(
+        accentColor: accentColor,
+        isVideo: isVideo,
+        onUpload: onUpload,
+      );
     }
 
     return CustomScrollView(
@@ -985,36 +1448,51 @@ class _GalleryGrid extends StatelessWidget {
       ),
       slivers: [
         SliverPadding(
-          padding: EdgeInsets.fromLTRB(
-            3,
-            3,
-            3,
-            MediaQuery.paddingOf(context).bottom + 80,
+          padding: EdgeInsets.only(
+            bottom: MediaQuery.paddingOf(context).bottom + 80,
           ),
           sliver: SliverGrid(
             gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
               crossAxisCount: 3,
-              crossAxisSpacing: 3,
-              mainAxisSpacing: 3,
+              crossAxisSpacing: 0,
+              mainAxisSpacing: 0,
             ),
             delegate: SliverChildBuilderDelegate(
               (context, index) {
                 final img = images[index];
                 return GestureDetector(
-                  onTap: () => Navigator.push(
-                    context,
-                    MaterialPageRoute(
-                      builder: (_) => _FullscreenViewer(
-                        images: images,
-                        initialIndex: index,
-                        accentColor: accentColor,
-                        currentUserId: currentUserId,
-                        groupName: groupName,
-                        groupId: groupId,
-                        onDelete: onDelete,
-                      ),
-                    ),
-                  ),
+                  onTap: () {
+                    if (img.isVideo) {
+                      Navigator.push(
+                        context,
+                        MaterialPageRoute(
+                          builder: (_) => _FullscreenVideoViewer(
+                            video: img,
+                            accentColor: accentColor,
+                            currentUserId: currentUserId,
+                            groupName: groupName,
+                            groupId: groupId,
+                            onDelete: onDelete,
+                          ),
+                        ),
+                      );
+                    } else {
+                      Navigator.push(
+                        context,
+                        MaterialPageRoute(
+                          builder: (_) => _FullscreenViewer(
+                            images: images,
+                            initialIndex: index,
+                            accentColor: accentColor,
+                            currentUserId: currentUserId,
+                            groupName: groupName,
+                            groupId: groupId,
+                            onDelete: onDelete,
+                          ),
+                        ),
+                      );
+                    }
+                  },
                   onLongPress: () {
                     showModalBottomSheet(
                       context: context,
@@ -1051,7 +1529,8 @@ class _GalleryGrid extends StatelessWidget {
                                   context,
                                   ForwardMessagePayload(
                                     text: img.caption ?? '',
-                                    messageType: 'image',
+                                    messageType:
+                                        img.isVideo ? 'video' : 'image',
                                     fileMessageData: img.imageUrl,
                                     caption: img.caption,
                                     isFromGallery: true,
@@ -1061,26 +1540,44 @@ class _GalleryGrid extends StatelessWidget {
                                 );
                               },
                             ),
-                            ListTile(
-                              leading:
-                                  Icon(Icons.slideshow_rounded, color: accentColor),
-                              title: const Text('Start Slideshow',
-                                  style: TextStyle(color: Colors.white)),
-                              onTap: () {
-                                Navigator.pop(ctx);
-                                Navigator.push(
-                                  context,
-                                  MaterialPageRoute(
-                                    builder: (_) => SlideshowScreen(
-                                      images: images,
-                                      initialIndex: index,
-                                      accentColor: accentColor,
-                                      groupName: groupName,
+                            if (!img.isVideo)
+                              ListTile(
+                                leading: Icon(Icons.slideshow_rounded,
+                                    color: accentColor),
+                                title: const Text('Start Slideshow',
+                                    style: TextStyle(color: Colors.white)),
+                                onTap: () {
+                                  Navigator.pop(ctx);
+                                  Navigator.push(
+                                    context,
+                                    MaterialPageRoute(
+                                      builder: (_) => SlideshowScreen(
+                                        images: images,
+                                        initialIndex: index,
+                                        accentColor: accentColor,
+                                        groupName: groupName,
+                                      ),
                                     ),
-                                  ),
-                                );
-                              },
-                            ),
+                                  );
+                                },
+                              ),
+                            if (!img.isVideo)
+                              ListTile(
+                                leading: const GoogleLensIcon(size: 22),
+                                title: const Text('Search with Google Lens',
+                                    style: TextStyle(color: Colors.white)),
+                                subtitle: const Text(
+                                    'Find visual matches with Google Lens',
+                                    style: TextStyle(
+                                        color: Colors.white54, fontSize: 12)),
+                                onTap: () {
+                                  Navigator.pop(ctx);
+                                  GoogleLensService.search(
+                                    context: context,
+                                    imageUrl: img.imageUrl,
+                                  );
+                                },
+                              ),
                           ],
                         ),
                       ),
@@ -1088,9 +1585,70 @@ class _GalleryGrid extends StatelessWidget {
                   },
                   child: Hero(
                     tag: 'gallery_${img.imageId}',
-                    child: CachedNetworkImage(
-                      imageUrl: img.imageUrl,
-                      fit: BoxFit.cover,
+                    child: Stack(
+                      fit: StackFit.expand,
+                      children: [
+                        CachedNetworkImage(
+                          imageUrl: img.imageUrl,
+                          fit: BoxFit.cover,
+                          errorWidget: (context, url, error) => Container(
+                            color: Colors.grey[900],
+                            child: Center(
+                              child: Icon(
+                                img.isVideo
+                                    ? Icons.videocam_rounded
+                                    : Icons.broken_image_rounded,
+                                color: Colors.white24,
+                              ),
+                            ),
+                          ),
+                        ),
+                        if (img.isVideo) ...[
+                          Positioned(
+                            top: 6,
+                            left: 6,
+                            child: Container(
+                              padding: const EdgeInsets.symmetric(
+                                  horizontal: 6, vertical: 2),
+                              decoration: BoxDecoration(
+                                color: Colors.black.withValues(alpha: 0.75),
+                                borderRadius: BorderRadius.circular(4),
+                              ),
+                              child: const Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  Icon(Icons.videocam_rounded,
+                                      size: 12, color: Colors.white),
+                                  SizedBox(width: 4),
+                                  Text(
+                                    'VIDEO',
+                                    style: TextStyle(
+                                      color: Colors.white,
+                                      fontSize: 10,
+                                      fontWeight: FontWeight.bold,
+                                      letterSpacing: 0.5,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ),
+                          Center(
+                            child: Container(
+                              padding: const EdgeInsets.all(6),
+                              decoration: BoxDecoration(
+                                color: Colors.black.withValues(alpha: 0.5),
+                                shape: BoxShape.circle,
+                              ),
+                              child: const Icon(
+                                Icons.play_arrow_rounded,
+                                color: Colors.white,
+                                size: 26,
+                              ),
+                            ),
+                          ),
+                        ],
+                      ],
                     ),
                   ),
                 );
@@ -1104,7 +1662,9 @@ class _GalleryGrid extends StatelessWidget {
             padding: const EdgeInsets.symmetric(vertical: 24.0),
             child: Center(
               child: Text(
-                '${images.length} ${images.length == 1 ? 'Photo' : 'Photos'}',
+                isVideo
+                    ? '${images.length} ${images.length == 1 ? 'Video' : 'Videos'}'
+                    : '${images.length} ${images.length == 1 ? 'Photo' : 'Photos'}',
                 style: TextStyle(
                   color: Colors.grey[500],
                   fontSize: 13,
@@ -1119,6 +1679,288 @@ class _GalleryGrid extends StatelessWidget {
           child: SizedBox(height: 70),
         ),
       ],
+    );
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Fullscreen Video Viewer
+// ─────────────────────────────────────────────────────────────────────────────
+
+class _FullscreenVideoViewer extends StatefulWidget {
+  final GroupGalleryImage video;
+  final Color accentColor;
+  final String currentUserId;
+  final String groupName;
+  final String groupId;
+  final Future<void> Function(String imageId) onDelete;
+
+  const _FullscreenVideoViewer({
+    required this.video,
+    required this.accentColor,
+    required this.currentUserId,
+    required this.groupName,
+    required this.groupId,
+    required this.onDelete,
+  });
+
+  @override
+  State<_FullscreenVideoViewer> createState() => _FullscreenVideoViewerState();
+}
+
+class _FullscreenVideoViewerState extends State<_FullscreenVideoViewer> {
+  late VideoPlayerController _controller;
+  bool _isInitialized = false;
+  bool _isPlaying = false;
+  bool _overlayOn = true;
+  bool _isDownloading = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller =
+        VideoPlayerController.networkUrl(Uri.parse(widget.video.imageUrl))
+          ..initialize().then((_) {
+            if (mounted) {
+              setState(() {
+                _isInitialized = true;
+                _controller.play();
+                _isPlaying = true;
+              });
+            }
+          }).catchError((e) {
+            log('Error initializing video: $e');
+          });
+
+    _controller.addListener(() {
+      if (mounted) {
+        final isPlaying = _controller.value.isPlaying;
+        if (isPlaying != _isPlaying) {
+          setState(() => _isPlaying = isPlaying);
+        }
+      }
+    });
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  void _togglePlay() {
+    if (!_isInitialized) return;
+    setState(() {
+      if (_controller.value.isPlaying) {
+        _controller.pause();
+        _isPlaying = false;
+      } else {
+        _controller.play();
+        _isPlaying = true;
+      }
+    });
+  }
+
+  Future<void> _downloadVideo() async {
+    if (_isDownloading) return;
+    setState(() => _isDownloading = true);
+    AppSnackBar.show(context, message: '📥 Downloading video...');
+    try {
+      final dir = await getTemporaryDirectory();
+      final ext = widget.video.imageUrl.split('?').first.split('.').last;
+      final fileExt = ext.isNotEmpty && ext.length <= 4 ? ext : 'mp4';
+      final path =
+          '${dir.path}/gallery_video_${widget.video.imageId}.$fileExt';
+      await Dio().download(widget.video.imageUrl, path);
+      final saved = await GallerySaver.saveVideo(path);
+      if (mounted) {
+        AppSnackBar.show(
+          context,
+          message: saved == true
+              ? '✅ Video saved to gallery!'
+              : '⚠️ Failed to save video.',
+        );
+      }
+    } catch (e) {
+      log('Video download error: $e');
+      if (mounted) {
+        AppSnackBar.show(context, message: '⚠️ Could not download video.');
+      }
+    } finally {
+      if (mounted) setState(() => _isDownloading = false);
+    }
+  }
+
+  Future<bool?> _confirmDelete() {
+    return showDialog<bool>(
+      context: context,
+      builder: (_) => AlertDialog(
+        backgroundColor: Colors.grey[900],
+        title: const Text(
+          'Delete Video?',
+          style: TextStyle(color: Colors.white),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Cancel'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('Delete', style: TextStyle(color: Colors.red)),
+          ),
+        ],
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: Colors.black,
+      body: GestureDetector(
+        behavior: HitTestBehavior.opaque,
+        onTap: () => setState(() => _overlayOn = !_overlayOn),
+        child: Stack(
+          alignment: Alignment.center,
+          children: [
+            Center(
+              child: _isInitialized
+                  ? AspectRatio(
+                      aspectRatio: _controller.value.aspectRatio,
+                      child: VideoPlayer(_controller),
+                    )
+                  : const CircularProgressIndicator(color: Colors.white),
+            ),
+            if (_isInitialized)
+              GestureDetector(
+                onTap: _togglePlay,
+                child: AnimatedOpacity(
+                  opacity: _overlayOn || !_isPlaying ? 1.0 : 0.0,
+                  duration: const Duration(milliseconds: 200),
+                  child: Container(
+                    padding: const EdgeInsets.all(16),
+                    decoration: BoxDecoration(
+                      color: Colors.black.withValues(alpha: 0.5),
+                      shape: BoxShape.circle,
+                    ),
+                    child: Icon(
+                      _isPlaying
+                          ? Icons.pause_rounded
+                          : Icons.play_arrow_rounded,
+                      color: Colors.white,
+                      size: 48,
+                    ),
+                  ),
+                ),
+              ),
+
+            // Top overlay bar
+            Positioned(
+              top: 0,
+              left: 0,
+              right: 0,
+              child: AnimatedOpacity(
+                opacity: _overlayOn ? 1.0 : 0.0,
+                duration: const Duration(milliseconds: 200),
+                child: Container(
+                  decoration: const BoxDecoration(
+                    gradient: LinearGradient(
+                      begin: Alignment.topCenter,
+                      end: Alignment.bottomCenter,
+                      colors: [Colors.black87, Colors.transparent],
+                    ),
+                  ),
+                  child: SafeArea(
+                    bottom: false,
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 8, vertical: 4),
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Row(
+                            children: [
+                              IconButton(
+                                icon: const Icon(Icons.arrow_back_ios_new_rounded,
+                                    color: Colors.white, size: 20),
+                                onPressed: () => Navigator.pop(context),
+                              ),
+                              Expanded(
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    Text(
+                                      widget.video.uploadedByName,
+                                      style: const TextStyle(
+                                        color: Colors.white,
+                                        fontWeight: FontWeight.bold,
+                                        fontSize: 14,
+                                      ),
+                                      maxLines: 1,
+                                      overflow: TextOverflow.ellipsis,
+                                    ),
+                                    Text(
+                                      widget.groupName,
+                                      style: const TextStyle(
+                                          color: Colors.white60, fontSize: 11),
+                                      maxLines: 1,
+                                      overflow: TextOverflow.ellipsis,
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            ],
+                          ),
+                          Padding(
+                            padding: const EdgeInsets.symmetric(
+                                horizontal: 16, vertical: 2),
+                            child: Row(
+                              mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                              children: [
+                                IconButton(
+                                  icon: _isDownloading
+                                      ? SizedBox(
+                                          width: 22,
+                                          height: 22,
+                                          child: CircularProgressIndicator(
+                                              strokeWidth: 2,
+                                              color: widget.accentColor),
+                                        )
+                                      : const Icon(Icons.download_rounded,
+                                          color: Colors.white),
+                                  tooltip: 'Download video',
+                                  onPressed:
+                                      _isDownloading ? null : _downloadVideo,
+                                ),
+                                IconButton(
+                                  icon: const Icon(Icons.delete_outline,
+                                      color: Colors.redAccent),
+                                  tooltip: 'Delete video',
+                                  onPressed: () async {
+                                    final ok = await _confirmDelete();
+                                    if (ok == true) {
+                                      await widget.onDelete(widget.video.imageId);
+                                      if (context.mounted) {
+                                        Navigator.pop(context);
+                                      }
+                                    }
+                                  },
+                                ),
+                              ],
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
     );
   }
 }

@@ -1,6 +1,5 @@
 import 'dart:io';
 import 'dart:math' as math;
-import 'dart:typed_data';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
@@ -14,6 +13,7 @@ import 'package:worship_chat/features/group/controller/group_controller.dart';
 import 'package:worship_chat/features/group/utils/group_template_helper.dart';
 import 'package:worship_chat/features/group/utils/queendom_emblem_helper.dart';
 import 'package:worship_chat/features/group/widgets/select_contacts_group.dart';
+import 'package:worship_chat/features/settings/providers/queendom_customization_provider.dart';
 
 class CreateGroupScreen extends ConsumerStatefulWidget {
   static const String routeName = '/create-group';
@@ -30,39 +30,8 @@ class _CreateGroupScreenState extends ConsumerState<CreateGroupScreen> {
   String selectedPosition = 'None';
 
   final List<String> queendom = ['None', 'Queen Rashmika', 'Queen Pooja'];
-  final List<String> families = [
-    'None',
-    'Aura',
-    'Core',
-    'Main',
-    'Eternal',
-    'Divine',
-    'Wicked',
-    'Lustra',
-    'Rumia',
-    'Erotica',
-    'Elegant',
-    'Elora',
-    'Zyra',
-    'Velisse',
-  ];
-
-  final List<String> positions = [
-    'None',
-    'Aura Elixiria',
-    'Core Supreme Goddess',
-    'Supreme Goddess',
-    'Golden Blossom Goddess',
-    'Goddess',
-    'Demi Goddess',
-    'Dark Angel',
-    'Queen',
-    'Elfwitch',
-    'Enchantress',
-    'First Born Princess',
-    'Second Born Princess',
-    'Third Born Princess',
-  ];
+  List<String> get families => ref.watch(queendomCustomizationProvider).allFamilies;
+  List<String> get positions => ref.watch(queendomCustomizationProvider).allPositions;
 
   final TextEditingController nameController = TextEditingController();
   final TextEditingController livingPlaceController = TextEditingController();
@@ -292,7 +261,7 @@ class _CreateGroupScreenState extends ConsumerState<CreateGroupScreen> {
             Padding(
               padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
               child: DropdownButtonFormField<String>(
-                value: selectedQueendom,
+                initialValue: selectedQueendom,
                 decoration: const InputDecoration(
                   labelText: 'Queendom',
                   border: OutlineInputBorder(),
@@ -317,7 +286,7 @@ class _CreateGroupScreenState extends ConsumerState<CreateGroupScreen> {
             Padding(
               padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
               child: DropdownButtonFormField<String>(
-                value: selectedPosition,
+                initialValue: selectedPosition,
                 decoration: const InputDecoration(
                   labelText: 'Position / Category',
                   border: OutlineInputBorder(),
@@ -362,7 +331,7 @@ class _CreateGroupScreenState extends ConsumerState<CreateGroupScreen> {
                 padding:
                     const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
                 child: DropdownButtonFormField<String>(
-                  value: selectedFamily,
+                  initialValue: selectedFamily,
                   decoration: const InputDecoration(
                     labelText: 'Family',
                     border: OutlineInputBorder(),
@@ -559,10 +528,9 @@ class _ImageCropScreen extends StatefulWidget {
   final Function(File) onCropped;
 
   const _ImageCropScreen({
-    Key? key,
     required this.file,
     required this.onCropped,
-  }) : super(key: key);
+  });
 
   @override
   State<_ImageCropScreen> createState() => _ImageCropScreenState();
@@ -575,11 +543,11 @@ class _ImageCropScreenState extends State<_ImageCropScreen> {
     final state = editorKey.currentState;
     if (state == null) return;
 
-    final Uint8List? rawData = state.rawImageData;
+    final Uint8List rawData = state.rawImageData;
     final Rect? cropRect = state.getCropRect();
     final EditActionDetails? action = state.editAction;
 
-    if (rawData == null || cropRect == null || action == null) {
+    if (cropRect == null || action == null) {
       // nothing to crop
       return;
     }

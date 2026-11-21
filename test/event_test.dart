@@ -389,5 +389,72 @@ void main() {
       final hasNumericCount = segments.any((s) => s.toString().contains('/'));
       expect(hasNumericCount, false);
     });
+
+    testWidgets('Event card layout renders title across full width without right-side button crowding', (tester) async {
+      final now = DateTime(2026, 11, 4);
+      final event = Event(
+        id: 'ev_anushka_01',
+        title: "Supreme Elora Goddess Anushka Shetty's Birthday",
+        description: 'Celebration of the Supreme Elora Goddess',
+        date: DateTime(2026, 11, 7),
+        time: const TimeOfDay(hour: 0, minute: 0),
+        createdBy: 'Admin',
+        userId: 'admin_1',
+        isRecurring: true,
+        connectedGroupId: 'sanctum_01',
+        connectedGroupName: 'SANCTUM OF 🏮 SUPREME ELORA GODDESS ANUSHKA',
+        connectedQueendom: 'Queen Rashmika',
+      );
+
+      // Verify card layout has full-width title at top and action buttons at bottom
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: Center(
+              child: SizedBox(
+                width: 380,
+                child: Column(
+                  children: [
+                    Row(
+                      children: [
+                        const SizedBox(width: 38),
+                        Expanded(
+                          child: Text(
+                            event.title,
+                            maxLines: 2,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 8),
+                    Row(
+                      children: [
+                        const Text('In 3 days'),
+                        const Spacer(),
+                        const Text('Wish'),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        ),
+      );
+
+      expect(find.text(event.title), findsOneWidget);
+      expect(find.text('In 3 days'), findsOneWidget);
+      expect(find.text('Wish'), findsOneWidget);
+
+      // Verify that 'Wish' button is below the title vertically
+      final titleTop = tester.getTopLeft(find.text(event.title)).dy;
+      final wishTop = tester.getTopLeft(find.text('Wish')).dy;
+      expect(wishTop > titleTop, isTrue);
+
+      // Verify that 'In 3 days' is below the title vertically
+      final countdownTop = tester.getTopLeft(find.text('In 3 days')).dy;
+      expect(countdownTop > titleTop, isTrue);
+    });
   });
 }

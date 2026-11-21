@@ -1,12 +1,19 @@
+import 'dart:async';
+import 'dart:convert';
+import 'dart:developer';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:hive_flutter/hive_flutter.dart';
 import 'package:intl/intl.dart';
-import 'dart:developer';
+import 'package:worship_chat/common/enums/message_status_enum.dart';
 import 'package:worship_chat/common/providers/message_reply_provider.dart';
+import 'package:worship_chat/common/providers/message_edit_provider.dart';
 import 'package:worship_chat/common/widgets/skeleton_loader.dart';
+import 'package:worship_chat/features/auth/controller/auth_controller.dart';
+import 'package:worship_chat/features/chat/widgets/delete_message_dialog.dart';
+import 'package:worship_chat/features/chat/widgets/media_group_widget.dart';
 import 'package:worship_chat/features/chat/widgets/sender_message_card.dart';
 import 'package:worship_chat/features/group/controller/group_controller.dart';
 import 'package:worship_chat/models/group_chat_message_model.dart';
@@ -15,13 +22,18 @@ import 'package:worship_chat/colors.dart';
 import 'package:worship_chat/common/widgets/user_avatar.dart';
 import 'package:worship_chat/features/chat/widgets/forward_message_sheet.dart';
 import 'package:worship_chat/features/chat/widgets/my_message_card.dart';
+import 'package:worship_chat/features/group/widgets/roleplay_message_card.dart';
 import 'package:worship_chat/models/user_model.dart';
 
 final _groupUserProvider =
     FutureProvider.family<UserModel?, String>((ref, userId) async {
   if (userId.isEmpty) return null;
 
-  if (userId == FirebaseAuth.instance.currentUser?.uid) {
+  String? currentAuthId;
+  try {
+    currentAuthId = FirebaseAuth.instance.currentUser?.uid;
+  } catch (_) {}
+  if (currentAuthId != null && userId == currentAuthId) {
     if (Hive.isBoxOpen('userBox')) {
       final currentUser = Hive.box<UserModel>('userBox').get('currentUser');
       if (currentUser != null) return currentUser;
@@ -51,8 +63,15 @@ final _groupUserProvider =
 
 class GroupChatListWidget extends ConsumerStatefulWidget {
   final String groupId;
+  final Color? accentColor;
+  final String? queendom;
 
-  const GroupChatListWidget({super.key, required this.groupId});
+  const GroupChatListWidget({
+    super.key,
+    required this.groupId,
+    this.accentColor,
+    this.queendom,
+  });
 
   @override
   ConsumerState<GroupChatListWidget> createState() =>
@@ -67,7 +86,8 @@ class _GroupChatListWidgetState extends ConsumerState<GroupChatListWidget>
   String? _lastMessageId;
   String _currentUserProfilePic = "";
   List<GroupChatMessageModel> _displayMessages = [];
-  late Stream<List<GroupChatMessageModel>> _groupChatStream;
+  StreamSubscription<List<GroupChatMessageModel>>? _chatSubscription;
+  bool _isInitialLoad = true;
 
   // ── Scroll to Load (Pagination) ──────────────────────────────────────────
   static const int _pageSize = 30;
@@ -77,6 +97,13 @@ class _GroupChatListWidgetState extends ConsumerState<GroupChatListWidget>
   final Set<String> _initialMessageIds = <String>{};
   final Set<String> _newlyArrivedIds = <String>{};
   bool _hasRecordedInitialIds = false;
+  final Map<String, GlobalKey> _messageKeys = {};
+  String? _highlightedMessageId;
+  Timer? _highlightTimer;
+
+  GlobalKey _getMessageKey(String messageId) {
+    return _messageKeys.putIfAbsent(messageId, () => GlobalKey());
+  }
 
   @override
   bool get wantKeepAlive => true;
@@ -85,10 +112,19 @@ class _GroupChatListWidgetState extends ConsumerState<GroupChatListWidget>
   void initState() {
     super.initState();
     _initializeUserProfile();
-    _groupChatStream =
-        ref.read(groupControllerProvider).getGroupChat(widget.groupId);
     _loadInitialCachedMessages();
     _setupScrollListener();
+    _subscribeToStream();
+  }
+
+  void _subscribeToStream() {
+    _chatSubscription?.cancel();
+    final stream =
+        ref.read(groupControllerProvider).getGroupChat(widget.groupId);
+    _chatSubscription = stream.listen(
+      _onNewMessages,
+      onError: (e) => log('❌ Group chat stream error: $e'),
+    );
   }
 
   void _initializeUserProfile() {
@@ -107,12 +143,11 @@ class _GroupChatListWidgetState extends ConsumerState<GroupChatListWidget>
   void didUpdateWidget(covariant GroupChatListWidget oldWidget) {
     super.didUpdateWidget(oldWidget);
     if (oldWidget.groupId != widget.groupId) {
-      _groupChatStream =
-          ref.read(groupControllerProvider).getGroupChat(widget.groupId);
       _hasRecordedInitialIds = false;
       _initialMessageIds.clear();
       _newlyArrivedIds.clear();
       _loadInitialCachedMessages();
+      _subscribeToStream();
     }
   }
 
@@ -140,6 +175,7 @@ class _GroupChatListWidgetState extends ConsumerState<GroupChatListWidget>
             _prevTotalMessages = _displayMessages.length;
             _initialMessageIds.addAll(parsed.map((m) => m.messageId));
             _hasRecordedInitialIds = true;
+            _isInitialLoad = false;
             log('⚡ Pre-seeded ${_displayMessages.length} group messages from Hive in initState');
           }
         }
@@ -186,6 +222,8 @@ class _GroupChatListWidgetState extends ConsumerState<GroupChatListWidget>
 
   @override
   void dispose() {
+    _chatSubscription?.cancel();
+    _highlightTimer?.cancel();
     messageController.dispose();
     super.dispose();
   }
@@ -196,17 +234,163 @@ class _GroupChatListWidgetState extends ConsumerState<GroupChatListWidget>
     String messageType,
     String fileMessageData,
   ) {
+    final effectiveMessage = (messageType == 'text' || messageType == 'wish')
+        ? message
+        : (message.isNotEmpty && fileMessageData.isEmpty
+            ? message
+            : fileMessageData);
     ref.read(messageReplyProvider.notifier).state = MessageReply(
-      message: messageType == 'text' ? message : fileMessageData,
+      message: effectiveMessage,
       isMe: isMe,
       messageType: messageType,
       fileMessageData: fileMessageData,
     );
   }
 
-  // ✅ Direct call without microtask, guarded with mounted
+  void _navigateToRepliedMessage(GroupChatMessageModel sourceMessage) {
+    final repliedText = sourceMessage.repliedMessage.trim();
+    final repliedType = sourceMessage.repliedMessageType;
+    if (repliedText.isEmpty && repliedType.isEmpty) return;
+
+    final sourceIdx = _displayMessages.indexWhere(
+      (m) => m.messageId == sourceMessage.messageId,
+    );
+
+    int targetIdx = -1;
+    final searchLimit = sourceIdx > 0 ? sourceIdx : _displayMessages.length;
+
+    // Search backwards from the replying message
+    for (int i = searchLimit - 1; i >= 0; i--) {
+      final m = _displayMessages[i];
+      final textMatch = (m.text.isNotEmpty && m.text == repliedText) ||
+          (m.fileMessageData != null && m.fileMessageData == repliedText) ||
+          (m.text.isNotEmpty &&
+              (m.text.startsWith(repliedText) ||
+                  repliedText.startsWith(m.text)));
+
+      if (textMatch) {
+        targetIdx = i;
+        break;
+      }
+    }
+
+    // Fallback search across all messages if not found before source
+    if (targetIdx == -1) {
+      for (int i = _displayMessages.length - 1; i >= 0; i--) {
+        if (i == sourceIdx) continue;
+        final m = _displayMessages[i];
+        if ((m.text.isNotEmpty && m.text == repliedText) ||
+            (m.fileMessageData != null && m.fileMessageData == repliedText)) {
+          targetIdx = i;
+          break;
+        }
+      }
+    }
+
+    if (targetIdx == -1) {
+      log('⚠️ Target replied message not found in history');
+      return;
+    }
+
+    final targetMessage = _displayMessages[targetIdx];
+
+    // Check pagination: if target is older than visible window, expand _visibleCount
+    final totalCount = _displayMessages.length;
+    final effectiveCount = _visibleCount.clamp(0, totalCount);
+    final startIndex =
+        totalCount > effectiveCount ? totalCount - effectiveCount : 0;
+
+    if (targetIdx < startIndex) {
+      final neededCount = totalCount - targetIdx + 10;
+      setState(() {
+        _visibleCount = neededCount;
+      });
+    }
+
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _scrollToAndHighlightMessage(targetMessage.messageId);
+    });
+  }
+
+  void _scrollToAndHighlightMessage(String targetMessageId) {
+    if (!mounted) return;
+
+    final key = _messageKeys[targetMessageId];
+    final context = key?.currentContext;
+
+    if (context != null) {
+      Scrollable.ensureVisible(
+        context,
+        duration: const Duration(milliseconds: 350),
+        curve: Curves.easeInOutCubic,
+        alignment: 0.5,
+      ).then((_) {
+        _triggerMessageHighlight(targetMessageId);
+      });
+    } else {
+      final totalCount = _displayMessages.length;
+      final effectiveCount = _visibleCount.clamp(0, totalCount);
+      final startIndex =
+          totalCount > effectiveCount ? totalCount - effectiveCount : 0;
+      final targetIdx =
+          _displayMessages.indexWhere((m) => m.messageId == targetMessageId);
+
+      if (targetIdx >= 0 && messageController.hasClients) {
+        final visibleIdx = targetIdx - startIndex;
+        final itemIndex =
+            (effectiveCount - 1 - visibleIdx).clamp(0, effectiveCount - 1);
+        final maxExtent = messageController.position.maxScrollExtent;
+        final estimatedOffset =
+            ((itemIndex / (effectiveCount > 0 ? effectiveCount : 1)) *
+                    maxExtent)
+                .clamp(0.0, maxExtent);
+
+        messageController.jumpTo(estimatedOffset);
+
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (!mounted) return;
+          final retryCtx = _messageKeys[targetMessageId]?.currentContext;
+          if (retryCtx != null) {
+            Scrollable.ensureVisible(
+              retryCtx,
+              duration: const Duration(milliseconds: 350),
+              curve: Curves.easeInOutCubic,
+              alignment: 0.5,
+            ).then((_) {
+              _triggerMessageHighlight(targetMessageId);
+            });
+          } else {
+            _triggerMessageHighlight(targetMessageId);
+          }
+        });
+      }
+    }
+  }
+
+  void _triggerMessageHighlight(String targetMessageId) {
+    _highlightTimer?.cancel();
+    setState(() {
+      _highlightedMessageId = targetMessageId;
+    });
+    _highlightTimer = Timer(const Duration(milliseconds: 1400), () {
+      if (mounted && _highlightedMessageId == targetMessageId) {
+        setState(() {
+          _highlightedMessageId = null;
+        });
+      }
+    });
+  }
+
+  String? _resolveCurrentUserId() {
+    try {
+      final uid = FirebaseAuth.instance.currentUser?.uid;
+      if (uid != null && uid.isNotEmpty) return uid;
+    } catch (_) {}
+    return ref.watch(userDataAuthProvider).value?.uid;
+  }
+
   void _markMessageAsSeen(GroupChatMessageModel message) {
-    final currentUserId = FirebaseAuth.instance.currentUser?.uid;
+    final currentUserId = _resolveCurrentUserId();
 
     if (currentUserId != null &&
         message.senderId != currentUserId &&
@@ -214,11 +398,13 @@ class _GroupChatListWidgetState extends ConsumerState<GroupChatListWidget>
         !_processedMessages.contains(message.messageId)) {
       _processedMessages.add(message.messageId);
 
-      if (mounted) {
-        ref
-            .read(groupControllerProvider)
-            .setChatMessageSeen(context, widget.groupId, message.messageId);
-      }
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) {
+          ref
+              .read(groupControllerProvider)
+              .setChatMessageSeen(context, widget.groupId, message.messageId);
+        }
+      });
     }
   }
 
@@ -278,6 +464,8 @@ class _GroupChatListWidgetState extends ConsumerState<GroupChatListWidget>
           _displayMessages[i].isSending != newMessages[i].isSending ||
           _displayMessages[i].text != newMessages[i].text ||
           _displayMessages[i].fileMessageData != newMessages[i].fileMessageData ||
+          _displayMessages[i].isEdited != newMessages[i].isEdited ||
+          _displayMessages[i].isDeleted != newMessages[i].isDeleted ||
           !mapEquals(_displayMessages[i].reactions, newMessages[i].reactions)) {
         return true;
       }
@@ -285,119 +473,86 @@ class _GroupChatListWidgetState extends ConsumerState<GroupChatListWidget>
     return false;
   }
 
+  void _onNewMessages(List<GroupChatMessageModel> newMessages) {
+    if (!mounted) return;
+
+    final currentUserId = _resolveCurrentUserId();
+    if (currentUserId != null) {
+      final hasUnseenIncoming = newMessages.any(
+        (m) => m.senderId != currentUserId && !m.isSeen,
+      );
+      if (hasUnseenIncoming) {
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (mounted) {
+            ref
+                .read(groupControllerProvider)
+                .markGroupAsSeen(widget.groupId);
+          }
+        });
+      }
+    }
+
+    // Skip redundant rebuild if incoming messages are identical to what's already showing
+    if (_displayMessages.isNotEmpty && !_hasDeliveryOrSeenStatusChanged(newMessages)) {
+      _isInitialLoad = false;
+      return;
+    }
+
+    final newLastMessageId =
+        newMessages.isNotEmpty ? newMessages.last.messageId : null;
+    final oldMessageCount = _displayMessages.length;
+    final hasNewMessage = newMessages.length > oldMessageCount ||
+        (newMessages.isNotEmpty && newLastMessageId != _lastMessageId);
+    final hasStatusChanges = _hasDeliveryOrSeenStatusChanged(newMessages);
+    final addedCount = newMessages.length - _prevTotalMessages;
+
+    if (!_hasRecordedInitialIds) {
+      _initialMessageIds.addAll(newMessages.map((m) => m.messageId));
+      _hasRecordedInitialIds = true;
+    } else {
+      for (final m in newMessages) {
+        if (!_initialMessageIds.contains(m.messageId)) {
+          _newlyArrivedIds.add(m.messageId);
+          _initialMessageIds.add(m.messageId);
+        }
+      }
+    }
+
+    setState(() {
+      if (addedCount > 0 && _prevTotalMessages > 0) {
+        _visibleCount += addedCount;
+      } else if (_visibleCount == _pageSize ||
+          _visibleCount > newMessages.length) {
+        _visibleCount = _pageSize.clamp(0, newMessages.length);
+      }
+
+      _prevTotalMessages = newMessages.length;
+      _lastMessageId = newLastMessageId;
+      _displayMessages = newMessages;
+      _isInitialLoad = false;
+    });
+
+    if (_isAtBottom && (hasNewMessage || hasStatusChanges)) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) _scrollToBottom();
+      });
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     super.build(context);
 
-    return SizedBox.expand(
-      child: StreamBuilder<List<GroupChatMessageModel>>(
-        stream: _groupChatStream,
-        builder: (context, snapshot) {
-          if (snapshot.connectionState == ConnectionState.waiting) {
-            if (_displayMessages.isNotEmpty) {
-              return _buildMessageList(_displayMessages);
-            }
-            return const ChatMessagesSkeleton();
-          }
+    // Show skeleton only on the very first load before any data arrives.
+    if (_isInitialLoad && _displayMessages.isEmpty) {
+      return const ChatMessagesSkeleton();
+    }
 
-          if (snapshot.hasError) {
-            log('❌ Stream error: ${snapshot.error}');
-            return Center(
-              child: Column(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  const Icon(Icons.error_outline, size: 48, color: Colors.red),
-                  const SizedBox(height: 16),
-                  Text('Error: ${snapshot.error}',
-                      style: const TextStyle(color: Colors.white70)),
-                  const SizedBox(height: 16),
-                  ElevatedButton(
-                    onPressed: () => setState(() {
-                      _displayMessages = [];
-                      _lastMessageId = null;
-                      _visibleCount = _pageSize;
-                    }),
-                    child: const Text('Retry'),
-                  ),
-                ],
-              ),
-            );
-          }
+    if (_displayMessages.isEmpty) {
+      return _buildEmptyState();
+    }
 
-          if (!snapshot.hasData || snapshot.data!.isEmpty) {
-            if (_displayMessages.isNotEmpty) {
-              return _buildMessageList(_displayMessages);
-            }
-            _lastMessageId = null;
-            _prevTotalMessages = 0;
-            return _buildEmptyState();
-          }
-
-          final newMessages = snapshot.data!;
-          final newLastMessageId = newMessages.isNotEmpty
-              ? newMessages.last.messageId
-              : null;
-
-          final currentUserId = FirebaseAuth.instance.currentUser?.uid;
-          if (currentUserId != null) {
-            final hasUnseenIncoming = newMessages.any(
-              (m) => m.senderId != currentUserId && !m.isSeen,
-            );
-            if (hasUnseenIncoming) {
-              WidgetsBinding.instance.addPostFrameCallback((_) {
-                if (mounted) {
-                  ref
-                      .read(groupControllerProvider)
-                      .markGroupAsSeen(widget.groupId);
-                }
-              });
-            }
-          }
-
-          final hasStatusChanges = _hasDeliveryOrSeenStatusChanged(newMessages);
-          final isNewData =
-              newLastMessageId != _lastMessageId || hasStatusChanges;
-
-          if (!_hasRecordedInitialIds) {
-            _initialMessageIds.addAll(newMessages.map((m) => m.messageId));
-            _hasRecordedInitialIds = true;
-          } else {
-            for (final m in newMessages) {
-              if (!_initialMessageIds.contains(m.messageId)) {
-                _newlyArrivedIds.add(m.messageId);
-                _initialMessageIds.add(m.messageId);
-              }
-            }
-          }
-
-          if (isNewData) {
-            log('📨 Messages updated: ${newMessages.length} total');
-            final oldMessageCount = _displayMessages.length;
-            final hasNewMessage = newMessages.length > oldMessageCount;
-            final addedCount = newMessages.length - _prevTotalMessages;
-
-            if (addedCount > 0 && _prevTotalMessages > 0) {
-              _visibleCount += addedCount;
-            } else if (_visibleCount == _pageSize ||
-                _visibleCount > newMessages.length) {
-              _visibleCount = _pageSize.clamp(0, newMessages.length);
-            }
-
-            _prevTotalMessages = newMessages.length;
-            _lastMessageId = newLastMessageId;
-            _displayMessages = newMessages;
-
-            if (_isAtBottom && (hasNewMessage || hasStatusChanges)) {
-              WidgetsBinding.instance.addPostFrameCallback((_) {
-                if (mounted) _scrollToBottom();
-              });
-            }
-          }
-
-          return _buildMessageList(_displayMessages);
-        },
-      ),
-    );
+    return _buildMessageList(_displayMessages);
   }
 
   Widget _buildEmptyState() {
@@ -468,6 +623,14 @@ class _GroupChatListWidgetState extends ConsumerState<GroupChatListWidget>
         totalCount > effectiveCount ? totalCount - effectiveCount : 0;
     final visibleMessages = allMessages.sublist(startIndex);
     final hasMore = startIndex > 0;
+    final currentUserId = _resolveCurrentUserId();
+
+    final List<_GroupChatRow> rows = _buildRows(
+      visibleMessages,
+      allMessages,
+      startIndex,
+      currentUserId,
+    );
 
     return NotificationListener<OverscrollIndicatorNotification>(
       onNotification: (notification) {
@@ -478,10 +641,22 @@ class _GroupChatListWidgetState extends ConsumerState<GroupChatListWidget>
         controller: messageController,
         reverse: true,
         physics: const AlwaysScrollableScrollPhysics(),
-        itemCount: visibleMessages.length + (hasMore ? 1 : 0),
+        itemCount: rows.length + (hasMore ? 1 : 0),
+        findChildIndexCallback: (Key key) {
+          if (key is ValueKey<String>) {
+            final keyVal = key.value;
+            for (int i = 0; i < rows.length; i++) {
+              final revIndex = rows.length - 1 - i;
+              if (rows[revIndex].messages.any((m) => keyVal.startsWith('group_item_${m.messageId}'))) {
+                return i;
+              }
+            }
+          }
+          return null;
+        },
         itemBuilder: (context, index) {
           // Top spinner for loading older messages in reverse list
-          if (index == visibleMessages.length) {
+          if (index == rows.length) {
             return Padding(
               padding: const EdgeInsets.symmetric(vertical: 14),
               child: Center(
@@ -497,59 +672,172 @@ class _GroupChatListWidgetState extends ConsumerState<GroupChatListWidget>
             );
           }
 
-          final reversedIndex = visibleMessages.length - 1 - index;
-          final messageData = visibleMessages[reversedIndex];
-          final currentUserId = FirebaseAuth.instance.currentUser?.uid;
+          final reversedIndex = rows.length - 1 - index;
+          final row = rows[reversedIndex];
 
           if (currentUserId == null) return const SizedBox.shrink();
 
-          final isMyMessage = messageData.senderId == currentUserId;
+          for (final m in row.messages) {
+            _markMessageAsSeen(m);
+          }
 
-          // Global index in allMessages to check date separator accurately across pages
-          final globalIndex = startIndex + reversedIndex;
-          final previousMessage = globalIndex > 0
-              ? allMessages[globalIndex - 1]
-              : null;
-          final showDateSeparator = _shouldShowDateSeparator(
-            messageData,
-            previousMessage,
-          );
+          final rowReactionsKey = row.messages
+              .map((m) => m.reactions.entries
+                  .map((e) => '${e.key}:${e.value}')
+                  .join(','))
+              .join(';');
 
-          _markMessageAsSeen(messageData);
-
-          final reactionsKey = messageData.reactions.entries
-              .map((e) => '${e.key}:${e.value}')
-              .join('_');
-
-          final isNewlyArrived = _newlyArrivedIds.contains(messageData.messageId) ||
-              ((index < 3) &&
+          final isNewlyArrived = row.messages.any((m) => _newlyArrivedIds.remove(m.messageId)) ||
+              (index == 0 &&
                   (DateTime.now()
-                          .difference(messageData.timeSent)
+                          .difference(row.messages.last.timeSent)
                           .inSeconds
                           .abs() <
-                      25));
+                      5));
 
-          return _GroupMessageItemWidget(
-            key: ValueKey(
-              '${messageData.messageId}_$reactionsKey',
+          final primaryMsgId = row.messages.first.messageId;
+          for (final m in row.messages) {
+            _messageKeys[m.messageId] = _getMessageKey(primaryMsgId);
+          }
+
+          final isHighlighted = _highlightedMessageId != null &&
+              row.messages.any((m) => m.messageId == _highlightedMessageId);
+
+          // RepaintBoundary isolates each row's raster cache so that when
+          // a new message arrives, only the new/changed rows repaint —
+          // video and link preview rows are NOT repainted at all.
+          return KeyedSubtree(
+            key: _getMessageKey(primaryMsgId),
+            child: AnimatedContainer(
+              duration: const Duration(milliseconds: 300),
+              curve: Curves.easeOut,
+              decoration: BoxDecoration(
+                borderRadius: BorderRadius.circular(20),
+                color: isHighlighted
+                    ? const Color(0xFFFFD700).withValues(alpha: 0.25)
+                    : Colors.transparent,
+                boxShadow: isHighlighted
+                    ? [
+                        BoxShadow(
+                          color:
+                              const Color(0xFFFFD700).withValues(alpha: 0.40),
+                          blurRadius: 18,
+                          spreadRadius: 3,
+                        ),
+                      ]
+                    : null,
+              ),
+              child: RepaintBoundary(
+                key: ValueKey('group_item_$primaryMsgId'),
+                child: _GroupMessageItemWidget(
+                  key: ValueKey(
+                    '${row.key}_$rowReactionsKey',
+                  ),
+                  row: row,
+                  isNewlySent: isNewlyArrived,
+                  currentUserId: currentUserId,
+                  currentUserProfilePic: _currentUserProfilePic,
+                  isMyMessage: row.isMyMessage,
+                  showDateSeparator: row.showDateSeparator,
+                  onMessageSwipe: onMessageSwipe,
+                  getDateSeparatorText: _getDateSeparatorText,
+                  accentColor: widget.accentColor,
+                  queendom: widget.queendom,
+                  onReplyTap: () => _navigateToRepliedMessage(row.messages.first),
+                ),
+              ),
             ),
-            messageData: messageData,
-            isNewlySent: isNewlyArrived,
-            currentUserId: currentUserId,
-            currentUserProfilePic: _currentUserProfilePic,
-            isMyMessage: isMyMessage,
-            showDateSeparator: showDateSeparator,
-            onMessageSwipe: onMessageSwipe,
-            getDateSeparatorText: _getDateSeparatorText,
           );
         },
       ),
     );
   }
+
+  /// Build a flat list of _GroupChatRow objects, merging consecutive messages that
+  /// share the same senderId + mediaGroupId into a single row.
+  List<_GroupChatRow> _buildRows(
+    List<GroupChatMessageModel> visibleMessages,
+    List<GroupChatMessageModel> allMessages,
+    int startIndex,
+    String? currentUserId,
+  ) {
+    final rows = <_GroupChatRow>[];
+
+    for (int i = 0; i < visibleMessages.length; i++) {
+      final msg = visibleMessages[i];
+      final globalIndex = startIndex + i;
+      final prevMsg = globalIndex > 0 ? allMessages[globalIndex - 1] : null;
+      final showDateSep = _shouldShowDateSeparator(msg, prevMsg);
+      final isMyMessage = msg.senderId == currentUserId;
+      final mediaGroupId = _getGroupMediaId(msg.fileMessageData);
+      final isMedia = msg.messageType == 'image' || msg.messageType == 'video';
+
+      if (isMedia && mediaGroupId != null && mediaGroupId.isNotEmpty && !showDateSep) {
+        // Check if the last row has the same groupId from the same sender
+        if (rows.isNotEmpty &&
+            rows.last.groupId == mediaGroupId &&
+            rows.last.isMyMessage == isMyMessage) {
+          rows.last.messages.add(msg);
+          continue;
+        }
+      }
+
+      rows.add(_GroupChatRow(
+        messages: [msg],
+        isMyMessage: isMyMessage,
+        groupId: mediaGroupId,
+        showDateSeparator: showDateSep,
+      ));
+    }
+
+    return rows;
+  }
+}
+
+String? _getGroupMediaId(String? fileMessageData) {
+  if (fileMessageData == null) return null;
+  try {
+    final map = jsonDecode(fileMessageData);
+    if (map is Map && map.containsKey('groupId')) {
+      return map['groupId']?.toString();
+    }
+  } catch (_) {}
+  return null;
+}
+
+String _extractGroupFileUrl(String? fileMessageData) {
+  if (fileMessageData == null || fileMessageData.isEmpty) return '';
+  try {
+    final map = jsonDecode(fileMessageData);
+    if (map is Map && map.containsKey('url')) {
+      return map['url']?.toString() ?? '';
+    }
+  } catch (_) {}
+  return fileMessageData;
+}
+
+/// A logical chat row in group chat – may contain 1 message or several grouped media messages.
+class _GroupChatRow {
+  final List<GroupChatMessageModel> messages;
+  final bool isMyMessage;
+  final String? groupId;
+  bool showDateSeparator;
+
+  _GroupChatRow({
+    required this.messages,
+    required this.isMyMessage,
+    required this.groupId,
+    required this.showDateSeparator,
+  });
+
+  String get key {
+    if (messages.length == 1) return messages.first.messageId;
+    return '${groupId ?? messages.first.messageId}_${messages.length}';
+  }
 }
 
 class _GroupMessageItemWidget extends ConsumerWidget {
-  final GroupChatMessageModel messageData;
+  final _GroupChatRow row;
   final bool isNewlySent;
   final String currentUserId;
   final String currentUserProfilePic;
@@ -557,10 +845,13 @@ class _GroupMessageItemWidget extends ConsumerWidget {
   final bool showDateSeparator;
   final Function(String, bool, String, String) onMessageSwipe;
   final String Function(DateTime) getDateSeparatorText;
+  final Color? accentColor;
+  final String? queendom;
+  final VoidCallback? onReplyTap;
 
   const _GroupMessageItemWidget({
     super.key,
-    required this.messageData,
+    required this.row,
     this.isNewlySent = false,
     required this.currentUserId,
     required this.currentUserProfilePic,
@@ -568,6 +859,9 @@ class _GroupMessageItemWidget extends ConsumerWidget {
     required this.showDateSeparator,
     required this.onMessageSwipe,
     required this.getDateSeparatorText,
+    this.accentColor,
+    this.queendom,
+    this.onReplyTap,
   });
 
   Widget _buildProfileAvatar(String? profilePic, bool isCurrentUser) {
@@ -604,21 +898,142 @@ class _GroupMessageItemWidget extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final timeSent = DateFormat.jm().format(messageData.timeSent);
-    final seen = messageData.isSeen;
-    final delivered = messageData.isDelivered;
-    final sending = messageData.isSending;
-    final reactionsKey = messageData.reactions.entries
-        .map((e) => '${e.key}:${e.value}')
-        .join('_');
+    final firstMsg = row.messages.first;
+    final lastMsg = row.messages.last;
+    final timeSent = DateFormat.jm().format(lastMsg.timeSent);
+    final seen = lastMsg.isSeen;
+    final delivered = lastMsg.isDelivered;
+    final sending = lastMsg.isSending;
+
+    final isRoleplay = firstMsg.messageType == 'roleplay' ||
+        firstMsg.senderId == 'roleplay';
+
+    if (isRoleplay) {
+      final reactionsKey = firstMsg.reactions.entries
+          .map((e) => '${e.key}:${e.value}')
+          .join('_');
+      return Column(
+        children: [
+          if (showDateSeparator) _buildDateSeparator(firstMsg.timeSent),
+          RoleplayMessageCard(
+            key: ValueKey('roleplay_${firstMsg.messageId}_$reactionsKey'),
+            messageData: firstMsg,
+            isNewlySent: isNewlySent,
+            accentColor: accentColor,
+            queendom: queendom,
+            onSwipe: () => onMessageSwipe(
+              firstMsg.text.isNotEmpty ? firstMsg.text : 'Roleplay photo',
+              false,
+              'image',
+              firstMsg.fileMessageData ?? '',
+            ),
+            onForward: () {
+              ForwardMessageSheet.show(
+                context,
+                ForwardMessagePayload(
+                  text: firstMsg.text,
+                  messageType: 'image',
+                  fileMessageData: firstMsg.fileMessageData,
+                  sourceGroupId: firstMsg.groupId,
+                ),
+              );
+            },
+            onDelete: () {
+              DeleteMessageDialog.show(
+                context: context,
+                isMyMessage: false,
+                isDeleted: firstMsg.isDeleted,
+                onDeleteForMe: () {
+                  ref.read(groupControllerProvider).deleteGroupMessageForMe(
+                        groupId: firstMsg.groupId,
+                        messageId: firstMsg.messageId,
+                      );
+                },
+              );
+            },
+            onReactionSelected: (emoji) {
+              ref.read(groupControllerProvider).toggleGroupReaction(
+                    groupId: firstMsg.groupId,
+                    messageId: firstMsg.messageId,
+                    emoji: emoji,
+                  );
+            },
+          ),
+        ],
+      );
+    }
 
     final senderUserAsync = isMyMessage
         ? null
-        : ref.watch(_groupUserProvider(messageData.senderId));
+        : ref.watch(_groupUserProvider(firstMsg.senderId));
     final senderPic = senderUserAsync?.value?.profilePic;
     final myPic = currentUserProfilePic.isNotEmpty
         ? currentUserProfilePic
         : ref.watch(_groupUserProvider(currentUserId)).value?.profilePic;
+
+    // ── Is this a grouped media row? ─────────────────────────────────────────
+    final isGroup = row.messages.length > 1 &&
+        row.groupId != null &&
+        (firstMsg.messageType == 'image' || firstMsg.messageType == 'video');
+
+    if (isGroup) {
+      final items = row.messages.map((m) {
+        final url = _extractGroupFileUrl(m.fileMessageData);
+        return MediaGroupItem(url: url, type: m.messageType);
+      }).toList();
+
+      final deliveryStatus = MessageDeliveryStatus.fromFlags(
+        isSeen: seen,
+        isDelivered: delivered,
+        isSending: sending,
+      );
+
+      final screenWidth = MediaQuery.of(context).size.width;
+      final maxW = screenWidth * 0.7;
+
+      final groupWidget = MediaGroupWidget(
+        key: ValueKey('group_${row.key}'),
+        items: items,
+        maxWidth: maxW,
+        isMe: row.isMyMessage,
+        date: timeSent,
+        statusWidget: MessageStatusIcon(status: deliveryStatus, size: 14),
+        caption: firstMsg.text,
+      );
+
+      return Column(
+        children: [
+          if (showDateSeparator)
+            _buildDateSeparator(firstMsg.timeSent),
+          Padding(
+            padding: const EdgeInsets.symmetric(vertical: 2),
+            child: row.isMyMessage
+                ? Row(
+                    mainAxisAlignment: MainAxisAlignment.end,
+                    crossAxisAlignment: CrossAxisAlignment.end,
+                    children: [
+                      groupWidget,
+                      _buildProfileAvatar(myPic, true),
+                    ],
+                  )
+                : Row(
+                    crossAxisAlignment: CrossAxisAlignment.end,
+                    children: [
+                      _buildProfileAvatar(senderPic, false),
+                      groupWidget,
+                    ],
+                  ),
+          ),
+        ],
+      );
+    }
+
+    // ── Single message row (original behaviour) ───────────────────────────────
+    final messageData = firstMsg;
+    final reactionsKey = messageData.reactions.entries
+        .map((e) => '${e.key}:${e.value}')
+        .join('_');
+    final extractedFileUrl = _extractGroupFileUrl(messageData.fileMessageData);
 
     return Column(
       children: [
@@ -636,7 +1051,7 @@ class _GroupMessageItemWidget extends ConsumerWidget {
                       message: messageData.text,
                       date: timeSent,
                       messageType: messageData.messageType,
-                      fileMessageData: messageData.fileMessageData,
+                      fileMessageData: extractedFileUrl,
                       repliedText: messageData.repliedMessage,
                       username: messageData.repliedTo,
                       repliedMessageType: messageData.repliedMessageType,
@@ -644,7 +1059,7 @@ class _GroupMessageItemWidget extends ConsumerWidget {
                         messageData.text,
                         true,
                         messageData.messageType,
-                        messageData.fileMessageData ?? "",
+                        extractedFileUrl,
                       ),
                       isSeen: seen,
                       isDelivered: delivered,
@@ -653,6 +1068,44 @@ class _GroupMessageItemWidget extends ConsumerWidget {
                       messageId: messageData.messageId,
                       currentUserId: currentUserId,
                       reactions: messageData.reactions,
+                      isEdited: messageData.isEdited,
+                      isDeleted: messageData.isDeleted,
+                      onEdit: (messageData.isDeleted || messageData.messageType != 'text')
+                          ? null
+                          : () {
+                              ref.read(messageEditProvider.notifier).state =
+                                  MessageEdit(
+                                messageId: messageData.messageId,
+                                text: messageData.text,
+                                chatType: 'group',
+                                groupId: messageData.groupId,
+                              );
+                            },
+                      onDelete: () {
+                        DeleteMessageDialog.show(
+                          context: context,
+                          isMyMessage: true,
+                          isDeleted: messageData.isDeleted,
+                          onDeleteForMe: () {
+                            ref
+                                .read(groupControllerProvider)
+                                .deleteGroupMessageForMe(
+                                  groupId: messageData.groupId,
+                                  messageId: messageData.messageId,
+                                );
+                          },
+                          onDeleteForEveryone: messageData.isDeleted
+                              ? null
+                              : () {
+                                  ref
+                                      .read(groupControllerProvider)
+                                      .deleteGroupMessageForEveryone(
+                                        groupId: messageData.groupId,
+                                        messageId: messageData.messageId,
+                                      );
+                                },
+                        );
+                      },
                       onReactionSelected: (emoji) {
                         ref.read(groupControllerProvider).toggleGroupReaction(
                               groupId: messageData.groupId,
@@ -666,11 +1119,12 @@ class _GroupMessageItemWidget extends ConsumerWidget {
                           ForwardMessagePayload(
                             text: messageData.text,
                             messageType: messageData.messageType,
-                            fileMessageData: messageData.fileMessageData,
+                            fileMessageData: extractedFileUrl,
                             sourceGroupId: messageData.groupId,
                           ),
                         );
                       },
+                      onReplyTap: onReplyTap,
                     ),
                   ),
                   _buildProfileAvatar(myPic, true),
@@ -688,7 +1142,7 @@ class _GroupMessageItemWidget extends ConsumerWidget {
                       message: messageData.text,
                       date: timeSent,
                       messageType: messageData.messageType,
-                      fileMessageData: messageData.fileMessageData,
+                      fileMessageData: extractedFileUrl,
                       repliedText: messageData.repliedMessage,
                       username: messageData.repliedTo,
                       repliedMessageType: messageData.repliedMessageType,
@@ -696,13 +1150,30 @@ class _GroupMessageItemWidget extends ConsumerWidget {
                         messageData.text,
                         false,
                         messageData.messageType,
-                        messageData.fileMessageData ?? "",
+                        extractedFileUrl,
                       ),
                       isNewlyReceived: isNewlySent,
                       messageId: messageData.messageId,
                       currentUserId: currentUserId,
                       senderProfilePic: senderPic,
                       reactions: messageData.reactions,
+                      isEdited: messageData.isEdited,
+                      isDeleted: messageData.isDeleted,
+                      onDelete: () {
+                        DeleteMessageDialog.show(
+                          context: context,
+                          isMyMessage: false,
+                          isDeleted: messageData.isDeleted,
+                          onDeleteForMe: () {
+                            ref
+                                .read(groupControllerProvider)
+                                .deleteGroupMessageForMe(
+                                  groupId: messageData.groupId,
+                                  messageId: messageData.messageId,
+                                );
+                          },
+                        );
+                      },
                       onReactionSelected: (emoji) {
                         ref.read(groupControllerProvider).toggleGroupReaction(
                               groupId: messageData.groupId,
@@ -716,11 +1187,12 @@ class _GroupMessageItemWidget extends ConsumerWidget {
                           ForwardMessagePayload(
                             text: messageData.text,
                             messageType: messageData.messageType,
-                            fileMessageData: messageData.fileMessageData,
+                            fileMessageData: extractedFileUrl,
                             sourceGroupId: messageData.groupId,
                           ),
                         );
                       },
+                      onReplyTap: onReplyTap,
                     ),
                   ),
                 ],

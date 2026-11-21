@@ -2,15 +2,19 @@ import 'dart:developer';
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:worship_chat/colors.dart';
 import 'package:worship_chat/common/widgets/skeleton_loader.dart';
 import 'package:worship_chat/features/bookmark/controller/bookmark_controller.dart';
 import 'package:worship_chat/features/bookmark/screens/bookmark_screen.dart';
+import 'package:worship_chat/features/dashboard/controller/event_controller.dart';
+import 'package:worship_chat/features/dashboard/providers/todo_providers.dart';
 import 'package:worship_chat/features/dashboard/screens/event_calender_page.dart';
 import 'package:worship_chat/features/dashboard/widgets/event_shortcuts_widget.dart';
 import 'package:worship_chat/features/dashboard/widgets/today_birthdays_slideshow_widget.dart';
 import 'package:worship_chat/features/dashboard/widgets/todo_page.dart';
+import 'package:worship_chat/features/group/screens/folder_gallery_screen.dart';
 import 'package:worship_chat/models/bookmark_model.dart';
 
 class DashboardPage extends ConsumerStatefulWidget {
@@ -21,7 +25,13 @@ class DashboardPage extends ConsumerStatefulWidget {
 }
 
 class _DashboardPageState extends ConsumerState<DashboardPage> {
-  final currentUserId = FirebaseAuth.instance.currentUser?.uid ?? '';
+  String get currentUserId {
+    try {
+      return FirebaseAuth.instance.currentUser?.uid ?? '';
+    } catch (_) {
+      return '';
+    }
+  }
   bool _imagesPreloaded = false;
   bool _imageLoadFailed = false;
 
@@ -42,38 +52,71 @@ class _DashboardPageState extends ConsumerState<DashboardPage> {
       await precacheImage(const AssetImage('assets/images/img2.png'), context);
       if (!mounted) return;
       await precacheImage(const AssetImage('assets/images/img3.png'), context);
+      if (mounted && _imageLoadFailed) {
+        setState(() => _imageLoadFailed = false);
+      }
     } catch (e) {
       log('❌ Error preloading images: $e');
       if (mounted) setState(() => _imageLoadFailed = true);
     }
   }
 
+  Future<void> _handleRefresh() async {
+    try {
+      HapticFeedback.lightImpact();
+
+      // Reload events for birthday shortcuts & celebrations slideshow
+      final eventFuture =
+          ref.read(eventControllerProvider.notifier).loadEvents();
+
+      // Invalidate stream providers to trigger fresh snapshot fetch
+      ref.invalidate(todosStreamProvider);
+      ref.invalidate(todoStatsProvider);
+
+      // Preload images again if previously failed
+      if (_imageLoadFailed) {
+        await _preloadImages();
+      }
+
+      await eventFuture;
+    } catch (e) {
+      log('❌ Error refreshing dashboard: $e');
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
-    return SingleChildScrollView(
-      physics: const BouncingScrollPhysics(),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          // ── Banner: hero + stickers + action pills overlaid ──────────
-          _BannerSection(
-            imageLoadFailed: _imageLoadFailed,
-            currentUserId: currentUserId,
-          ),
+    return RefreshIndicator(
+      color: tabColor,
+      backgroundColor: const Color(0xFF1B1528),
+      onRefresh: _handleRefresh,
+      child: SingleChildScrollView(
+        physics: const AlwaysScrollableScrollPhysics(
+          parent: BouncingScrollPhysics(),
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            // ── Banner: hero + stickers + action pills overlaid ──────────
+            _BannerSection(
+              imageLoadFailed: _imageLoadFailed,
+              currentUserId: currentUserId,
+            ),
 
-          // ── Today's Birthday Celebrations Slideshow (Active on birthdays) ──
-          const TodayBirthdaysSlideshowWidget(),
+            // ── Today's Birthday Celebrations Slideshow (Active on birthdays) ──
+            const TodayBirthdaysSlideshowWidget(),
 
-          // ── Birthday & Event Shortcuts ────────────────────────────────
-          const SizedBox(height: 24),
-          const EventShortcutsWidget(),
+            // ── Birthday & Event Shortcuts ────────────────────────────────
+            const SizedBox(height: 24),
+            const EventShortcutsWidget(),
 
-          // ── Recent bookmarks ──────────────────────────────────────────
-          const SizedBox(height: 24),
-          _RecentBookmarks(currentUserId: currentUserId),
+            // ── Recent bookmarks ──────────────────────────────────────────
+            const SizedBox(height: 24),
+            _RecentBookmarks(currentUserId: currentUserId),
 
-          const SizedBox(height: 36),
-        ],
+            const SizedBox(height: 36),
+          ],
+        ),
       ),
     );
   }
@@ -98,11 +141,13 @@ class _BannerSection extends ConsumerWidget {
       return Container(height: 280, color: Colors.grey[900]);
     }
 
-    final bookmarkCount = ref
-        .watch(bookmarkControllerProvider)
-        .myBookmarks()
-        .map((list) => list.length)
-        .handleError((_) {});
+    final bookmarkCount = currentUserId.isNotEmpty
+        ? ref
+            .watch(bookmarkControllerProvider)
+            .myBookmarks()
+            .map((list) => list.length)
+            .handleError((_) {})
+        : Stream.value(0);
 
     const double bannerHeight = 250.0;
 
@@ -169,44 +214,57 @@ class _BannerSection extends ConsumerWidget {
                     initialData: 0,
                     builder: (context, snap) {
                       final count = snap.data ?? 0;
-                      return Row(
-                        children: [
-                          // Bookmark pill
-                          _ActionPill(
-                            icon: Icons.bookmark_rounded,
-                            iconColor: Colors.amber,
-                            label: 'Bookmarks',
-                            badge: count > 0 ? '$count' : null,
-                            onTap: () => Navigator.push(
-                              context,
-                              MaterialPageRoute(
-                                builder: (_) => const BookmarkScreen(),
+                      return SingleChildScrollView(
+                        scrollDirection: Axis.horizontal,
+                        physics: const BouncingScrollPhysics(),
+                        child: Row(
+                          children: [
+                            // Folder pill
+                            _ActionPill(
+                              icon: Icons.folder_open_rounded,
+                              iconColor: const Color(0xFF64B5F6),
+                              label: 'Folder',
+                              onTap: () =>
+                                  FolderGalleryScreen.showPickerOptions(context),
+                            ),
+                            const SizedBox(width: 10),
+                            // Bookmark pill
+                            _ActionPill(
+                              icon: Icons.bookmark_rounded,
+                              iconColor: Colors.amber,
+                              label: 'Bookmarks',
+                              badge: count > 0 ? '$count' : null,
+                              onTap: () => Navigator.push(
+                                context,
+                                MaterialPageRoute(
+                                  builder: (_) => const BookmarkScreen(),
+                                ),
                               ),
                             ),
-                          ),
-                          const SizedBox(width: 10),
-                          // Tasks pill
-                          _ActionPill(
-                            icon: Icons.task_alt_rounded,
-                            iconColor: accentOrange,
-                            label: 'Tasks',
-                            onTap: () => Navigator.pushNamed(
-                              context,
-                              TodoPage.routeName,
+                            const SizedBox(width: 10),
+                            // Tasks pill
+                            _ActionPill(
+                              icon: Icons.task_alt_rounded,
+                              iconColor: accentOrange,
+                              label: 'Tasks',
+                              onTap: () => Navigator.pushNamed(
+                                context,
+                                TodoPage.routeName,
+                              ),
                             ),
-                          ),
-                          const SizedBox(width: 10),
-                          // Calendar pill
-                          _ActionPill(
-                            icon: Icons.calendar_today_rounded,
-                            iconColor: tabColor,
-                            label: 'Calendar',
-                            onTap: () => Navigator.pushNamed(
-                              context,
-                              EventsCalendarPage.routeName,
+                            const SizedBox(width: 10),
+                            // Calendar pill
+                            _ActionPill(
+                              icon: Icons.calendar_today_rounded,
+                              iconColor: tabColor,
+                              label: 'Calendar',
+                              onTap: () => Navigator.pushNamed(
+                                context,
+                                EventsCalendarPage.routeName,
+                              ),
                             ),
-                          ),
-                        ],
+                          ],
+                        ),
                       );
                     },
                   ),
@@ -239,81 +297,77 @@ class _ActionPill extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Expanded(
-      child: GestureDetector(
-        onTap: onTap,
-        child: Container(
-          padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 8),
-          decoration: BoxDecoration(
-            color: Colors.white.withValues(alpha: 0.10),
-            borderRadius: BorderRadius.circular(14),
-            border: Border.all(
-              color: Colors.white.withValues(alpha: 0.18),
-              width: 1,
-            ),
-            boxShadow: [
-              BoxShadow(
-                color: Colors.black.withValues(alpha: 0.25),
-                blurRadius: 12,
-                offset: const Offset(0, 4),
-              ),
-            ],
+    return GestureDetector(
+      onTap: onTap,
+      child: Container(
+        padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 10),
+        decoration: BoxDecoration(
+          color: Colors.white.withValues(alpha: 0.10),
+          borderRadius: BorderRadius.circular(14),
+          border: Border.all(
+            color: Colors.white.withValues(alpha: 0.18),
+            width: 1,
           ),
-          child: Row(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              Stack(
-                clipBehavior: Clip.none,
-                children: [
-                  Container(
-                    width: 30,
-                    height: 30,
-                    decoration: BoxDecoration(
-                      color: iconColor.withValues(alpha: 0.18),
-                      borderRadius: BorderRadius.circular(8),
-                    ),
-                    child: Icon(icon, color: iconColor, size: 16),
+          boxShadow: [
+            BoxShadow(
+              color: Colors.black.withValues(alpha: 0.25),
+              blurRadius: 12,
+              offset: const Offset(0, 4),
+            ),
+          ],
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Stack(
+              clipBehavior: Clip.none,
+              children: [
+                Container(
+                  width: 30,
+                  height: 30,
+                  decoration: BoxDecoration(
+                    color: iconColor.withValues(alpha: 0.18),
+                    borderRadius: BorderRadius.circular(8),
                   ),
-                  if (badge != null)
-                    Positioned(
-                      top: -5,
-                      right: -6,
-                      child: Container(
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: 4,
-                          vertical: 1,
-                        ),
-                        decoration: BoxDecoration(
-                          color: iconColor,
-                          borderRadius: BorderRadius.circular(8),
-                        ),
-                        child: Text(
-                          badge!,
-                          style: const TextStyle(
-                            color: Colors.black,
-                            fontSize: 9,
-                            fontWeight: FontWeight.bold,
-                          ),
+                  child: Icon(icon, color: iconColor, size: 16),
+                ),
+                if (badge != null)
+                  Positioned(
+                    top: -5,
+                    right: -6,
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 4,
+                        vertical: 1,
+                      ),
+                      decoration: BoxDecoration(
+                        color: iconColor,
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                      child: Text(
+                        badge!,
+                        style: const TextStyle(
+                          color: Colors.black,
+                          fontSize: 9,
+                          fontWeight: FontWeight.bold,
                         ),
                       ),
                     ),
-                ],
-              ),
-              const SizedBox(width: 6),
-              Flexible(
-                child: Text(
-                  label,
-                  style: const TextStyle(
-                    color: Colors.white,
-                    fontSize: 11,
-                    fontWeight: FontWeight.w600,
-                    letterSpacing: 0.2,
                   ),
-                  overflow: TextOverflow.ellipsis,
-                ),
+              ],
+            ),
+            const SizedBox(width: 6),
+            Text(
+              label,
+              style: const TextStyle(
+                color: Colors.white,
+                fontSize: 11,
+                fontWeight: FontWeight.w600,
+                letterSpacing: 0.2,
               ),
-            ],
-          ),
+            ),
+          ],
         ),
       ),
     );
@@ -332,6 +386,7 @@ class _RecentBookmarks extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
+    if (currentUserId.isEmpty) return const SizedBox.shrink();
     return StreamBuilder<List<BookmarkModel>>(
       stream: ref.watch(bookmarkControllerProvider).myBookmarks(),
       builder: (context, snapshot) {

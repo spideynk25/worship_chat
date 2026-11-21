@@ -41,12 +41,64 @@ void main() {
         equals('assets/emojis/aura_elixiria.png'),
       );
       expect(
+        QueendomEmblemHelper.getAsset(position: 'Core Supreme Goddess'),
+        equals('assets/emojis/core_supreme.png'),
+      );
+      expect(
+        QueendomEmblemHelper.getAsset(position: 'Core Supreme Goddesses'),
+        equals('assets/emojis/core_supreme.png'),
+      );
+      expect(
+        QueendomEmblemHelper.getAsset(position: 'Supreme Goddess'),
+        equals('assets/emojis/supreme_goddess.png'),
+      );
+      expect(
+        QueendomEmblemHelper.getAsset(position: 'Supreme Goddesses'),
+        equals('assets/emojis/supreme_goddess.png'),
+      );
+      expect(
+        QueendomEmblemHelper.getAsset(position: 'Golden Blossom'),
+        equals('assets/emojis/golden_blossom.png'),
+      );
+      expect(
+        QueendomEmblemHelper.getAsset(position: 'Golden Blossom Goddess'),
+        equals('assets/emojis/golden_blossom.png'),
+      );
+      expect(
+        QueendomEmblemHelper.getAsset(position: 'Golden Blossom Goddesses'),
+        equals('assets/emojis/golden_blossom.png'),
+      );
+      expect(
         QueendomEmblemHelper.getAsset(position: 'Goddess'),
         equals('assets/emojis/goddess.png'),
       );
       expect(
+        QueendomEmblemHelper.getAsset(position: 'Goddesses'),
+        equals('assets/emojis/goddess.png'),
+      );
+      expect(
+        QueendomEmblemHelper.getAsset(position: 'Demi'),
+        equals('assets/emojis/demi_goddess.png'),
+      );
+      expect(
+        QueendomEmblemHelper.getAsset(position: 'Demi Goddess'),
+        equals('assets/emojis/demi_goddess.png'),
+      );
+      expect(
+        QueendomEmblemHelper.getAsset(position: 'Demi Goddesses'),
+        equals('assets/emojis/demi_goddess.png'),
+      );
+      expect(
         QueendomEmblemHelper.getAsset(position: 'Queen'),
         equals('assets/emojis/queen.png'),
+      );
+      expect(
+        QueendomEmblemHelper.getAsset(position: 'Elfwitch'),
+        equals('assets/emojis/elfwitch.png'),
+      );
+      expect(
+        QueendomEmblemHelper.getAsset(position: 'Elfwitches'),
+        equals('assets/emojis/elfwitch.png'),
       );
       expect(
         QueendomEmblemHelper.getAsset(position: 'Enchantress'),
@@ -257,5 +309,121 @@ void main() {
       expect((images[1].image as AssetImage).assetName,
           equals('assets/emojis/family_main.png'));
     });
+
+    testWidgets('QueendomEmblemWidget with interactive3d renders Royal3dCrownWidget',
+        (tester) async {
+      await tester.pumpWidget(
+        const MaterialApp(
+          home: Scaffold(
+            body: QueendomEmblemWidget(
+              position: 'Core Supreme Goddess',
+              size: 64,
+              interactive3d: true,
+            ),
+          ),
+        ),
+      );
+
+      expect(find.byType(QueendomEmblemWidget), findsOneWidget);
+      expect(find.byType(Royal3dCrownWidget), findsOneWidget);
+      expect(find.byType(Transform), findsWidgets);
+    });
+
+    testWidgets('Royal3dCrownWidget responds to pan drag gesture without errors',
+        (tester) async {
+      await tester.pumpWidget(
+        const MaterialApp(
+          home: Scaffold(
+            body: Center(
+              child: Royal3dCrownWidget(
+                position: 'Queen',
+                size: 80,
+                enableInspect: false,
+              ),
+            ),
+          ),
+        ),
+      );
+
+      expect(find.byType(Royal3dCrownWidget), findsOneWidget);
+
+      // Perform pan drag to tilt the crown in 3D
+      await tester.drag(find.byType(Royal3dCrownWidget), const Offset(20, -15));
+      await tester.pump(const Duration(milliseconds: 50));
+
+      expect(find.byType(Royal3dCrownWidget), findsOneWidget);
+    });
+
+    test('isWifeOrFuckToy correctly identifies all Wife and Fuck Toy variations', () {
+      expect(QueendomEmblemHelper.isWifeOrFuckToy('Wife'), isTrue);
+      expect(QueendomEmblemHelper.isWifeOrFuckToy('Wife of Queen Pooja - Samantha'), isTrue);
+      expect(QueendomEmblemHelper.isWifeOrFuckToy('Samantha - Wife'), isTrue);
+      expect(QueendomEmblemHelper.isWifeOrFuckToy('Wife of Queen Rashmika'), isTrue);
+      expect(QueendomEmblemHelper.isWifeOrFuckToy('Fuck Toy'), isTrue);
+      expect(QueendomEmblemHelper.isWifeOrFuckToy('fucktoy'), isTrue);
+      expect(QueendomEmblemHelper.isWifeOrFuckToy('Fuck Toy of Queen Pooja - Samantha'), isTrue);
+      expect(QueendomEmblemHelper.isWifeOrFuckToy('Fuck Toy of Queen Rashmika'), isTrue);
+      expect(QueendomEmblemHelper.isWifeOrFuckToy('Samantha - Fuck Toy'), isTrue);
+
+      // Main deities and royals must remain false
+      expect(QueendomEmblemHelper.isWifeOrFuckToy('Queen'), isFalse);
+      expect(QueendomEmblemHelper.isWifeOrFuckToy('Queen Pooja'), isFalse);
+      expect(QueendomEmblemHelper.isWifeOrFuckToy('First Born Princess'), isFalse);
+      expect(QueendomEmblemHelper.isWifeOrFuckToy('Core Supreme Goddess'), isFalse);
+    });
+
+    test('getAsset, getAssetFromText, and buildEmblemBadge return null for Wife and Fuck Toy', () {
+      expect(QueendomEmblemHelper.getAsset(position: 'Wife'), isNull);
+      expect(QueendomEmblemHelper.getAsset(position: 'Fuck Toy'), isNull);
+      expect(QueendomEmblemHelper.getAsset(position: 'Wife of Queen Pooja - Samantha'), isNull);
+      expect(QueendomEmblemHelper.getAssetFromText('Wife of Queen Pooja - Samantha'), isNull);
+      expect(QueendomEmblemHelper.getAssetFromText('Fuck Toy of Queen Pooja - Samantha'), isNull);
+      expect(QueendomEmblemHelper.getAssetFromLivingPlace('Wife of Queen Pooja'), isNull);
+      expect(
+        QueendomEmblemHelper.buildEmblemBadge(
+          position: 'Wife',
+          accentColor: Colors.pink,
+        ),
+        isNull,
+      );
+      expect(
+        QueendomEmblemHelper.buildEmblemBadge(
+          position: 'Fuck Toy',
+          accentColor: Colors.purple,
+        ),
+        isNull,
+      );
+      expect(
+        QueendomEmblemHelper.buildEmblemBadge(
+          livingPlace: 'Wife of Queen Pooja - Samantha',
+          accentColor: Colors.pink,
+        ),
+        isNull,
+      );
+    });
+
+    testWidgets('QueendomEmblemWidget renders nothing or fallback for Wife and Fuck Toy',
+        (tester) async {
+      await tester.pumpWidget(
+        const MaterialApp(
+          home: Scaffold(
+            body: Column(
+              children: [
+                QueendomEmblemWidget(position: 'Wife'),
+                QueendomEmblemWidget(position: 'Fuck Toy'),
+                QueendomEmblemWidget(
+                  position: 'Wife of Queen Pooja - Samantha',
+                  fallback: Text('NO_CROWN'),
+                ),
+              ],
+            ),
+          ),
+        ),
+      );
+
+      expect(find.byType(Image), findsNothing);
+      expect(find.text('NO_CROWN'), findsOneWidget);
+    });
   });
 }
+
