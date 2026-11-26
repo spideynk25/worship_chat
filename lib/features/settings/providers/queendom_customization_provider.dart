@@ -39,6 +39,33 @@ class QueendomCustomizationNotifier extends StateNotifier<QueendomCustomizationS
     _loadFromPrefs();
   }
 
+  static const Map<String, String> _legacyShortTitlesByPosition = {
+    'aura elixiria': 'Aura Goddesses',
+    'core supreme goddess': 'Core Supreme',
+    'supreme goddess': 'Supreme',
+    'golden blossom goddess': 'Golden Blossom',
+    'demi goddess': 'Demi',
+    'first born princess': 'First Born Princess',
+    'second born princess': 'Second Born Princess',
+    'third born princess': 'Third Born Princess',
+  };
+
+  /// Migrates previously persisted short default category titles to full titles
+  /// while leaving user-customized titles untouched.
+  static QueendomCategory _migrateDefaultTitleIfNeeded(QueendomCategory cat) {
+    if (cat.isCustom) return cat;
+    final posLower = cat.position.toLowerCase();
+    final legacyTitle = _legacyShortTitlesByPosition[posLower];
+    if (legacyTitle == null || cat.title != legacyTitle) return cat;
+
+    for (final def in QueendomCategory.defaultCategories) {
+      if (def.position.toLowerCase() == posLower) {
+        return cat.copyWith(title: def.title);
+      }
+    }
+    return cat;
+  }
+
   Future<void> _loadFromPrefs() async {
     try {
       final prefs = await SharedPreferences.getInstance();
@@ -64,6 +91,7 @@ class QueendomCustomizationNotifier extends StateNotifier<QueendomCustomizationS
 
       // 2. Load categories (prefer allCategoriesPrefKey; fall back to legacy custom categories)
       List<QueendomCategory> loadedCategories = [];
+      bool migratedTitles = false;
       if (prefs.containsKey(allCategoriesPrefKey)) {
         final rawList = prefs.getStringList(allCategoriesPrefKey) ?? [];
         for (final raw in rawList) {
@@ -71,12 +99,18 @@ class QueendomCustomizationNotifier extends StateNotifier<QueendomCustomizationS
             final map = jsonDecode(raw) as Map<String, dynamic>;
             final cat = QueendomCategory.fromJson(map);
             if (cat.position.isNotEmpty) {
-              loadedCategories.add(cat);
+              final migrated = _migrateDefaultTitleIfNeeded(cat);
+              if (migrated.title != cat.title) {
+                migratedTitles = true;
+              }
+              loadedCategories.add(migrated);
             }
           } catch (_) {}
         }
         if (loadedCategories.isEmpty) {
           loadedCategories = List.from(QueendomCategory.defaultCategories);
+        } else if (migratedTitles) {
+          await _saveCategories(loadedCategories);
         }
       } else if (prefs.containsKey(legacyCustomCategoriesPrefKey)) {
         final legacyRaw = prefs.getStringList(legacyCustomCategoriesPrefKey) ?? [];

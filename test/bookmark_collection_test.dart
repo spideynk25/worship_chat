@@ -111,8 +111,6 @@ void main() {
     testWidgets('Renders Custom Collection card with folder icon and manage menu',
         (WidgetTester tester) async {
       bool tapped = false;
-      bool renamed = false;
-      bool deleted = false;
 
       await tester.pumpWidget(
         MaterialApp(
@@ -124,8 +122,8 @@ void main() {
               isAllBookmarks: false,
               canManage: true,
               onTap: () => tapped = true,
-              onRename: () => renamed = true,
-              onDelete: () => deleted = true,
+              onRename: () {},
+              onDelete: () {},
             ),
           ),
         ),

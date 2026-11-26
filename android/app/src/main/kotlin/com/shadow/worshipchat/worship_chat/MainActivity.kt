@@ -2,9 +2,13 @@ package com.shadow.worshipchat
 
 import android.accounts.AccountManager
 import android.app.NotificationManager
+import android.app.WallpaperManager
+import android.appwidget.AppWidgetManager
+import android.content.ComponentName
 import android.content.Context
 import android.content.res.Resources
 import android.os.Build
+import android.os.Bundle
 import android.os.PowerManager
 import android.view.WindowManager
 import android.telephony.TelephonyManager
@@ -22,15 +26,40 @@ import android.net.Uri
 import android.content.ContentResolver
 import java.io.ByteArrayOutputStream
 import java.io.File
+import java.io.FileInputStream
 import java.io.FileOutputStream
 
 class MainActivity : FlutterActivity() {
     private val CHANNEL = "my.app/accounts"
+    private var deviceChannel: MethodChannel? = null
+    private var pendingUpdateLaunch = false
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        captureUpdateIntent(intent)
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        if (captureUpdateIntent(intent)) {
+            deviceChannel?.invokeMethod("onUpdateNotificationTapped", null)
+        }
+    }
+
+    private fun captureUpdateIntent(incoming: Intent?): Boolean {
+        if (incoming?.getBooleanExtra(UpdateCheckJobService.EXTRA_LAUNCH_APP_UPDATE, false) == true) {
+            incoming.removeExtra(UpdateCheckJobService.EXTRA_LAUNCH_APP_UPDATE)
+            pendingUpdateLaunch = true
+            return true
+        }
+        return false
+    }
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
-        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "worship_chat/device")
-            .setMethodCallHandler { call, result ->
+        deviceChannel = MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "worship_chat/device")
+        deviceChannel?.setMethodCallHandler { call, result ->
                 when (call.method) {
                     "isTablet" -> result.success(isTabletDevice())
                     "acquireWakeLock" -> {
@@ -55,6 +84,81 @@ class MainActivity : FlutterActivity() {
                         val url = call.argument<String>("url")
                         val opened = openGoogleLens(path, url)
                         result.success(opened)
+                    }
+                    "setWallpaper" -> {
+                        val path = call.argument<String>("path")
+                        val target = call.argument<String>("target") ?: "both"
+                        if (path.isNullOrBlank()) {
+                            result.error("INVALID_PATH", "Image path is required.", null)
+                        } else {
+                            applyWallpaper(path, target, result)
+                        }
+                    }
+                    "updatePhotoWidget" -> {
+                        try {
+                            @Suppress("UNCHECKED_CAST")
+                            val photos = call.argument<List<Map<String, Any?>>>("photos") ?: emptyList()
+                            val currentIndex = call.argument<Int>("currentIndex") ?: 0
+                            val showTitle = call.argument<Boolean>("showTitle") ?: true
+                            val intervalMinutes = call.argument<Int>("intervalMinutes") ?: 60
+                            val sourceLabel = call.argument<String>("sourceLabel") ?: ""
+                            WorshipPhotoWidgetProvider.saveConfig(
+                                applicationContext,
+                                photos,
+                                currentIndex,
+                                showTitle,
+                                intervalMinutes,
+                                sourceLabel
+                            )
+                            result.success(true)
+                        } catch (e: Exception) {
+                            result.error("WIDGET_UPDATE_ERROR", e.message, null)
+                        }
+                    }
+                    "nextPhotoWidget" -> {
+                        try {
+                            val nextIndex = WorshipPhotoWidgetProvider.advanceAndRedraw(applicationContext)
+                            result.success(nextIndex)
+                        } catch (e: Exception) {
+                            result.error("WIDGET_NEXT_ERROR", e.message, null)
+                        }
+                    }
+                    "getPhotoWidgetInfo" -> {
+                        val canPin = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                            AppWidgetManager.getInstance(applicationContext).isRequestPinAppWidgetSupported
+                        } else {
+                            false
+                        }
+                        result.success(
+                            mapOf(
+                                "installedCount" to WorshipPhotoWidgetProvider.getInstalledCount(applicationContext),
+                                "canPin" to canPin,
+                                "currentIndex" to WorshipPhotoWidgetProvider.getCurrentIndex(applicationContext)
+                            )
+                        )
+                    }
+                    "requestPinPhotoWidget" -> {
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                            val mgr = AppWidgetManager.getInstance(applicationContext)
+                            if (mgr.isRequestPinAppWidgetSupported) {
+                                val provider = ComponentName(applicationContext, WorshipPhotoWidgetProvider::class.java)
+                                val ok = mgr.requestPinAppWidget(provider, null, null)
+                                result.success(ok)
+                            } else {
+                                result.success(false)
+                            }
+                        } else {
+                            result.success(false)
+                        }
+                    }
+                    "scheduleUpdateCheckJob" -> {
+                        UpdateCheckJobService.schedule(applicationContext)
+                        result.success(true)
+                    }
+                    "consumePendingUpdateLaunch" -> {
+                        val pending = pendingUpdateLaunch
+                        pendingUpdateLaunch = false
+                        result.success(pending)
                     }
                     else -> result.notImplemented()
                 }
@@ -328,5 +432,60 @@ class MainActivity : FlutterActivity() {
         }
 
         return false
+    }
+
+    private fun applyWallpaper(
+        filePath: String,
+        target: String,
+        result: MethodChannel.Result
+    ) {
+        val cleanPath = if (filePath.startsWith("file://")) {
+            filePath.removePrefix("file://")
+        } else {
+            filePath
+        }
+        val file = File(cleanPath)
+        if (!file.exists() || !file.isFile || file.length() == 0L) {
+            result.error("FILE_NOT_FOUND", "Wallpaper image file not found.", null)
+            return
+        }
+
+        Thread {
+            try {
+                val wm = WallpaperManager.getInstance(applicationContext)
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+                    when (target) {
+                        "lock" -> FileInputStream(file).use { stream ->
+                            wm.setStream(stream, null, true, WallpaperManager.FLAG_LOCK)
+                        }
+                        "both" -> {
+                            FileInputStream(file).use { stream ->
+                                wm.setStream(stream, null, true, WallpaperManager.FLAG_SYSTEM)
+                            }
+                            FileInputStream(file).use { stream ->
+                                wm.setStream(stream, null, true, WallpaperManager.FLAG_LOCK)
+                            }
+                        }
+                        else -> FileInputStream(file).use { stream ->
+                            wm.setStream(stream, null, true, WallpaperManager.FLAG_SYSTEM)
+                        }
+                    }
+                } else {
+                    FileInputStream(file).use { stream ->
+                        wm.setStream(stream)
+                    }
+                }
+                runOnUiThread { result.success(true) }
+            } catch (e: Exception) {
+                android.util.Log.e("MainActivity", "Failed to apply wallpaper: $e")
+                runOnUiThread {
+                    result.error(
+                        "WALLPAPER_ERROR",
+                        e.message ?: "Failed to set wallpaper",
+                        null
+                    )
+                }
+            }
+        }.start()
     }
 }

@@ -3,7 +3,6 @@ import 'dart:ui' as ui;
 import 'package:flutter/material.dart';
 import 'package:worship_chat/features/group/utils/queendom_emblem_helper.dart';
 import 'package:worship_chat/features/group/widgets/crown_turntable.dart';
-import 'package:worship_chat/features/group/widgets/cylinder_crown_painter.dart';
 
 /// In-memory cache for decoded crown [ui.Image]s (front + optional rear).
 class CrownImageCache {
@@ -80,7 +79,7 @@ class CrownImageCache {
 /// Interactive volumetric 3D royal crown.
 ///
 /// - If pre-rendered 3D turntable frames exist for the crown
-///   (assets/crowns/<name>/<name>_00..35.png) they are used: real back,
+///   (`assets/crowns/[name]/[name]_00..35.png`) they are used: real back,
 ///   real depth, real detail.
 /// - Otherwise falls back to the cylinder-wrapped painter.
 /// - Touch / hover tilt, idle floating sway, tap-to-inspect vault.
@@ -291,11 +290,7 @@ class _Royal3dCrownWidgetState extends State<Royal3dCrownWidget>
     final asset = _asset();
 
     if (asset == null) {
-      return widget.fallback ??
-          (widget.emoji != null
-              ? Text(widget.emoji!,
-                  style: TextStyle(fontSize: widget.size * 0.8))
-              : const SizedBox.shrink());
+      return widget.fallback ?? const SizedBox.shrink();
     }
 
     final cachedUiImage = CrownImageCache.get(asset);
@@ -508,23 +503,15 @@ class _RoyalCrownInspectSheetState extends State<_RoyalCrownInspectSheet>
           const SizedBox(height: 18),
 
           // Header
-          Row(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              if (widget.emoji != null) ...[
-                Text(widget.emoji!, style: const TextStyle(fontSize: 22)),
-                const SizedBox(width: 8),
-              ],
-              Text(
-                widget.title.toUpperCase(),
-                style: const TextStyle(
-                  color: Colors.white,
-                  fontSize: 18,
-                  fontWeight: FontWeight.w800,
-                  letterSpacing: 1.5,
-                ),
-              ),
-            ],
+          Text(
+            widget.title.toUpperCase(),
+            style: const TextStyle(
+              color: Colors.white,
+              fontSize: 18,
+              fontWeight: FontWeight.w800,
+              letterSpacing: 1.5,
+            ),
+            textAlign: TextAlign.center,
           ),
           const SizedBox(height: 4),
           Text(

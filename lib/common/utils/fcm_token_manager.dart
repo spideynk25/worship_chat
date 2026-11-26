@@ -51,6 +51,12 @@ class FCMTokenManager {
         log('Warning: requestPermission error: $e');
       }
 
+      if (!kIsWeb && defaultTargetPlatform == TargetPlatform.android) {
+        _messaging.subscribeToTopic('app_updates').catchError((e) {
+          log('⚠️ Could not subscribe to app_updates topic: $e');
+        });
+      }
+
       // Always listen for token refresh
       _messaging.onTokenRefresh.listen((newToken) {
         log('🔄 FCM token refreshed: $newToken');
@@ -133,6 +139,8 @@ class FCMTokenManager {
       // 1. Save to Firestore
       await _firestore.collection('users').doc(userId).set({
         'fcmToken': token,
+        'token': token,
+        'pushToken': token,
         'fcmTokenUpdatedAt': FieldValue.serverTimestamp(),
       }, SetOptions(merge: true));
 
@@ -200,7 +208,8 @@ class FCMTokenManager {
           }
 
           if (userDoc.exists) {
-            final token = userDoc.data()?['fcmToken'];
+            final data = userDoc.data();
+            final token = data?['fcmToken'] ?? data?['token'] ?? data?['pushToken'];
             if (token != null && token is String && token.isNotEmpty) {
               log('✅ Got token for user $userId: ${token.substring(0, 20)}...');
               return token;

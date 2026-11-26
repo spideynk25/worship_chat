@@ -16,6 +16,7 @@ import 'package:worship_chat/common/utils/firebase_notification_service.dart';
 import 'package:worship_chat/common/widgets/user_avatar.dart';
 import 'package:worship_chat/features/auth/controller/auth_controller.dart';
 import 'package:worship_chat/features/chat/controller/chat_controller.dart';
+import 'package:worship_chat/features/chat/screens/one_to_one_chat_screen.dart';
 import 'package:worship_chat/features/status/controller/status_controller.dart';
 import 'package:worship_chat/models/user_model.dart';
 
@@ -59,6 +60,16 @@ class _ViewStatusesScreenState extends ConsumerState<ViewStatusesScreen>
   late final String _currentUserProfilePic;
 
   static const _imageDuration = Duration(seconds: 8);
+  static const List<String> _quickEmojis = [
+    '❤️',
+    '🔥',
+    '👑',
+    '😂',
+    '😮',
+    '🙏',
+    '👏',
+    '😍',
+  ];
 
   // ── Lifecycle ─────────────────────────────────────────────────────────────
 
@@ -329,6 +340,7 @@ class _ViewStatusesScreenState extends ConsumerState<ViewStatusesScreen>
   // ── Like handler ──────────────────────────────────────────────────────────
 
   Future<void> _handleLike() async {
+    HapticFeedback.lightImpact();
     final status = widget.statuses[_currentIndex];
     final statusOwnerUid = status['uid'] as String;
 
@@ -370,6 +382,7 @@ class _ViewStatusesScreenState extends ConsumerState<ViewStatusesScreen>
   // ── Reply handler ─────────────────────────────────────────────────────────
 
   void _openReply() {
+    _pauseAll();
     setState(() => _replyFieldVisible = true);
     Future.delayed(const Duration(milliseconds: 80), () {
       _replyFocusNode.requestFocus();
@@ -387,17 +400,18 @@ class _ViewStatusesScreenState extends ConsumerState<ViewStatusesScreen>
     final status = widget.statuses[_currentIndex];
     final statusOwnerUid = status['uid'] as String;
     final statusUrl = status['statusUrl'] as String;
-    final isVideo = (status['mediaType'] as String?) == 'video';
+    final ownerName = (status['userName'] as String?) ?? 'Contact';
+    final ownerProfilePic = status['profilePic'] as String?;
 
     // ── Build a MessageReply so the chat bubble shows the story thumbnail ──
-    // The repository reads: messageReply.message, .isMe, .messageType,
-    // .fileMessageData — which maps onto repliedMessage/repliedMessageType
-    // in the saved OneToOneMessageModel, rendering the story thumbnail in chat.
+    // Setting messageType: 'story' and repliedTo: ownerName triggers the
+    // gradient Story badge in MyMessageCard/SenderMessageCard.
     final storyReply = MessageReply(
       message: statusUrl, // shown as the quoted content (image/video URL)
       isMe: false, // it's a reply TO the owner, not ourselves
-      messageType: isVideo ? 'video' : 'image',
+      messageType: 'story',
       fileMessageData: statusUrl,
+      repliedTo: ownerName,
     );
 
     // ── Inject the reply into the provider so sendTextMessage picks it up ──
@@ -447,7 +461,209 @@ class _ViewStatusesScreenState extends ConsumerState<ViewStatusesScreen>
         _isSendingReply = false;
         _replyFieldVisible = false;
       });
+      _showReplySentToast(
+        ownerName,
+        statusOwnerUid,
+        ownerProfilePic,
+        fcmToken,
+      );
+      _resumeAll();
     }
+  }
+
+  // ── Quick emoji reaction handler ──────────────────────────────────────────
+
+  Future<void> _sendQuickReaction(String emoji) async {
+    HapticFeedback.mediumImpact();
+    final status = widget.statuses[_currentIndex];
+    final statusOwnerUid = status['uid'] as String;
+    final statusUrl = status['statusUrl'] as String;
+    final ownerName = (status['userName'] as String?) ?? 'Contact';
+    final ownerProfilePic = status['profilePic'] as String?;
+
+    final storyReply = MessageReply(
+      message: statusUrl,
+      isMe: false,
+      messageType: 'story',
+      fileMessageData: statusUrl,
+      repliedTo: ownerName,
+    );
+
+    ref.read(messageReplyProvider.notifier).state = storyReply;
+
+    String fcmToken = '';
+    try {
+      final ownerUser = await ref
+          .read(authControllerProvider)
+          .userDataById(statusOwnerUid)
+          .first;
+      final dynamic u = ownerUser;
+      fcmToken =
+          (u.fcmToken as String?) ??
+          (u.token as String?) ??
+          (u.pushToken as String?) ??
+          '';
+    } catch (_) {}
+
+    if (!mounted) {
+      ref.read(messageReplyProvider.notifier).state = null;
+      return;
+    }
+
+    await ref
+        .read(chatControllerProvider)
+        .sendTextMessage(
+          context,
+          emoji,
+          statusOwnerUid,
+          'text',
+          null,
+          fcmToken,
+          true,
+          null,
+          "others",
+        );
+
+    ref.read(messageReplyProvider.notifier).state = null;
+
+    if (mounted) {
+      _showReplySentToast(
+        ownerName,
+        statusOwnerUid,
+        ownerProfilePic,
+        fcmToken,
+        emoji: emoji,
+      );
+    }
+  }
+
+  // ── Floating reply toast with View Chat shortcut ──────────────────────────
+
+  void _showReplySentToast(
+    String ownerName,
+    String ownerUid,
+    String? ownerProfilePic,
+    String fcmToken, {
+    String? emoji,
+  }) {
+    HapticFeedback.mediumImpact();
+    ScaffoldMessenger.of(context).hideCurrentSnackBar();
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        behavior: SnackBarBehavior.floating,
+        backgroundColor: Colors.transparent,
+        elevation: 0,
+        margin: const EdgeInsets.fromLTRB(16, 0, 16, 84),
+        duration: const Duration(seconds: 4),
+        content: ClipRRect(
+          borderRadius: BorderRadius.circular(16),
+          child: BackdropFilter(
+            filter: ImageFilter.blur(sigmaX: 16, sigmaY: 16),
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+              decoration: BoxDecoration(
+                color: const Color(0xFF1E1E2C).withValues(alpha: 0.92),
+                borderRadius: BorderRadius.circular(16),
+                border: Border.all(
+                  color: const Color(0xFFFF2D55).withValues(alpha: 0.35),
+                  width: 1.2,
+                ),
+                boxShadow: [
+                  BoxShadow(
+                    color: Colors.black.withValues(alpha: 0.4),
+                    blurRadius: 16,
+                    offset: const Offset(0, 4),
+                  ),
+                ],
+              ),
+              child: Row(
+                children: [
+                  Text(
+                    emoji ?? '💬',
+                    style: const TextStyle(fontSize: 18),
+                  ),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          emoji != null
+                              ? 'Reaction sent to $ownerName'
+                              : 'Reply sent to $ownerName',
+                          style: const TextStyle(
+                            color: Colors.white,
+                            fontWeight: FontWeight.w600,
+                            fontSize: 13,
+                          ),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                        const SizedBox(height: 1),
+                        const Text(
+                          'Delivered to 1-to-1 chat',
+                          style: TextStyle(
+                            color: Colors.white60,
+                            fontSize: 11,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  TextButton(
+                    style: TextButton.styleFrom(
+                      backgroundColor: tabColor.withValues(alpha: 0.25),
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 12,
+                        vertical: 6,
+                      ),
+                      minimumSize: Size.zero,
+                      tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(20),
+                        side: BorderSide(
+                          color: tabColor.withValues(alpha: 0.7),
+                          width: 1,
+                        ),
+                      ),
+                    ),
+                    onPressed: () {
+                      ScaffoldMessenger.of(context).hideCurrentSnackBar();
+                      _pauseAll();
+                      Navigator.push(
+                        context,
+                        MaterialPageRoute(
+                          builder: (_) => OneToOneChatScreen(
+                            name: ownerName,
+                            uid: ownerUid,
+                            fcmToken: fcmToken,
+                            unseenCount: false,
+                            profilePic: ownerProfilePic,
+                            chatBackgroundUrl: null,
+                          ),
+                        ),
+                      ).then((_) {
+                        if (mounted) _resumeAll();
+                      });
+                    },
+                    child: const Text(
+                      'View Chat',
+                      style: TextStyle(
+                        color: Colors.white,
+                        fontWeight: FontWeight.bold,
+                        fontSize: 12,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
   }
 
   // ── Build ─────────────────────────────────────────────────────────────────
@@ -567,14 +783,14 @@ class _ViewStatusesScreenState extends ConsumerState<ViewStatusesScreen>
               bottom: 0,
               left: 0,
               right: 0,
-              height: 160,
+              height: 190,
               child: DecoratedBox(
                 decoration: BoxDecoration(
                   gradient: LinearGradient(
                     begin: Alignment.bottomCenter,
                     end: Alignment.topCenter,
                     colors: [
-                      Colors.black.withValues(alpha: 0.75),
+                      Colors.black.withValues(alpha: 0.85),
                       Colors.transparent,
                     ],
                   ),
@@ -807,93 +1023,172 @@ class _ViewStatusesScreenState extends ConsumerState<ViewStatusesScreen>
   // ── Like + reply action bar ───────────────────────────────────────────────
 
   Widget _buildLikeReplyBar(String statusId) {
+    final status = widget.statuses[_currentIndex];
+    final ownerName = (status['userName'] as String?) ?? 'Contact';
+    final firstName = ownerName.trim().split(' ').first;
+
     return StreamBuilder<Map<String, dynamic>>(
       stream: ref.read(statusControllerProvider).getLikesStream(statusId),
       builder: (context, snapshot) {
         final likes = snapshot.data ?? {};
         final isLiked = likes.containsKey(_currentUserUid);
+        final likeCount = likes.length;
 
-        return Row(
+        return Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            // ── Like button ──────────────────────────────────────────
-            GestureDetector(
-              onTap: isLiked ? null : _handleLike,
-              child: ClipRRect(
-                borderRadius: BorderRadius.circular(50),
-                child: BackdropFilter(
-                  filter: ImageFilter.blur(sigmaX: 10, sigmaY: 10),
-                  child: AnimatedContainer(
-                    duration: const Duration(milliseconds: 200),
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 16,
-                      vertical: 10,
-                    ),
-                    decoration: BoxDecoration(
-                      color: isLiked
-                          ? Colors.red.withValues(alpha: 0.25)
-                          : Colors.white.withValues(alpha: 0.12),
-                      borderRadius: BorderRadius.circular(50),
-                      border: Border.all(
-                        color: isLiked
-                            ? Colors.red.withValues(alpha: 0.6)
-                            : Colors.white.withValues(alpha: 0.2),
-                      ),
-                    ),
-                    child: Icon(
-                      isLiked
-                          ? Icons.favorite_rounded
-                          : Icons.favorite_border_rounded,
-                      color: isLiked ? Colors.red : Colors.white,
-                      size: 20,
-                    ),
+            // ── Quick emoji reactions carousel ─────────────────────────
+            SizedBox(
+              height: 40,
+              child: Center(
+                child: SingleChildScrollView(
+                  scrollDirection: Axis.horizontal,
+                  physics: const BouncingScrollPhysics(),
+                  child: Row(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: _quickEmojis.map((emoji) {
+                      return Padding(
+                        padding: const EdgeInsets.symmetric(horizontal: 4),
+                        child: Material(
+                          color: Colors.transparent,
+                          child: InkWell(
+                            onTap: () => _sendQuickReaction(emoji),
+                            borderRadius: BorderRadius.circular(20),
+                            child: ClipRRect(
+                              borderRadius: BorderRadius.circular(20),
+                              child: BackdropFilter(
+                                filter: ImageFilter.blur(sigmaX: 10, sigmaY: 10),
+                                child: Container(
+                                  width: 40,
+                                  height: 40,
+                                  decoration: BoxDecoration(
+                                    color: Colors.white.withValues(alpha: 0.12),
+                                    shape: BoxShape.circle,
+                                    border: Border.all(
+                                      color: Colors.white.withValues(alpha: 0.20),
+                                    ),
+                                  ),
+                                  alignment: Alignment.center,
+                                  child: Text(
+                                    emoji,
+                                    style: const TextStyle(fontSize: 19),
+                                  ),
+                                ),
+                              ),
+                            ),
+                          ),
+                        ),
+                      );
+                    }).toList(),
                   ),
                 ),
               ),
             ),
-            const SizedBox(width: 10),
-            // ── Reply button ─────────────────────────────────────────
-            Expanded(
-              child: GestureDetector(
-                onTap: _openReply,
-                child: ClipRRect(
-                  borderRadius: BorderRadius.circular(50),
-                  child: BackdropFilter(
-                    filter: ImageFilter.blur(sigmaX: 10, sigmaY: 10),
-                    child: Container(
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 16,
-                        vertical: 10,
-                      ),
-                      decoration: BoxDecoration(
-                        color: Colors.white.withValues(alpha: 0.12),
-                        borderRadius: BorderRadius.circular(50),
-                        border: Border.all(
-                          color: Colors.white.withValues(alpha: 0.2),
-                        ),
-                      ),
-                      child: const Row(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          Icon(
-                            Icons.reply_rounded,
-                            color: Colors.white,
-                            size: 18,
+            const SizedBox(height: 10),
+            // ── Bottom action pill row: Reply pill + Like button ──────
+            Row(
+              children: [
+                // ── Reply pill ───────────────────────────────────────
+                Expanded(
+                  child: GestureDetector(
+                    onTap: _openReply,
+                    child: ClipRRect(
+                      borderRadius: BorderRadius.circular(30),
+                      child: BackdropFilter(
+                        filter: ImageFilter.blur(sigmaX: 12, sigmaY: 12),
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 16,
+                            vertical: 11,
                           ),
-                          SizedBox(width: 8),
-                          Text(
-                            'Reply',
-                            style: TextStyle(
-                              color: Colors.white,
-                              fontSize: 13,
-                              fontWeight: FontWeight.w500,
+                          decoration: BoxDecoration(
+                            color: Colors.white.withValues(alpha: 0.12),
+                            borderRadius: BorderRadius.circular(30),
+                            border: Border.all(
+                              color: Colors.white.withValues(alpha: 0.22),
                             ),
                           ),
-                        ],
+                          child: Row(
+                            children: [
+                              const Icon(
+                                Icons.reply_rounded,
+                                color: Colors.white70,
+                                size: 18,
+                              ),
+                              const SizedBox(width: 8),
+                              Expanded(
+                                child: Text(
+                                  'Reply to $firstName...',
+                                  style: const TextStyle(
+                                    color: Colors.white70,
+                                    fontSize: 13,
+                                    fontWeight: FontWeight.w500,
+                                  ),
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
                       ),
                     ),
                   ),
                 ),
-              ),
+                const SizedBox(width: 10),
+                // ── Like button ──────────────────────────────────────
+                GestureDetector(
+                  onTap: _handleLike,
+                  child: ClipRRect(
+                    borderRadius: BorderRadius.circular(30),
+                    child: BackdropFilter(
+                      filter: ImageFilter.blur(sigmaX: 12, sigmaY: 12),
+                      child: AnimatedContainer(
+                        duration: const Duration(milliseconds: 200),
+                        padding: EdgeInsets.symmetric(
+                          horizontal: likeCount > 0 ? 14 : 12,
+                          vertical: 10,
+                        ),
+                        decoration: BoxDecoration(
+                          color: isLiked
+                              ? Colors.red.withValues(alpha: 0.25)
+                              : Colors.white.withValues(alpha: 0.12),
+                          borderRadius: BorderRadius.circular(30),
+                          border: Border.all(
+                            color: isLiked
+                                ? Colors.red.withValues(alpha: 0.6)
+                                : Colors.white.withValues(alpha: 0.22),
+                          ),
+                        ),
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Icon(
+                              isLiked
+                                  ? Icons.favorite_rounded
+                                  : Icons.favorite_border_rounded,
+                              color: isLiked ? Colors.red : Colors.white,
+                              size: 20,
+                            ),
+                            if (likeCount > 0) ...[
+                              const SizedBox(width: 5),
+                              Text(
+                                '$likeCount',
+                                style: TextStyle(
+                                  color: isLiked ? Colors.red : Colors.white,
+                                  fontWeight: FontWeight.bold,
+                                  fontSize: 12,
+                                ),
+                              ),
+                            ],
+                          ],
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+              ],
             ),
           ],
         );
@@ -907,15 +1202,16 @@ class _ViewStatusesScreenState extends ConsumerState<ViewStatusesScreen>
     final status = widget.statuses[_currentIndex];
     final isVideo = (status['mediaType'] as String?) == 'video';
     final statusUrl = status['statusUrl'] as String;
-    final ownerName = status['userName'] as String;
+    final ownerName = (status['userName'] as String?) ?? 'Contact';
+    final firstName = ownerName.trim().split(' ').first;
 
     return ClipRRect(
       borderRadius: BorderRadius.circular(20),
       child: BackdropFilter(
-        filter: ImageFilter.blur(sigmaX: 16, sigmaY: 16),
+        filter: ImageFilter.blur(sigmaX: 18, sigmaY: 18),
         child: Container(
           decoration: BoxDecoration(
-            color: Colors.white.withValues(alpha: 0.10),
+            color: const Color(0xFF1E1E2C).withValues(alpha: 0.90),
             borderRadius: BorderRadius.circular(20),
             border: Border.all(color: Colors.white.withValues(alpha: 0.18)),
           ),
@@ -929,7 +1225,7 @@ class _ViewStatusesScreenState extends ConsumerState<ViewStatusesScreen>
                   top: Radius.circular(20),
                 ),
                 child: Container(
-                  height: 72,
+                  height: 68,
                   color: Colors.white.withValues(alpha: 0.06),
                   child: Row(
                     children: [
@@ -943,16 +1239,16 @@ class _ViewStatusesScreenState extends ConsumerState<ViewStatusesScreen>
                             CachedNetworkImage(
                               imageUrl: statusUrl,
                               width: 52,
-                              height: 72,
+                              height: 68,
                               fit: BoxFit.cover,
                               placeholder: (_, __) => Container(
                                 width: 52,
-                                height: 72,
+                                height: 68,
                                 color: Colors.white10,
                               ),
                               errorWidget: (_, __, ___) => Container(
                                 width: 52,
-                                height: 72,
+                                height: 68,
                                 color: Colors.white10,
                                 child: const Icon(
                                   Icons.image_outlined,
@@ -996,6 +1292,41 @@ class _ViewStatusesScreenState extends ConsumerState<ViewStatusesScreen>
                             const SizedBox(height: 3),
                             Row(
                               children: [
+                                Container(
+                                  padding: const EdgeInsets.symmetric(
+                                    horizontal: 5,
+                                    vertical: 1.5,
+                                  ),
+                                  margin: const EdgeInsets.only(right: 6),
+                                  decoration: BoxDecoration(
+                                    gradient: const LinearGradient(
+                                      colors: [
+                                        Color(0xFFFF2D55),
+                                        Color(0xFFFF7A00),
+                                      ],
+                                    ),
+                                    borderRadius: BorderRadius.circular(4),
+                                  ),
+                                  child: const Row(
+                                    mainAxisSize: MainAxisSize.min,
+                                    children: [
+                                      Icon(
+                                        Icons.history_toggle_off,
+                                        color: Colors.white,
+                                        size: 10,
+                                      ),
+                                      SizedBox(width: 3),
+                                      Text(
+                                        'Story',
+                                        style: TextStyle(
+                                          color: Colors.white,
+                                          fontSize: 9.5,
+                                          fontWeight: FontWeight.bold,
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                ),
                                 Icon(
                                   isVideo
                                       ? Icons.videocam_rounded
@@ -1005,7 +1336,7 @@ class _ViewStatusesScreenState extends ConsumerState<ViewStatusesScreen>
                                 ),
                                 const SizedBox(width: 4),
                                 Text(
-                                  isVideo ? 'Video story' : 'Photo story',
+                                  isVideo ? 'Video' : 'Photo',
                                   style: const TextStyle(
                                     color: Colors.white54,
                                     fontSize: 12,
@@ -1021,6 +1352,7 @@ class _ViewStatusesScreenState extends ConsumerState<ViewStatusesScreen>
                         onTap: () {
                           _replyFocusNode.unfocus();
                           setState(() => _replyFieldVisible = false);
+                          _resumeAll();
                         },
                         child: Padding(
                           padding: const EdgeInsets.all(12),
@@ -1035,6 +1367,36 @@ class _ViewStatusesScreenState extends ConsumerState<ViewStatusesScreen>
                   ),
                 ),
               ),
+              // ── Quick emoji reaction row inside input banner ──────────
+              Container(
+                height: 36,
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                color: Colors.black.withValues(alpha: 0.15),
+                child: ListView.separated(
+                  scrollDirection: Axis.horizontal,
+                  physics: const BouncingScrollPhysics(),
+                  itemCount: _quickEmojis.length,
+                  separatorBuilder: (_, __) => const SizedBox(width: 6),
+                  itemBuilder: (context, idx) {
+                    final em = _quickEmojis[idx];
+                    return GestureDetector(
+                      onTap: () {
+                        _replyFocusNode.unfocus();
+                        _sendQuickReaction(em);
+                      },
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 8),
+                        decoration: BoxDecoration(
+                          color: Colors.white.withValues(alpha: 0.08),
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                        alignment: Alignment.center,
+                        child: Text(em, style: const TextStyle(fontSize: 15)),
+                      ),
+                    );
+                  },
+                ),
+              ),
               // ── Divider ────────────────────────────────────────────────
               Divider(
                 height: 1,
@@ -1043,7 +1405,7 @@ class _ViewStatusesScreenState extends ConsumerState<ViewStatusesScreen>
               ),
               // ── Text field + send ──────────────────────────────────────
               Padding(
-                padding: const EdgeInsets.fromLTRB(12, 8, 8, 8),
+                padding: const EdgeInsets.fromLTRB(12, 6, 8, 6),
                 child: Row(
                   children: [
                     Expanded(
@@ -1059,8 +1421,7 @@ class _ViewStatusesScreenState extends ConsumerState<ViewStatusesScreen>
                         textInputAction: TextInputAction.send,
                         onSubmitted: (_) => _sendReply(),
                         decoration: InputDecoration(
-                          hintText:
-                              'Reply to ${ownerName.split(' ').first}\'s story…',
+                          hintText: 'Reply to $firstName\'s story…',
                           hintStyle: TextStyle(
                             color: Colors.white.withValues(alpha: 0.45),
                             fontSize: 14,
@@ -1081,8 +1442,8 @@ class _ViewStatusesScreenState extends ConsumerState<ViewStatusesScreen>
                       onTap: _isSendingReply ? null : _sendReply,
                       child: AnimatedContainer(
                         duration: const Duration(milliseconds: 150),
-                        width: 40,
-                        height: 40,
+                        width: 38,
+                        height: 38,
                         decoration: BoxDecoration(
                           color: tabColor,
                           shape: BoxShape.circle,
@@ -1108,7 +1469,7 @@ class _ViewStatusesScreenState extends ConsumerState<ViewStatusesScreen>
                             : const Icon(
                                 Icons.send_rounded,
                                 color: Colors.white,
-                                size: 17,
+                                size: 16,
                               ),
                       ),
                     ),

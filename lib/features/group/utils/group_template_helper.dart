@@ -57,116 +57,136 @@ class GroupTemplateHelper {
       return (deityName: '', position: null);
     }
 
-    // Check for living place emoji markers
-    // Emojis: ☀️, 🌟, 🏮, 🍂, 🪷, 🏵️, 🪻, 👑, 🍁, 🍀, 🌺, 🌸, 🌼
-    final emojiRegex = RegExp(r'[☀️🌟🏮🍂🪷🏵🪻👑🍁🍀🌺🌸🌼]', unicode: true);
-    final match = emojiRegex.firstMatch(trimmed);
-    if (match != null) {
-      final afterEmoji = trimmed.substring(match.end).trim();
-      final cleanAfter = afterEmoji.replaceFirst(RegExp(r'^\uFE0F?\s*'), '');
-      final upper = cleanAfter.toUpperCase();
+    // Clean any legacy emoji markers from text if present
+    final legacyEmojiRegex =
+        RegExp(r'[☀️🌟🏮🍂🪷🏵🪻👑🍁🍀🌺🌸🌼]\uFE0F?', unicode: true);
+    String cleanAfter = trimmed
+        .replaceAll(legacyEmojiRegex, '')
+        .replaceAll(RegExp(r'\s+'), ' ')
+        .trim();
 
-      if (upper.startsWith('AURA ELIXIRIA GODDESS ')) {
+    // Strip living place prefix if present at the start (e.g. PALACE OF, TEMPLE OF, etc.)
+    final stripPrefixRegex = RegExp(
+      r'^(?:DARK\s+|GOLDEN\s+|ROYAL\s+)?(?:PALACE|TEMPLE|SHRINE|SANCTUM|HEAVEN|FORTRESS)\s+(?:OF|of)\s+',
+      caseSensitive: false,
+    );
+    while (stripPrefixRegex.hasMatch(cleanAfter)) {
+      cleanAfter = cleanAfter.replaceFirst(stripPrefixRegex, '').trim();
+    }
+    final upper = cleanAfter.toUpperCase();
+
+    if (upper.contains('AURA ELIXIRIA GODDESS ')) {
+      final idx = upper.indexOf('AURA ELIXIRIA GODDESS ');
+      return (
+        deityName: toTitleCase(cleanAfter.substring(idx + 22).trim()),
+        position: 'Aura Elixiria Goddess'
+      );
+    }
+    if (upper.contains('CORE SUPREME GODDESS ')) {
+      final idx = upper.indexOf('CORE SUPREME GODDESS ');
+      return (
+        deityName: toTitleCase(cleanAfter.substring(idx + 21).trim()),
+        position: 'Core Supreme Goddess'
+      );
+    }
+    if (upper.contains('GOLDEN BLOSSOM GODDESS ')) {
+      final idx = upper.indexOf('GOLDEN BLOSSOM GODDESS ');
+      return (
+        deityName: toTitleCase(cleanAfter.substring(idx + 23).trim()),
+        position: 'Golden Blossom Goddess'
+      );
+    }
+    if (upper.contains('DEMI GODDESS ')) {
+      final idx = upper.indexOf('DEMI GODDESS ');
+      return (
+        deityName: toTitleCase(cleanAfter.substring(idx + 13).trim()),
+        position: 'Demi Goddess'
+      );
+    }
+    if (upper.contains('DARK ANGEL ')) {
+      final idx = upper.indexOf('DARK ANGEL ');
+      return (
+        deityName: toTitleCase(cleanAfter.substring(idx + 11).trim()),
+        position: 'Dark Angel'
+      );
+    }
+    if (upper.contains('FIRST BORN') && upper.contains('PRINCESS ')) {
+      final princessIdx = upper.lastIndexOf('PRINCESS ');
+      return (
+        deityName: toTitleCase(cleanAfter.substring(princessIdx + 9).trim()),
+        position: 'First Born Princess'
+      );
+    }
+    if (upper.contains('SECOND BORN') && upper.contains('PRINCESS ')) {
+      final princessIdx = upper.lastIndexOf('PRINCESS ');
+      return (
+        deityName: toTitleCase(cleanAfter.substring(princessIdx + 9).trim()),
+        position: 'Second Born Princess'
+      );
+    }
+    if (upper.contains('THIRD BORN') && upper.contains('PRINCESS ')) {
+      final princessIdx = upper.lastIndexOf('PRINCESS ');
+      return (
+        deityName: toTitleCase(cleanAfter.substring(princessIdx + 9).trim()),
+        position: 'Third Born Princess'
+      );
+    }
+    if (upper.contains('PRINCESS ')) {
+      final princessIdx = upper.lastIndexOf('PRINCESS ');
+      return (
+        deityName: toTitleCase(cleanAfter.substring(princessIdx + 9).trim()),
+        position: 'Princess'
+      );
+    }
+    if (upper.contains('SUPREME GODDESS ')) {
+      final rem =
+          cleanAfter.substring(upper.indexOf('SUPREME GODDESS ') + 16).trim();
+      final remUpper = rem.toUpperCase();
+      if (remUpper.contains(' GODDESS ')) {
+        final gIdx = remUpper.lastIndexOf(' GODDESS ');
         return (
-          deityName: toTitleCase(cleanAfter.substring(22)),
-          position: 'Aura Elixiria Goddess'
-        );
-      }
-      if (upper.startsWith('CORE SUPREME GODDESS ')) {
-        return (
-          deityName: toTitleCase(cleanAfter.substring(21)),
-          position: 'Core Supreme Goddess'
-        );
-      }
-      if (upper.startsWith('GOLDEN BLOSSOM GODDESS ')) {
-        return (
-          deityName: toTitleCase(cleanAfter.substring(23)),
-          position: 'Golden Blossom Goddess'
-        );
-      }
-      if (upper.startsWith('DEMI GODDESS ')) {
-        return (
-          deityName: toTitleCase(cleanAfter.substring(13)),
-          position: 'Demi Goddess'
-        );
-      }
-      if (upper.startsWith('DARK ANGEL ')) {
-        return (
-          deityName: toTitleCase(cleanAfter.substring(11)),
-          position: 'Dark Angel'
-        );
-      }
-      if (upper.startsWith('QUEEN ')) {
-        return (
-          deityName: toTitleCase(cleanAfter.substring(6)),
-          position: 'Queen'
-        );
-      }
-      if (upper.contains('FIRST BORN') && upper.contains('PRINCESS ')) {
-        final princessIdx = upper.lastIndexOf('PRINCESS ');
-        return (
-          deityName: toTitleCase(cleanAfter.substring(princessIdx + 9)),
-          position: 'First Born Princess'
-        );
-      }
-      if (upper.contains('SECOND BORN') && upper.contains('PRINCESS ')) {
-        final princessIdx = upper.lastIndexOf('PRINCESS ');
-        return (
-          deityName: toTitleCase(cleanAfter.substring(princessIdx + 9)),
-          position: 'Second Born Princess'
-        );
-      }
-      if (upper.contains('THIRD BORN') && upper.contains('PRINCESS ')) {
-        final princessIdx = upper.lastIndexOf('PRINCESS ');
-        return (
-          deityName: toTitleCase(cleanAfter.substring(princessIdx + 9)),
-          position: 'Third Born Princess'
-        );
-      }
-      if (upper.startsWith('SUPREME GODDESS ')) {
-        final rem = cleanAfter.substring(16).trim();
-        final remUpper = rem.toUpperCase();
-        if (remUpper.contains(' GODDESS ')) {
-          final gIdx = remUpper.lastIndexOf(' GODDESS ');
-          return (
-            deityName: toTitleCase(rem.substring(gIdx + 9)),
-            position: 'Supreme Goddess'
-          );
-        }
-        return (
-          deityName: toTitleCase(rem),
+          deityName: toTitleCase(rem.substring(gIdx + 9).trim()),
           position: 'Supreme Goddess'
         );
       }
-      if (upper.contains('ELFWITCH ')) {
-        final idx = upper.lastIndexOf('ELFWITCH ');
-        return (
-          deityName: toTitleCase(cleanAfter.substring(idx + 9)),
-          position: 'Elfwitch'
-        );
-      }
-      if (upper.contains('ENCHANTRESS ')) {
-        final idx = upper.lastIndexOf('ENCHANTRESS ');
-        return (
-          deityName: toTitleCase(cleanAfter.substring(idx + 12)),
-          position: 'Enchantress'
-        );
-      }
-      if (upper.contains('GODDESS ')) {
-        final idx = upper.lastIndexOf('GODDESS ');
-        return (
-          deityName: toTitleCase(cleanAfter.substring(idx + 8)),
-          position: 'Goddess'
-        );
-      }
-
       return (
-        deityName: toTitleCase(cleanAfter),
-        position: null,
+        deityName: toTitleCase(rem),
+        position: 'Supreme Goddess'
+      );
+    }
+    if (upper.contains('ELFWITCH ')) {
+      final idx = upper.lastIndexOf('ELFWITCH ');
+      return (
+        deityName: toTitleCase(cleanAfter.substring(idx + 9).trim()),
+        position: 'Elfwitch'
+      );
+    }
+    if (upper.contains('ENCHANTRESS ')) {
+      final idx = upper.lastIndexOf('ENCHANTRESS ');
+      return (
+        deityName: toTitleCase(cleanAfter.substring(idx + 12).trim()),
+        position: 'Enchantress'
+      );
+    }
+    if (upper.contains('QUEEN ')) {
+      final idx = upper.lastIndexOf('QUEEN ');
+      return (
+        deityName: toTitleCase(cleanAfter.substring(idx + 6).trim()),
+        position: 'Queen'
+      );
+    }
+    if (upper.contains('GODDESS ')) {
+      final idx = upper.lastIndexOf('GODDESS ');
+      return (
+        deityName: toTitleCase(cleanAfter.substring(idx + 8).trim()),
+        position: 'Goddess'
       );
     }
 
-    return (deityName: toTitleCase(trimmed), position: null);
+    return (
+      deityName: toTitleCase(cleanAfter),
+      position: null,
+    );
   }
 
   /// Builds the display name with position (e.g. "Queen Pooja", "Princess Krithi", "Wife of Queen Pooja - Samantha", "Fuck Toy of Queen Pooja - Samantha")
@@ -413,6 +433,90 @@ class GroupTemplateHelper {
     }
   }
 
+  /// Cleans and deduplicates living place strings if corrupted or duplicated
+  static String cleanLivingPlace(
+    String text, {
+    String? position,
+    String? family,
+  }) {
+    final trimmed = text.trim();
+    if (trimmed.isEmpty) return '';
+    final upper = trimmed.toUpperCase();
+    final duplicateCheck = RegExp(
+      r'(PALACE\s+OF|TEMPLE\s+OF|SANCTUM\s+OF|FORTRESS\s+OF|SHRINE\s+OF|HEAVEN\s+OF|FIRST\s+BORN|SECOND\s+BORN|THIRD\s+BORN)',
+      caseSensitive: false,
+    );
+    final matches = duplicateCheck.allMatches(upper).toList();
+    final seen = <String>{};
+    bool hasDuplicate = false;
+    for (final m in matches) {
+      final word = m.group(0)!.toUpperCase().replaceAll(RegExp(r'\s+'), ' ');
+      if (!seen.add(word)) {
+        hasDuplicate = true;
+        break;
+      }
+    }
+    if (hasDuplicate) {
+      final parsed = parseLivingPlace(trimmed);
+      if (parsed.deityName.isNotEmpty) {
+        final template = generateTemplate(
+          position: position ?? parsed.position ?? 'First Born Princess',
+          name: parsed.deityName,
+          family: family ?? 'Main',
+        );
+        if (template.livingPlace.isNotEmpty) {
+          return template.livingPlace;
+        }
+      }
+    }
+    return trimmed;
+  }
+
+
+
+  /// Formats living place as an elegant Title Case subtitle, stripping redundant deity name if present
+  static String formatSanctuarySubtitle({
+    required String livingPlace,
+    String? deityName,
+    String? family,
+  }) {
+    String lp = cleanLivingPlace(livingPlace).trim();
+    if (lp.isEmpty) return '';
+
+    // If lp ends with deityName (or parsed pure deity name), remove it so deity name is not redundantly repeated
+    if (deityName != null && deityName.trim().isNotEmpty) {
+      final parsed = parseLivingPlace(deityName);
+      final pureName =
+          parsed.deityName.isNotEmpty ? parsed.deityName : deityName.trim();
+      final lpUpper = lp.toUpperCase();
+      final dUpper = pureName.toUpperCase();
+      if (lpUpper.endsWith(dUpper)) {
+        lp = lp.substring(0, lp.length - pureName.length).trim();
+      }
+    }
+
+    // Convert to elegant Title Case
+    final words = lp.split(RegExp(r'\s+'));
+    const lowerWords = {'of', 'the', 'in', 'and', 'at', 'by', 'for', 'to'};
+    final titleCased = words.asMap().entries.map((entry) {
+      final i = entry.key;
+      final w = entry.value;
+      if (w.isEmpty) return '';
+      final lower = w.toLowerCase();
+      if (i > 0 && lowerWords.contains(lower)) {
+        return lower;
+      }
+      return w[0].toUpperCase() + w.substring(1).toLowerCase();
+    }).join(' ');
+
+    if (family != null &&
+        family.isNotEmpty &&
+        family != 'None') {
+      return '$titleCased · $family Family';
+    }
+    return titleCased;
+  }
+
   /// Capitalize helper for user name formatting in wish text
   static String _formatName(String rawName) {
     final trimmed = rawName.trim();
@@ -430,9 +534,17 @@ class GroupTemplateHelper {
     required String name,
     required String family,
   }) {
-    final cleanName = name.trim();
+    String cleanName = name.trim();
     if (cleanName.isEmpty || position == 'None' || position.isEmpty) {
       return const GroupTemplateResult(livingPlace: '', wish: '');
+    }
+
+    // Sanitize cleanName: extract pure deity name so we NEVER produce duplicated template prefixes
+    final parsed = parseLivingPlace(cleanName);
+    if (parsed.deityName.isNotEmpty) {
+      cleanName = parsed.deityName;
+    } else {
+      cleanName = toTitleCase(cleanName);
     }
 
     final upperName = cleanName.toUpperCase();
@@ -447,76 +559,76 @@ class GroupTemplateHelper {
       case 'Aura Elixiria':
       case 'Aura Elixiria Goddess':
         return GroupTemplateResult(
-          livingPlace: 'GOLDEN HEAVEN OF ☀️ AURA ELIXIRIA GODDESS $upperName',
+          livingPlace: 'GOLDEN HEAVEN OF AURA ELIXIRIA GODDESS $upperName',
           wish: '🙇‍♀️🙇‍♀️ Have Mercy on us Aura Elixiria Goddess $wishName 🙇‍♀️🙇‍♀️',
         );
 
       case 'Core Supreme Goddess':
         return GroupTemplateResult(
-          livingPlace: 'HEAVEN OF 🌟 CORE SUPREME GODDESS $upperName',
+          livingPlace: 'HEAVEN OF CORE SUPREME GODDESS $upperName',
           wish: '🙇‍♀️🙇‍♀️ Have Mercy on us Core Supreme Goddess $wishName 🙇‍♀️🙇‍♀️',
         );
 
       case 'Supreme Goddess':
         if (isMainOrNoneFamily) {
           return GroupTemplateResult(
-            livingPlace: 'SANCTUM OF 🏮 SUPREME GODDESS $upperName',
+            livingPlace: 'SANCTUM OF SUPREME GODDESS $upperName',
             wish: '🙇‍♀️🙇‍♀️ Long live Supreme Goddess $wishName 🙇‍♀️🙇‍♀️',
           );
         } else {
           return GroupTemplateResult(
             livingPlace:
-                'SANCTUM OF 🏮 SUPREME GODDESS $upperFamily GODDESS $upperName',
+                'SANCTUM OF SUPREME GODDESS $upperFamily GODDESS $upperName',
             wish: '🙇‍♀️🙇‍♀️ Long live Supreme $cleanFamily Goddess $wishName 🙇‍♀️🙇‍♀️',
           );
         }
 
       case 'Golden Blossom Goddess':
         return GroupTemplateResult(
-          livingPlace: 'GOLDEN SANCTUM OF 🍂 GOLDEN BLOSSOM GODDESS $upperName',
+          livingPlace: 'GOLDEN SANCTUM OF GOLDEN BLOSSOM GODDESS $upperName',
           wish: '🙇‍♀️🙇‍♀️ Long live Golden Blossom Goddess $wishName 🙇‍♀️🙇‍♀️',
         );
 
       case 'Goddess':
         if (isMainOrNoneFamily) {
           return GroupTemplateResult(
-            livingPlace: 'TEMPLE OF 🪷 GODDESS $upperName',
+            livingPlace: 'TEMPLE OF GODDESS $upperName',
             wish: '🙇‍♀️🙇‍♀️ Goddess $wishName be praised 🙇‍♀️🙇‍♀️',
           );
         } else {
           return GroupTemplateResult(
-            livingPlace: 'TEMPLE OF 🪷 $upperFamily GODDESS $upperName',
+            livingPlace: 'TEMPLE OF $upperFamily GODDESS $upperName',
             wish: '🙇‍♀️🙇‍♀️ $cleanFamily Goddess $wishName be praised 🙇‍♀️🙇‍♀️',
           );
         }
 
       case 'Demi Goddess':
         return GroupTemplateResult(
-          livingPlace: 'SHRINE OF 🏵️ DEMI GODDESS $upperName',
+          livingPlace: 'SHRINE OF DEMI GODDESS $upperName',
           wish: '🙇‍♀️🙇‍♀️ Demi Goddess $wishName be praised 🙇‍♀️🙇‍♀️',
         );
 
       case 'Dark Angel':
         return GroupTemplateResult(
-          livingPlace: 'DARK SHRINE OF 🪻 DARK ANGEL $upperName',
+          livingPlace: 'DARK SHRINE OF DARK ANGEL $upperName',
           wish: '🙇‍♀️🙇‍♀️ Dark Angel $wishName be praised 🙇‍♀️🙇‍♀️',
         );
 
       case 'Queen':
         return GroupTemplateResult(
-          livingPlace: 'FORTRESS OF 👑 QUEEN $upperName',
+          livingPlace: 'FORTRESS OF QUEEN $upperName',
           wish: '🙇‍♀️🙇‍♀️ Hail Queen $wishName 🙇‍♀️🙇‍♀️',
         );
 
       case 'Elfwitch':
         if (isMainOrNoneFamily) {
           return GroupTemplateResult(
-            livingPlace: 'SHRINE of 🍁 ELFWITCH $upperName',
+            livingPlace: 'SHRINE OF ELFWITCH $upperName',
             wish: '🙇‍♀️🙇‍♀️ Hail Elfwitch $wishName 🙇‍♀️🙇‍♀️',
           );
         } else {
           return GroupTemplateResult(
-            livingPlace: 'SHRINE of 🍁 $upperFamily ELFWITCH $upperName',
+            livingPlace: 'SHRINE OF $upperFamily ELFWITCH $upperName',
             wish: '🙇‍♀️🙇‍♀️ Hail $cleanFamily Elfwitch $wishName 🙇‍♀️🙇‍♀️',
           );
         }
@@ -524,12 +636,12 @@ class GroupTemplateHelper {
       case 'Enchantress':
         if (isMainOrNoneFamily) {
           return GroupTemplateResult(
-            livingPlace: 'SHRINE OF 🍀 ENCHANTRESS $upperName',
+            livingPlace: 'SHRINE OF ENCHANTRESS $upperName',
             wish: '🙇‍♀️🙇‍♀️ Hail Enchantress $wishName 🙇‍♀️🙇‍♀️',
           );
         } else {
           return GroupTemplateResult(
-            livingPlace: 'SHRINE OF 🍀 $upperFamily ENCHANTRESS $upperName',
+            livingPlace: 'SHRINE OF $upperFamily ENCHANTRESS $upperName',
             wish: '🙇‍♀️🙇‍♀️ Hail $cleanFamily Enchantress $wishName 🙇‍♀️🙇‍♀️',
           );
         }
@@ -537,13 +649,13 @@ class GroupTemplateHelper {
       case 'First Born Princess':
         if (isMainOrNoneFamily) {
           return GroupTemplateResult(
-            livingPlace: 'PALACE OF 🌺 FIRST BORN PRINCESS $upperName',
+            livingPlace: 'PALACE OF FIRST BORN PRINCESS $upperName',
             wish: '🙇‍♀️🙇‍♀️ Hail First Born Princess $wishName 🙇‍♀️🙇‍♀️',
           );
         } else {
           return GroupTemplateResult(
             livingPlace:
-                'PALACE OF 🌺 FIRST BORN $upperFamily PRINCESS $upperName',
+                'PALACE OF FIRST BORN $upperFamily PRINCESS $upperName',
             wish: '🙇‍♀️🙇‍♀️ Hail First Born Princess $wishName 🙇‍♀️🙇‍♀️',
           );
         }
@@ -551,13 +663,13 @@ class GroupTemplateHelper {
       case 'Second Born Princess':
         if (isMainOrNoneFamily) {
           return GroupTemplateResult(
-            livingPlace: 'PALACE OF 🌸 SECOND BORN PRINCESS $upperName',
+            livingPlace: 'PALACE OF SECOND BORN PRINCESS $upperName',
             wish: '🙇‍♀️🙇‍♀️ Hail Second Born Princess $wishName 🙇‍♀️🙇‍♀️',
           );
         } else {
           return GroupTemplateResult(
             livingPlace:
-                'PALACE OF 🌸 SECOND BORN $upperFamily PRINCESS $upperName',
+                'PALACE OF SECOND BORN $upperFamily PRINCESS $upperName',
             wish: '🙇‍♀️🙇‍♀️ Hail Second Born Princess $wishName 🙇‍♀️🙇‍♀️',
           );
         }
@@ -565,29 +677,27 @@ class GroupTemplateHelper {
       case 'Third Born Princess':
         if (isMainOrNoneFamily) {
           return GroupTemplateResult(
-            livingPlace: 'PALACE OF 🌼 THIRD BORN PRINCESS $upperName',
+            livingPlace: 'PALACE OF THIRD BORN PRINCESS $upperName',
             wish: '🙇‍♀️🙇‍♀️ Hail Third Born Princess $wishName 🙇‍♀️🙇‍♀️',
           );
         } else {
           return GroupTemplateResult(
             livingPlace:
-                'PALACE OF 🌼 THIRD BORN $upperFamily PRINCESS $upperName',
+                'PALACE OF THIRD BORN $upperFamily PRINCESS $upperName',
             wish: '🙇‍♀️🙇‍♀️ Hail Third Born Princess $wishName 🙇‍♀️🙇‍♀️',
           );
         }
 
       default:
-        final cat = QueendomCustomizationService.instance.state.getCategoryByPosition(position);
-        final emoji = cat?.emoji ?? '👑';
         final upperPosition = position.toUpperCase();
         if (!isMainOrNoneFamily) {
           return GroupTemplateResult(
-            livingPlace: 'SANCTUM OF $emoji $upperFamily $upperPosition $upperName',
+            livingPlace: 'SANCTUM OF $upperFamily $upperPosition $upperName',
             wish: '🙇‍♀️🙇‍♀️ Hail $cleanFamily $position $wishName 🙇‍♀️🙇‍♀️',
           );
         } else {
           return GroupTemplateResult(
-            livingPlace: 'SANCTUM OF $emoji $upperPosition $upperName',
+            livingPlace: 'SANCTUM OF $upperPosition $upperName',
             wish: '🙇‍♀️🙇‍♀️ Hail $position $wishName 🙇‍♀️🙇‍♀️',
           );
         }

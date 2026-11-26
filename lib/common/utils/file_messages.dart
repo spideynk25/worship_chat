@@ -1,7 +1,5 @@
 import 'dart:developer';
 import 'dart:io';
-import 'package:cloudinary_flutter/cloudinary_context.dart';
-import 'package:cloudinary_url_gen/cloudinary.dart';
 import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
 
@@ -23,13 +21,6 @@ Future<String?> uploadImageToCloudinary(
     attempts++;
     try {
       log("reached image cloudinary (attempt $attempts)");
-      CloudinaryContext.cloudinary = Cloudinary.fromCloudName(
-        cloudName: type == "queenPooja"
-            ? "debeuo9x0"
-            : type == "queenRashmika"
-            ? "dnc00qjvj"
-            : "djr22nlx9",
-      );
       const url = 'https://api.cloudinary.com/v1_1/debeuo9x0/upload';
 
       final formData = FormData.fromMap({
@@ -73,13 +64,6 @@ Future<String?> uploadVideoToCloudinary(
   while (attempts < 3) {
     attempts++;
     try {
-      CloudinaryContext.cloudinary = Cloudinary.fromCloudName(
-        cloudName: type == "queenPooja"
-            ? "debeuo9x0"
-            : type == "queenRashmika"
-            ? "dnc00qjvj"
-            : "djr22nlx9",
-      );
       const url = 'https://api.cloudinary.com/v1_1/debeuo9x0/auto/upload';
 
       final formData = FormData.fromMap({
@@ -117,13 +101,6 @@ Future<String?> uploadDocumentToCloudinary(
   while (attempts < 3) {
     attempts++;
     try {
-      CloudinaryContext.cloudinary = Cloudinary.fromCloudName(
-        cloudName: type == "queenPooja"
-            ? "debeuo9x0"
-            : type == "queenRashmika"
-            ? "dnc00qjvj"
-            : "djr22nlx9",
-      );
       const url = 'https://api.cloudinary.com/v1_1/debeuo9x0/auto/upload';
 
       final formData = FormData.fromMap({

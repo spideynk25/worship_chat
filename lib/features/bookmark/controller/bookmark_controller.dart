@@ -17,6 +17,27 @@ class BookmarkController {
   Stream<bool> isBookmarked(String imageUrl) =>
       repository.isBookmarked(imageUrl);
 
+  Future<BookmarkToggleResult> toggleBookmarkWithResult({
+    required String imageUrl,
+    required String groupId,
+    required String groupName,
+    required String userName,
+    required String userProfilePic,
+  }) async {
+    try {
+      return await repository.toggleBookmarkWithResult(
+        imageUrl: imageUrl,
+        groupId: groupId,
+        groupName: groupName,
+        userName: userName,
+        userProfilePic: userProfilePic,
+      );
+    } catch (e) {
+      log('❌ BookmarkController.toggleBookmarkWithResult: $e');
+      return const BookmarkToggleResult(isBookmarked: false, bookmarkId: null);
+    }
+  }
+
   Future<bool> toggleBookmark({
     required String imageUrl,
     required String groupId,
@@ -35,6 +56,27 @@ class BookmarkController {
     } catch (e) {
       log('❌ BookmarkController.toggleBookmark: $e');
       return false;
+    }
+  }
+
+  Future<String?> ensureBookmarked({
+    required String imageUrl,
+    required String groupId,
+    required String groupName,
+    required String userName,
+    required String userProfilePic,
+  }) async {
+    try {
+      return await repository.ensureBookmarked(
+        imageUrl: imageUrl,
+        groupId: groupId,
+        groupName: groupName,
+        userName: userName,
+        userProfilePic: userProfilePic,
+      );
+    } catch (e) {
+      log('❌ BookmarkController.ensureBookmarked: $e');
+      return null;
     }
   }
 

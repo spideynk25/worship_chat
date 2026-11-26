@@ -61,6 +61,16 @@ class OneToOneMessageModel {
   final List<String>? _deletedFor;
   List<String> get deletedFor => _deletedFor ?? const [];
 
+  @HiveField(16)
+  final bool? _isPinned;
+  bool get isPinned => _isPinned ?? false;
+
+  @HiveField(17)
+  final DateTime? pinnedAt;
+
+  @HiveField(18)
+  final String? pinnedBy;
+
   OneToOneMessageModel({
     required this.senderId,
     required this.receiverId,
@@ -79,13 +89,17 @@ class OneToOneMessageModel {
     bool? isEdited,
     bool? isDeleted,
     List<String>? deletedFor,
+    bool? isPinned,
+    this.pinnedAt,
+    this.pinnedBy,
   })  : _isSeen = isSeen ?? false,
         _isDelivered = isDelivered ?? false,
         _isSending = isSending ?? false,
         reactions = reactions ?? const {},
         _isEdited = isEdited ?? false,
         _isDeleted = isDeleted ?? false,
-        _deletedFor = deletedFor ?? const [];
+        _deletedFor = deletedFor ?? const [],
+        _isPinned = isPinned ?? false;
 
   OneToOneMessageModel copyWith({
     String? senderId,
@@ -105,6 +119,10 @@ class OneToOneMessageModel {
     bool? isEdited,
     bool? isDeleted,
     List<String>? deletedFor,
+    bool? isPinned,
+    DateTime? pinnedAt,
+    String? pinnedBy,
+    bool clearPin = false,
   }) {
     return OneToOneMessageModel(
       senderId: senderId ?? this.senderId,
@@ -124,6 +142,9 @@ class OneToOneMessageModel {
       isEdited: isEdited ?? this.isEdited,
       isDeleted: isDeleted ?? this.isDeleted,
       deletedFor: deletedFor ?? this.deletedFor,
+      isPinned: clearPin ? false : (isPinned ?? this.isPinned),
+      pinnedAt: clearPin ? null : (pinnedAt ?? this.pinnedAt),
+      pinnedBy: clearPin ? null : (pinnedBy ?? this.pinnedBy),
     );
   }
 
@@ -145,26 +166,27 @@ class OneToOneMessageModel {
       'isEdited': isEdited,
       'isDeleted': isDeleted,
       'deletedFor': deletedFor,
+      'isPinned': isPinned,
+      'pinnedAt': pinnedAt?.millisecondsSinceEpoch,
+      'pinnedBy': pinnedBy,
     };
   }
 
-  factory OneToOneMessageModel.fromMap(Map<String, dynamic> map) {
-    DateTime parsedTime;
-    final rawTime = map['timeSent'];
-    if (rawTime is int) {
-      parsedTime = DateTime.fromMillisecondsSinceEpoch(rawTime);
-    } else if (rawTime is Timestamp) {
-      parsedTime = rawTime.toDate();
-    } else if (rawTime is String) {
+  static DateTime? _parseOptionalTime(dynamic rawTime) {
+    if (rawTime == null) return null;
+    if (rawTime is int) return DateTime.fromMillisecondsSinceEpoch(rawTime);
+    if (rawTime is Timestamp) return rawTime.toDate();
+    if (rawTime is String) {
       final asInt = int.tryParse(rawTime);
-      if (asInt != null) {
-        parsedTime = DateTime.fromMillisecondsSinceEpoch(asInt);
-      } else {
-        parsedTime = DateTime.tryParse(rawTime) ?? DateTime.now();
-      }
-    } else {
-      parsedTime = DateTime.now();
+      return asInt != null
+          ? DateTime.fromMillisecondsSinceEpoch(asInt)
+          : DateTime.tryParse(rawTime);
     }
+    return null;
+  }
+
+  factory OneToOneMessageModel.fromMap(Map<String, dynamic> map) {
+    final parsedTime = _parseOptionalTime(map['timeSent']) ?? DateTime.now();
 
     Map<String, String> parsedReactions = {};
     if (map['reactions'] is Map) {
@@ -196,6 +218,9 @@ class OneToOneMessageModel {
               ?.map((e) => e.toString())
               .toList() ??
           const [],
+      isPinned: map['isPinned'] as bool? ?? false,
+      pinnedAt: _parseOptionalTime(map['pinnedAt']),
+      pinnedBy: map['pinnedBy']?.toString(),
     );
   }
 }

@@ -120,10 +120,10 @@ void main() {
       await tester.tap(find.text('Show Menu'));
       await tester.pumpAndSettle();
 
-      expect(find.text('Lens'), findsOneWidget);
+      expect(find.byTooltip('Lens'), findsOneWidget);
       expect(find.byType(GoogleLensIcon), findsOneWidget);
 
-      await tester.tap(find.text('Lens'));
+      await tester.tap(find.byTooltip('Lens'));
       await tester.pumpAndSettle();
 
       expect(lensTapped, isTrue);

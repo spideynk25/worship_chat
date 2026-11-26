@@ -60,10 +60,26 @@ class GroupModel {
   });
 
   /// Helper getter to get living place or fallback to name
-  String get effectiveLivingPlace =>
-      (livingPlace != null && livingPlace!.trim().isNotEmpty)
-          ? livingPlace!
-          : name;
+  String get effectiveLivingPlace {
+    if (livingPlace != null && livingPlace!.trim().isNotEmpty) {
+      return GroupTemplateHelper.cleanLivingPlace(
+        livingPlace!.trim(),
+        position: position,
+        family: family,
+      );
+    }
+    if (position != null && position!.isNotEmpty && position != 'None') {
+      final template = GroupTemplateHelper.generateTemplate(
+        position: position!,
+        name: name,
+        family: family ?? '',
+      );
+      if (template.livingPlace.isNotEmpty) {
+        return template.livingPlace;
+      }
+    }
+    return name;
+  }
 
   /// Helper getter to get deity/member name with position (e.g. Queen Pooja, Princess Krithi, Wife of Queen Pooja - Samantha, Fuck Toy of Queen Pooja - Samantha)
   String get nameWithPosition => GroupTemplateHelper.getNameWithPosition(

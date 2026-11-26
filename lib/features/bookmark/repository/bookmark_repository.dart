@@ -6,6 +6,16 @@ import 'package:uuid/uuid.dart';
 import 'package:worship_chat/models/bookmark_collection_model.dart';
 import 'package:worship_chat/models/bookmark_model.dart';
 
+class BookmarkToggleResult {
+  final bool isBookmarked;
+  final String? bookmarkId;
+
+  const BookmarkToggleResult({
+    required this.isBookmarked,
+    this.bookmarkId,
+  });
+}
+
 final bookmarkRepositoryProvider = Provider(
   (ref) => BookmarkRepository(
     firestore: FirebaseFirestore.instance,
@@ -32,15 +42,17 @@ class BookmarkRepository {
         .map((snap) => snap.docs.isNotEmpty);
   }
 
-  // ── Toggle bookmark ───────────────────────────────────────────────────────
-  Future<bool> toggleBookmark({
+  // ── Toggle bookmark with result ───────────────────────────────────────────
+  Future<BookmarkToggleResult> toggleBookmarkWithResult({
     required String imageUrl,
     required String groupId,
     required String groupName,
     required String userName,
     required String userProfilePic,
   }) async {
-    if (_uid == null) return false;
+    if (_uid == null) {
+      return const BookmarkToggleResult(isBookmarked: false, bookmarkId: null);
+    }
     try {
       final existing = await firestore
           .collection('bookmarks')
@@ -67,7 +79,7 @@ class BookmarkRepository {
         } catch (e) {
           log('⚠️ Error cleaning bookmark from collections: $e');
         }
-        return false;
+        return const BookmarkToggleResult(isBookmarked: false, bookmarkId: null);
       } else {
         String latestPic = userProfilePic;
         String latestName = userName;
@@ -97,11 +109,62 @@ class BookmarkRepository {
             .collection('bookmarks')
             .doc(id)
             .set(bookmark.toMap());
-        return true;
+        return BookmarkToggleResult(isBookmarked: true, bookmarkId: id);
       }
     } catch (e) {
       log('❌ toggleBookmark error: $e');
-      return false;
+      return const BookmarkToggleResult(isBookmarked: false, bookmarkId: null);
+    }
+  }
+
+  // ── Toggle bookmark ───────────────────────────────────────────────────────
+  Future<bool> toggleBookmark({
+    required String imageUrl,
+    required String groupId,
+    required String groupName,
+    required String userName,
+    required String userProfilePic,
+  }) async {
+    final result = await toggleBookmarkWithResult(
+      imageUrl: imageUrl,
+      groupId: groupId,
+      groupName: groupName,
+      userName: userName,
+      userProfilePic: userProfilePic,
+    );
+    return result.isBookmarked;
+  }
+
+  // ── Ensure bookmarked (returns bookmark ID) ──────────────────────────────
+  Future<String?> ensureBookmarked({
+    required String imageUrl,
+    required String groupId,
+    required String groupName,
+    required String userName,
+    required String userProfilePic,
+  }) async {
+    if (_uid == null) return null;
+    try {
+      final existing = await firestore
+          .collection('bookmarks')
+          .where('userId', isEqualTo: _uid)
+          .where('imageUrl', isEqualTo: imageUrl)
+          .limit(1)
+          .get();
+      if (existing.docs.isNotEmpty) {
+        return existing.docs.first.id;
+      }
+      final res = await toggleBookmarkWithResult(
+        imageUrl: imageUrl,
+        groupId: groupId,
+        groupName: groupName,
+        userName: userName,
+        userProfilePic: userProfilePic,
+      );
+      return res.bookmarkId;
+    } catch (e) {
+      log('❌ ensureBookmarked error: $e');
+      return null;
     }
   }
 

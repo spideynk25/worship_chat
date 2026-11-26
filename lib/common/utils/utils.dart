@@ -8,17 +8,27 @@ import 'package:image_picker/image_picker.dart';
 import 'package:path_provider/path_provider.dart';
 
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:hive_flutter/hive_flutter.dart';
 import 'package:worship_chat/common/widgets/custom_snackbar.dart';
 import 'package:worship_chat/common/utils/app_capabilities.dart';
+import 'package:worship_chat/models/user_model.dart';
 
 export 'package:worship_chat/common/widgets/custom_snackbar.dart';
 
 String? safeCurrentUserId() {
   try {
-    return FirebaseAuth.instance.currentUser?.uid;
-  } catch (_) {
-    return null;
-  }
+    final uid = FirebaseAuth.instance.currentUser?.uid;
+    if (uid != null && uid.isNotEmpty) return uid;
+  } catch (_) {}
+  try {
+    if (Hive.isBoxOpen('userBox')) {
+      final cached = Hive.box<UserModel>('userBox').get('currentUser');
+      if (cached != null && cached.uid != null && cached.uid!.isNotEmpty) {
+        return cached.uid;
+      }
+    }
+  } catch (_) {}
+  return null;
 }
 
 User? safeCurrentUser() {
@@ -51,7 +61,11 @@ void showSnackBar({
   );
 }
 
-Future<File?> pickImageFromGallery(BuildContext context) async {
+/// Picks a single image from [source] (gallery or camera on mobile, file picker on desktop).
+Future<File?> pickImageFromSource(
+  BuildContext context, {
+  ImageSource source = ImageSource.gallery,
+}) async {
   File? image;
   try {
     if (AppCapabilities.current.isDesktop) {
@@ -59,19 +73,22 @@ Future<File?> pickImageFromGallery(BuildContext context) async {
       final path = files.isEmpty ? null : files.first.path;
       return path == null ? null : File(path);
     }
-    final pickedImage = await ImagePicker().pickImage(
-      source: ImageSource.gallery,
-    );
+    final pickedImage = await ImagePicker().pickImage(source: source);
     if (pickedImage != null) {
       image = File(pickedImage.path);
     }
     return image;
   } catch (e) {
     log("$e");
-    showSnackBar(context: context, content: e.toString());
+    if (context.mounted) {
+      showSnackBar(context: context, content: e.toString());
+    }
   }
   return null;
 }
+
+Future<File?> pickImageFromGallery(BuildContext context) =>
+    pickImageFromSource(context, source: ImageSource.gallery);
 
 /// Pick multiple images from the gallery (returns a list, possibly empty).
 Future<List<File>> pickMultipleImagesFromGallery(BuildContext context) async {
@@ -328,4 +345,5 @@ String getImageExtensionFromUrl(String url, {String defaultExt = 'jpg'}) {
   } catch (_) {}
   return defaultExt;
 }
+
 

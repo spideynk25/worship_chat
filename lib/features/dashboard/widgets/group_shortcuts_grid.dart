@@ -16,6 +16,8 @@ import 'package:worship_chat/features/group/screens/group_chat_screen.dart';
 import 'package:worship_chat/common/utils/app_capabilities.dart';
 import 'package:worship_chat/features/group/screens/group_gallery_screen.dart';
 import 'package:worship_chat/features/group/widgets/queendom_badge_widget.dart';
+import 'package:worship_chat/features/settings/models/queendom_customization_model.dart';
+import 'package:worship_chat/features/settings/providers/queendom_customization_provider.dart';
 import 'package:worship_chat/models/group.dart';
 import 'package:worship_chat/models/user_model.dart';
 
@@ -289,13 +291,61 @@ class _GroupShortcutsGridState extends ConsumerState<GroupShortcutsGrid> {
   void _navigateToGroup(BuildContext context, GroupModel group) {
     HapticFeedback.selectionClick();
     String type = "others";
-    Color? accentColor;
     if (group.queendom == 'Queen Pooja') {
       type = "queenPooja";
-      accentColor = const Color(0xFFFFD700);
     } else if (group.queendom == 'Queen Rashmika') {
       type = "queenRashmika";
-      accentColor = const Color(0xFFFF4081);
+    }
+
+    // Resolve the authentic theme accent color for this group based on position / category
+    final customization = ref.read(queendomCustomizationProvider);
+    Color? accentColor;
+
+    if (group.isSubGroup) {
+      if (group.isFuckToySubGroup) {
+        accentColor = const Color(0xFFE040FB);
+      } else {
+        // Wives inherit parent group deity's category color
+        final parentPosition = group.position;
+        if (parentPosition != null && parentPosition.isNotEmpty && parentPosition != 'None') {
+          final match = customization.allCategories.firstWhere(
+            (c) => c.position.toLowerCase() == parentPosition.toLowerCase(),
+            orElse: () => QueendomCategory(
+              title: '',
+              position: '',
+              color: group.queendom == 'Queen Rashmika'
+                  ? const Color(0xFFFF4081)
+                  : const Color(0xFFFFD700),
+              emoji: '',
+            ),
+          );
+          accentColor = match.color;
+        } else {
+          accentColor = group.queendom == 'Queen Rashmika'
+              ? const Color(0xFFFF4081)
+              : const Color(0xFFFFD700);
+        }
+      }
+    } else {
+      final position = group.position;
+      if (position != null && position.isNotEmpty && position != 'None') {
+        final match = customization.allCategories.firstWhere(
+          (c) => c.position.toLowerCase() == position.toLowerCase(),
+          orElse: () => QueendomCategory(
+            title: '',
+            position: '',
+            color: group.queendom == 'Queen Rashmika'
+                ? const Color(0xFFFF4081)
+                : const Color(0xFFFFD700),
+            emoji: '',
+          ),
+        );
+        accentColor = match.color;
+      } else {
+        accentColor = group.queendom == 'Queen Rashmika'
+            ? const Color(0xFFFF4081)
+            : const Color(0xFFFFD700);
+      }
     }
 
     if (!AppCapabilities.current.chatEnabled) {

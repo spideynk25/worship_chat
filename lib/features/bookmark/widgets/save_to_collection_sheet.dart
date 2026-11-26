@@ -127,15 +127,15 @@ class _SaveToCollectionSheetState extends ConsumerState<SaveToCollectionSheet> {
 
   @override
   Widget build(BuildContext context) {
-    return Container(
-      constraints: BoxConstraints(
-        maxHeight: MediaQuery.sizeOf(context).height * 0.75,
-      ),
-      decoration: const BoxDecoration(
-        color: Color(0xFF161322),
-        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
-      ),
-      child: SafeArea(
+    return Material(
+      color: const Color(0xFF161322),
+      borderRadius: const BorderRadius.vertical(top: Radius.circular(24)),
+      clipBehavior: Clip.antiAlias,
+      child: Container(
+        constraints: BoxConstraints(
+          maxHeight: MediaQuery.sizeOf(context).height * 0.75,
+        ),
+        child: SafeArea(
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
@@ -226,7 +226,17 @@ class _SaveToCollectionSheetState extends ConsumerState<SaveToCollectionSheet> {
                 'Create a new folder for this photo',
                 style: TextStyle(color: Colors.white54, fontSize: 11),
               ),
-              onTap: _showCreateDialog,
+              trailing: _isCreating
+                  ? const SizedBox(
+                      width: 20,
+                      height: 20,
+                      child: CircularProgressIndicator(
+                        strokeWidth: 2,
+                        color: tabColor,
+                      ),
+                    )
+                  : null,
+              onTap: _isCreating ? null : _showCreateDialog,
             ),
 
             const Divider(color: Colors.white10, height: 1),
@@ -368,6 +378,7 @@ class _SaveToCollectionSheetState extends ConsumerState<SaveToCollectionSheet> {
           ],
         ),
       ),
+    ),
     );
   }
 }

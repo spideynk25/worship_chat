@@ -4,7 +4,9 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:worship_chat/colors.dart';
 import 'package:worship_chat/common/utils/app_capabilities.dart';
 import 'package:worship_chat/common/utils/google_lens_service.dart';
+import 'package:worship_chat/common/utils/home_widget_service.dart';
 import 'package:worship_chat/common/utils/utils.dart';
+import 'package:worship_chat/common/widgets/wallpaper_widget_sheet.dart';
 import 'package:worship_chat/features/bookmark/controller/bookmark_controller.dart';
 import 'package:worship_chat/features/bookmark/screens/bookmark_screen.dart';
 import 'package:worship_chat/features/bookmark/widgets/add_bookmarks_to_collection_sheet.dart';
@@ -217,6 +219,42 @@ class _CollectionDetailScreenState
     }
   }
 
+  bool _syncingWidget = false;
+
+  Future<void> _syncCollectionToHomeWidget(
+    List<BookmarkModel> bookmarks,
+  ) async {
+    if (_syncingWidget || bookmarks.isEmpty) return;
+    setState(() => _syncingWidget = true);
+    try {
+      final items = bookmarks
+          .map(
+            (bm) => HomeWidgetPhotoInput(
+              id: 'bm_${bm.bookmarkId}',
+              imageUrl: bm.imageUrl,
+              title: bm.groupName.isNotEmpty ? bm.groupName : _collection.name,
+              subtitle: _collection.name,
+            ),
+          )
+          .toList();
+      final count = await HomeWidgetService.instance.syncPlaylist(
+        items: items,
+        sourceLabel: _collection.name,
+      );
+      if (!mounted) return;
+      AppSnackBar.show(
+        context,
+        message: count > 0
+            ? 'Synced $count photos from "${_collection.name}" to Home Widget!'
+            : 'Could not sync collection photos to Home Widget.',
+      );
+    } finally {
+      if (mounted) {
+        setState(() => _syncingWidget = false);
+      }
+    }
+  }
+
   void _showBookmarkOptions({
     required BookmarkModel bm,
     required List<BookmarkModel> bookmarks,
@@ -355,6 +393,32 @@ class _CollectionDetailScreenState
                 GoogleLensService.search(
                   context: context,
                   imageUrl: bm.imageUrl,
+                );
+              },
+            ),
+            ListTile(
+              leading: const Icon(
+                Icons.wallpaper_rounded,
+                color: Color(0xFFFFD700),
+              ),
+              title: const Text(
+                'Wallpaper & Home Widget',
+                style: TextStyle(color: Colors.white),
+              ),
+              subtitle: const Text(
+                'Set phone wallpaper or pin to widget',
+                style: TextStyle(color: Colors.white54, fontSize: 12),
+              ),
+              onTap: () {
+                Navigator.pop(ctx);
+                WallpaperAndWidgetSheet.show(
+                  context,
+                  photoId: 'bm_${bm.bookmarkId}',
+                  imageUrl: bm.imageUrl,
+                  title: bm.groupName.isNotEmpty
+                      ? bm.groupName
+                      : _collection.name,
+                  subtitle: 'Collection • ${_collection.name}',
                 );
               },
             ),
@@ -533,6 +597,27 @@ class _CollectionDetailScreenState
                           ),
                         ),
                       ),
+                    ),
+
+                    // Sync Collection to Home Screen Photo Widget
+                    IconButton(
+                      icon: _syncingWidget
+                          ? const SizedBox(
+                              width: 18,
+                              height: 18,
+                              child: CircularProgressIndicator(
+                                strokeWidth: 2,
+                                color: Color(0xFFFFD700),
+                              ),
+                            )
+                          : const Icon(
+                              Icons.widgets_rounded,
+                              color: Colors.white,
+                            ),
+                      tooltip: 'Sync Collection to Home Widget',
+                      onPressed: _syncingWidget
+                          ? null
+                          : () => _syncCollectionToHomeWidget(displayList),
                     ),
                   ],
 

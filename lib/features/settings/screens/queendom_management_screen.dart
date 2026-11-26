@@ -992,8 +992,7 @@ class _CategoryFormBottomSheetState extends State<_CategoryFormBottomSheet> {
 
   final List<String> _quickEmojis = [
     '✨', '🔮', '🗡️', '🌙', '🕊️', '🪐', '💎', '⚜️',
-    '🧿', '💫', '🌹', '🌸', '⚡', '🪽', '👑', '🦁',
-    '☀️', '🌟', '🏮', '🍂', '🪷', '🏵️', '🪻', '🍁',
+    '🧿', '💫', '⚡', '🪽', '🦁',
   ];
 
   static const List<Color> _royalPresets = [

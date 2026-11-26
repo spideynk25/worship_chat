@@ -41,7 +41,7 @@ void main() {
       expect(androidPhoneCap.notificationsEnabled, isTrue);
     });
 
-    testWidgets('HomeScreen on desktop/tablet presents 4 tabs without Chats or Chat FAB', (tester) async {
+    testWidgets('HomeScreen on desktop/tablet presents 3 tabs without Chats, Groups, or Chat FAB', (tester) async {
       AppCapabilities.debugOverride = const AppCapabilities(
         platform: TargetPlatform.macOS,
         isTablet: false,
@@ -67,11 +67,11 @@ void main() {
       // Header indicates Worship Gallery
       expect(find.text('Worship Gallery'), findsOneWidget);
 
-      // Core 4 tabs exist in side navigation rail
+      // Core 3 tabs exist in side navigation rail
       expect(find.text('Home'), findsOneWidget);
       expect(find.text('Pooja'), findsWidgets);
       expect(find.text('Rashmika'), findsWidgets);
-      expect(find.text('Groups'), findsOneWidget);
+      expect(find.text('Groups'), findsNothing);
       expect(find.text('Gallery'), findsNothing);
 
       // Chat tab and chat action button are absent
@@ -105,7 +105,7 @@ void main() {
       // Wide layout displays the royal Side Navigation Rail container
       expect(find.text('Worship Gallery'), findsWidgets);
       expect(find.text('Home'), findsOneWidget);
-      expect(find.text('Groups'), findsOneWidget);
+      expect(find.text('Groups'), findsNothing);
       expect(find.text('Gallery'), findsNothing);
     });
 
@@ -132,10 +132,10 @@ void main() {
       );
       await tester.pump();
 
-      // Compact layout renders all 4 tabs in the modern bottom bar (icon & photo only)
+      // Compact layout renders all 3 tabs in the modern bottom bar (icon & photo only)
       expect(find.text('Home'), findsNothing); // icon/photo-only without text labels
       expect(find.bySemanticsLabel('Home'), findsOneWidget);
-      expect(find.byIcon(Icons.groups_rounded), findsOneWidget);
+      expect(find.byIcon(Icons.groups_rounded), findsNothing);
       expect(find.byIcon(Icons.photo_library_rounded), findsNothing);
       expect(find.text('Gallery'), findsNothing);
       expect(find.text('Chats'), findsNothing);

@@ -40,13 +40,16 @@ class GroupChatMessageModelAdapter extends TypeAdapter<GroupChatMessageModel> {
       isEdited: fields[14] as bool? ?? false,
       isDeleted: fields[15] as bool? ?? false,
       deletedFor: (fields[16] as List?)?.cast<String>() ?? const <String>[],
+      isPinned: fields[17] as bool? ?? false,
+      pinnedAt: fields[18] as DateTime?,
+      pinnedBy: fields[19] as String?,
     );
   }
 
   @override
   void write(BinaryWriter writer, GroupChatMessageModel obj) {
     writer
-      ..writeByte(17)
+      ..writeByte(20)
       ..writeByte(0)
       ..write(obj.senderId)
       ..writeByte(1)
@@ -80,7 +83,13 @@ class GroupChatMessageModelAdapter extends TypeAdapter<GroupChatMessageModel> {
       ..writeByte(15)
       ..write(obj.isDeleted)
       ..writeByte(16)
-      ..write(obj.deletedFor);
+      ..write(obj.deletedFor)
+      ..writeByte(17)
+      ..write(obj.isPinned)
+      ..writeByte(18)
+      ..write(obj.pinnedAt)
+      ..writeByte(19)
+      ..write(obj.pinnedBy);
   }
 
   @override

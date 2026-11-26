@@ -6,6 +6,8 @@ class ShimmerEffect extends StatefulWidget {
   final Color baseColor;
   final Color highlightColor;
   final Duration duration;
+  /// Fraction of [duration] spent actively sweeping (rest stays at [baseColor]).
+  final double activeFraction;
 
   const ShimmerEffect({
     super.key,
@@ -13,6 +15,7 @@ class ShimmerEffect extends StatefulWidget {
     this.baseColor = const Color(0xFF161622),
     this.highlightColor = const Color(0xFF2A2638),
     this.duration = const Duration(milliseconds: 1400),
+    this.activeFraction = 1.0,
   });
 
   @override
@@ -26,8 +29,29 @@ class _ShimmerEffectState extends State<ShimmerEffect>
   @override
   void initState() {
     super.initState();
-    _controller = AnimationController(vsync: this, duration: widget.duration)
-      ..repeat();
+    _controller = AnimationController(vsync: this, duration: widget.duration);
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    if (MediaQuery.disableAnimationsOf(context)) {
+      _controller.stop();
+      _controller.value = 0.5;
+    } else if (!_controller.isAnimating) {
+      _controller.repeat();
+    }
+  }
+
+  @override
+  void didUpdateWidget(covariant ShimmerEffect oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.duration != widget.duration) {
+      _controller.duration = widget.duration;
+      if (!MediaQuery.disableAnimationsOf(context)) {
+        _controller.repeat();
+      }
+    }
   }
 
   @override
@@ -44,7 +68,15 @@ class _ShimmerEffectState extends State<ShimmerEffect>
         return ShaderMask(
           blendMode: BlendMode.srcATop,
           shaderCallback: (bounds) {
-            final x = -1.5 + _controller.value * 3.0;
+            final fraction = widget.activeFraction.clamp(0.05, 1.0);
+            final t = _controller.value;
+            final double x;
+            if (fraction < 1.0) {
+              // Sweep across bounds (-2.2 -> +1.1), then rest off-screen right.
+              x = t <= fraction ? (-2.2 + (t / fraction) * 3.3) : 1.1;
+            } else {
+              x = -1.5 + t * 3.0;
+            }
             return LinearGradient(
               begin: Alignment(x, -0.3),
               end: Alignment(x + 1.2, 0.3),

@@ -39,13 +39,16 @@ class OneToOneMessageModelAdapter extends TypeAdapter<OneToOneMessageModel> {
       isEdited: fields[13] as bool? ?? false,
       isDeleted: fields[14] as bool? ?? false,
       deletedFor: (fields[15] as List?)?.cast<String>() ?? const <String>[],
+      isPinned: fields[16] as bool? ?? false,
+      pinnedAt: fields[17] as DateTime?,
+      pinnedBy: fields[18] as String?,
     );
   }
 
   @override
   void write(BinaryWriter writer, OneToOneMessageModel obj) {
     writer
-      ..writeByte(16)
+      ..writeByte(19)
       ..writeByte(0)
       ..write(obj.senderId)
       ..writeByte(1)
@@ -77,7 +80,13 @@ class OneToOneMessageModelAdapter extends TypeAdapter<OneToOneMessageModel> {
       ..writeByte(14)
       ..write(obj.isDeleted)
       ..writeByte(15)
-      ..write(obj.deletedFor);
+      ..write(obj.deletedFor)
+      ..writeByte(16)
+      ..write(obj.isPinned)
+      ..writeByte(17)
+      ..write(obj.pinnedAt)
+      ..writeByte(18)
+      ..write(obj.pinnedBy);
   }
 
   @override

@@ -106,31 +106,35 @@ void main() {
       );
     });
 
-    test('getAsset returns correct asset for every Unicode emoji', () {
+    test('getAsset returns correct asset directly for positions', () {
       expect(
-        QueendomEmblemHelper.getAsset(emoji: '🌺'),
+        QueendomEmblemHelper.getAsset(position: 'First Born Princess'),
         equals('assets/emojis/first_born_princess.png'),
       );
       expect(
-        QueendomEmblemHelper.getAsset(emoji: '☀️'),
+        QueendomEmblemHelper.getAsset(position: 'Aura Elixiria'),
         equals('assets/emojis/aura_elixiria.png'),
       );
       expect(
-        QueendomEmblemHelper.getAsset(emoji: '🌟'),
+        QueendomEmblemHelper.getAsset(position: 'Core Supreme Goddess'),
         equals('assets/emojis/core_supreme.png'),
       );
       expect(
-        QueendomEmblemHelper.getAsset(emoji: '🏮'),
+        QueendomEmblemHelper.getAsset(position: 'Supreme Goddess'),
         equals('assets/emojis/supreme_goddess.png'),
       );
       expect(
-        QueendomEmblemHelper.getAsset(emoji: '🍀'),
+        QueendomEmblemHelper.getAsset(position: 'Queen'),
+        equals('assets/emojis/queen.png'),
+      );
+      expect(
+        QueendomEmblemHelper.getAsset(position: 'Enchantress'),
         equals('assets/emojis/enchantress.png'),
       );
     });
 
     test('getAssetFromLivingPlace finds emblem from formatted sanctuary title', () {
-      const title = 'PALACE OF 🌺 FIRST BORN PRINCESS KRITHIKA';
+      const title = 'PALACE OF FIRST BORN PRINCESS KRITHIKA';
       expect(
         QueendomEmblemHelper.getAssetFromLivingPlace(title),
         equals('assets/emojis/first_born_princess.png'),
@@ -143,7 +147,7 @@ void main() {
         MaterialApp(
           home: Scaffold(
             body: QueendomEmblemHelper.buildRichTitle(
-              title: 'PALACE OF 🌺 FIRST BORN PRINCESS KRITHIKA',
+              title: 'PALACE OF FIRST BORN PRINCESS KRITHIKA',
               style: const TextStyle(fontSize: 14, color: Colors.white),
             ),
           ),

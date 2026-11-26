@@ -1148,14 +1148,14 @@ class _GroupsTabState extends ConsumerState<_GroupsTab>
           ref.read(groupControllerProvider).getCachedGroups('groups_pooja');
       final rashmika =
           ref.read(groupControllerProvider).getCachedGroups('groups_rashmika');
-      final general =
-          ref.read(groupControllerProvider).getCachedGroups('groups_none');
       final allCached =
           ref.read(groupControllerProvider).getCachedGroups('groups_all');
 
       final Map<String, GroupModel> mergedMap = {};
-      for (final g in [...allCached, ...general, ...pooja, ...rashmika]) {
-        if (g.groupId.isNotEmpty) mergedMap[g.groupId] = g;
+      for (final g in [...allCached, ...pooja, ...rashmika]) {
+        if (g.groupId.isNotEmpty && (g.queendom == 'Queen Pooja' || g.queendom == 'Queen Rashmika')) {
+          mergedMap[g.groupId] = g;
+        }
       }
       if (mergedMap.isNotEmpty) {
         _groups = mergedMap.values.toList()
@@ -1428,14 +1428,14 @@ class _GalleriesTabState extends ConsumerState<_GalleriesTab>
           ref.read(groupControllerProvider).getCachedGroups('groups_pooja');
       final rashmika =
           ref.read(groupControllerProvider).getCachedGroups('groups_rashmika');
-      final general =
-          ref.read(groupControllerProvider).getCachedGroups('groups_none');
       final allCached =
           ref.read(groupControllerProvider).getCachedGroups('groups_all');
 
       final Map<String, GroupModel> mergedMap = {};
-      for (final g in [...allCached, ...general, ...pooja, ...rashmika]) {
-        if (g.groupId.isNotEmpty) mergedMap[g.groupId] = g;
+      for (final g in [...allCached, ...pooja, ...rashmika]) {
+        if (g.groupId.isNotEmpty && (g.queendom == 'Queen Pooja' || g.queendom == 'Queen Rashmika')) {
+          mergedMap[g.groupId] = g;
+        }
       }
       if (mergedMap.isNotEmpty) {
         _groups = mergedMap.values.toList()

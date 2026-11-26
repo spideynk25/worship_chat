@@ -20,21 +20,6 @@ import 'package:worship_chat/models/user_model.dart';
 
 enum _ShareTarget { gallery, groupChat, directChat }
 
-// ── Unified selection: either a group or a 1-to-1 contact ────────────────────
-
-class _Selection {
-  final GroupModel? group;
-  final ChatContact? contact;
-
-  const _Selection.group(GroupModel g) : group = g, contact = null;
-  const _Selection.contact(ChatContact c) : contact = c, group = null;
-
-  bool get isGroup => group != null;
-  String get name => group?.nameWithPosition ?? contact?.name ?? '';
-  String get pic => group?.groupPic ?? contact?.profilePic ?? '';
-  String get id => group?.groupId ?? contact?.uid ?? '';
-}
-
 class ShareUploadScreen extends ConsumerStatefulWidget {
   final List<File>? files;
   final SharedPayload? payload;
@@ -53,10 +38,18 @@ class _ShareUploadScreenState extends ConsumerState<ShareUploadScreen>
     with SingleTickerProviderStateMixin {
   late final SharedPayload _payload;
 
-  _Selection? _selection;
+  // Selected destinations: supports multiple groups or a single direct contact
+  final Map<String, GroupModel> _selectedGroups = {};
+  ChatContact? _selectedContact;
+
+  // Unified persistent search
+  final TextEditingController _searchController = TextEditingController();
+  String _searchQuery = '';
+
   _ShareTarget _target = _ShareTarget.gallery;
   bool _isUploading = false;
   int _uploaded = 0;
+  int _currentUploadingGroupIndex = 0;
   late TabController _tabController;
 
   // Cached streams to prevent stream recreation and UI rebuilding on progress updates
@@ -91,9 +84,12 @@ class _ShareUploadScreenState extends ConsumerState<ShareUploadScreen>
 
     _tabController = TabController(length: 4, vsync: this);
     _tabController.addListener(() {
+      if (_tabController.indexIsChanging) return;
       setState(() {
         if (_tabController.index == _kDirectTabIndex) {
-          _target = _ShareTarget.directChat;
+          if (_selectedContact != null || _selectedGroups.isEmpty) {
+            _target = _ShareTarget.directChat;
+          }
         } else {
           if (_target == _ShareTarget.directChat) {
             _target = _payload.canUploadToGallery
@@ -101,13 +97,13 @@ class _ShareUploadScreenState extends ConsumerState<ShareUploadScreen>
                 : _ShareTarget.groupChat;
           }
         }
-        _selection = null;
       });
     });
   }
 
   @override
   void dispose() {
+    _searchController.dispose();
     _tabController.dispose();
     super.dispose();
   }
@@ -131,9 +127,14 @@ class _ShareUploadScreenState extends ConsumerState<ShareUploadScreen>
     _safeExit();
   }
 
-  void _selectGroup(GroupModel group) {
+  void _toggleGroup(GroupModel group) {
     setState(() {
-      _selection = _Selection.group(group);
+      _selectedContact = null;
+      if (_selectedGroups.containsKey(group.groupId)) {
+        _selectedGroups.remove(group.groupId);
+      } else {
+        _selectedGroups[group.groupId] = group;
+      }
       if (_target == _ShareTarget.directChat) {
         _target = _payload.canUploadToGallery
             ? _ShareTarget.gallery
@@ -144,7 +145,8 @@ class _ShareUploadScreenState extends ConsumerState<ShareUploadScreen>
 
   void _selectContact(ChatContact contact) {
     setState(() {
-      _selection = _Selection.contact(contact);
+      _selectedGroups.clear();
+      _selectedContact = contact;
       _target = _ShareTarget.directChat;
     });
   }
@@ -195,8 +197,7 @@ class _ShareUploadScreenState extends ConsumerState<ShareUploadScreen>
   // ── Upload to gallery ─────────────────────────────────────────────────────
 
   Future<void> _uploadToGallery() async {
-    final group = _selection?.group;
-    if (group == null || !_payload.canUploadToGallery) return;
+    if (_selectedGroups.isEmpty || !_payload.canUploadToGallery) return;
 
     final userData = await _getUserDataFast();
     if (userData == null) {
@@ -207,26 +208,68 @@ class _ShareUploadScreenState extends ConsumerState<ShareUploadScreen>
     setState(() {
       _isUploading = true;
       _uploaded = 0;
+      _currentUploadingGroupIndex = 0;
     });
 
-    final count = await ref
-        .read(groupGalleryControllerProvider)
-        .uploadImages(
-          groupId: group.groupId,
-          imageFiles: _payload.files,
-          uploaderName: userData.name ?? 'Unknown',
-          caption: _payload.text,
-          onProgress: (uploaded, _) {
-            if (mounted) setState(() => _uploaded = uploaded);
-          },
-        );
+    final groupsList = _selectedGroups.values.toList();
+    int totalSuccessCount = 0;
+    int groupsUploaded = 0;
+    final isVideo = _payload.type == SharedPayloadType.video;
 
-    _finishAndExit(
-      count > 0
-          ? '✅ $count photo${count == 1 ? '' : 's'} added to ${group.nameWithPosition} gallery'
-          : '⚠️ Upload failed',
-      success: count > 0,
-    );
+    for (int g = 0; g < groupsList.length; g++) {
+      final group = groupsList[g];
+      if (mounted) {
+        setState(() {
+          _currentUploadingGroupIndex = g + 1;
+          _uploaded = 0;
+        });
+      }
+
+      final count = isVideo
+          ? await ref
+              .read(groupGalleryControllerProvider)
+              .uploadVideos(
+                groupId: group.groupId,
+                videoFiles: _payload.files,
+                uploaderName: userData.name ?? 'Unknown',
+                caption: _payload.text,
+                onProgress: (uploaded, _) {
+                  if (mounted) setState(() => _uploaded = uploaded);
+                },
+              )
+          : await ref
+              .read(groupGalleryControllerProvider)
+              .uploadImages(
+                groupId: group.groupId,
+                imageFiles: _payload.files,
+                uploaderName: userData.name ?? 'Unknown',
+                caption: _payload.text,
+                onProgress: (uploaded, _) {
+                  if (mounted) setState(() => _uploaded = uploaded);
+                },
+              );
+
+      if (count > 0) {
+        totalSuccessCount += count;
+        groupsUploaded++;
+      }
+    }
+
+    if (groupsList.length == 1) {
+      _finishAndExit(
+        totalSuccessCount > 0
+            ? '✅ $totalSuccessCount ${isVideo ? "video" : "photo"}${totalSuccessCount == 1 ? '' : 's'} added to ${groupsList.first.nameWithPosition} gallery'
+            : '⚠️ Upload failed',
+        success: totalSuccessCount > 0,
+      );
+    } else {
+      _finishAndExit(
+        groupsUploaded > 0
+            ? '✅ Added ${_payload.files.length} ${isVideo ? "video" : "photo"}${_payload.files.length == 1 ? '' : 's'} to $groupsUploaded of ${groupsList.length} galleries'
+            : '⚠️ Upload failed',
+        success: groupsUploaded > 0,
+      );
+    }
   }
 
   String _fileMessageType(File file) {
@@ -245,8 +288,7 @@ class _ShareUploadScreenState extends ConsumerState<ShareUploadScreen>
   // ── Send to group chat ────────────────────────────────────────────────────
 
   Future<void> _sendToGroupChat() async {
-    final group = _selection?.group;
-    if (group == null) return;
+    if (_selectedGroups.isEmpty) return;
 
     final userData = await _getUserDataFast();
     if (userData == null) {
@@ -257,67 +299,90 @@ class _ShareUploadScreenState extends ConsumerState<ShareUploadScreen>
     setState(() {
       _isUploading = true;
       _uploaded = 0;
+      _currentUploadingGroupIndex = 0;
     });
 
-    final receiverIds = group.membersUid
-        .where((uid) => uid != userData.uid)
-        .toList();
-
-    if (_payload.isTextOnly) {
-      if (!mounted) return;
-      await ref
-          .read(groupControllerProvider)
-          .sendTextMessage(
-            context,
-            _payload.text ?? '',
-            group.groupId,
-            'text',
-            null,
-            List<String>.from(group.fcmTokens),
-            receiverIds,
-            group.nameWithPosition,
-            _groupType(group),
-          );
-
-      _finishAndExit('✅ Sent to ${group.nameWithPosition}');
-      return;
-    }
-
-    // Media files sharing
+    final groupsList = _selectedGroups.values.toList();
     final files = _payload.files;
     final isVideo = _payload.type == SharedPayloadType.video;
-    final mediaGroupId = files.length > 1 ? const Uuid().v1() : null;
 
-    for (int i = 0; i < files.length; i++) {
-      final file = files[i];
-      final messageType = _fileMessageType(file);
-      if (!mounted) return;
-      await ref
-          .read(groupControllerProvider)
-          .sendTextMessage(
-            context,
-            i == 0 && _payload.text != null ? _payload.text! : '',
-            group.groupId,
-            messageType,
-            file,
-            List<String>.from(group.fcmTokens),
-            receiverIds,
-            group.nameWithPosition,
-            _groupType(group),
-            mediaGroupId: mediaGroupId,
-          );
-      if (mounted) setState(() => _uploaded = i + 1);
+    for (int g = 0; g < groupsList.length; g++) {
+      final group = groupsList[g];
+      if (mounted) {
+        setState(() {
+          _currentUploadingGroupIndex = g + 1;
+        });
+      }
+
+      final receiverIds = group.membersUid
+          .where((uid) => uid != userData.uid)
+          .toList();
+
+      if (_payload.isTextOnly) {
+        if (!mounted) return;
+        await ref
+            .read(groupControllerProvider)
+            .sendTextMessage(
+              context,
+              _payload.text ?? '',
+              group.groupId,
+              'text',
+              null,
+              List<String>.from(group.fcmTokens),
+              receiverIds,
+              group.nameWithPosition,
+              _groupType(group),
+            );
+      } else {
+        // Media files sharing
+        final mediaGroupId = files.length > 1 ? const Uuid().v1() : null;
+
+        for (int i = 0; i < files.length; i++) {
+          final file = files[i];
+          final messageType = _fileMessageType(file);
+          if (!mounted) return;
+          await ref
+              .read(groupControllerProvider)
+              .sendTextMessage(
+                context,
+                i == 0 && _payload.text != null ? _payload.text! : '',
+                group.groupId,
+                messageType,
+                file,
+                List<String>.from(group.fcmTokens),
+                receiverIds,
+                group.nameWithPosition,
+                _groupType(group),
+                mediaGroupId: mediaGroupId,
+              );
+          if (mounted) setState(() => _uploaded = i + 1);
+        }
+      }
     }
 
-    _finishAndExit(
-      '✅ ${files.length} ${isVideo ? "video" : "photo"}${files.length == 1 ? '' : 's'} sent to ${group.nameWithPosition}',
-    );
+    if (groupsList.length == 1) {
+      if (_payload.isTextOnly) {
+        _finishAndExit('✅ Sent to ${groupsList.first.nameWithPosition}');
+      } else {
+        _finishAndExit(
+          '✅ ${files.length} ${isVideo ? "video" : "photo"}${files.length == 1 ? '' : 's'} sent to ${groupsList.first.nameWithPosition}',
+        );
+      }
+    } else {
+      if (_payload.isTextOnly) {
+        _finishAndExit('✅ Sent message to ${groupsList.length} groups');
+      } else {
+        _finishAndExit(
+          '✅ ${files.length} ${isVideo ? "video" : "photo"}${files.length == 1 ? '' : 's'} sent to ${groupsList.length} groups',
+        );
+      }
+    }
   }
 
   // ── Send to 1-to-1 chat ───────────────────────────────────────────────────
 
   Future<void> _sendToDirectChat() async {
-    final contact = _selection?.contact;
+    final contact = _selectedContact;
     if (contact == null) return;
 
     final userData = await _getUserDataFast();
@@ -383,16 +448,14 @@ class _ShareUploadScreenState extends ConsumerState<ShareUploadScreen>
   }
 
   Future<void> _submit() async {
-    switch (_target) {
-      case _ShareTarget.gallery:
+    if (_selectedContact != null) {
+      await _sendToDirectChat();
+    } else if (_selectedGroups.isNotEmpty) {
+      if (_target == _ShareTarget.gallery) {
         await _uploadToGallery();
-        break;
-      case _ShareTarget.groupChat:
+      } else {
         await _sendToGroupChat();
-        break;
-      case _ShareTarget.directChat:
-        await _sendToDirectChat();
-        break;
+      }
     }
   }
 
@@ -408,6 +471,8 @@ class _ShareUploadScreenState extends ConsumerState<ShareUploadScreen>
   // ── Derived helpers ───────────────────────────────────────────────────────
 
   bool get _isDirectTab => _tabController.index == _kDirectTabIndex;
+  bool get _hasSelection =>
+      _selectedContact != null || _selectedGroups.isNotEmpty;
 
   String get _submitLabel {
     final count = _payload.isTextOnly ? 1 : _payload.files.length;
@@ -422,18 +487,37 @@ class _ShareUploadScreenState extends ConsumerState<ShareUploadScreen>
 
     if (_isUploading) {
       final verb = _target == _ShareTarget.gallery ? 'Uploading' : 'Sending';
+      if (_selectedGroups.length > 1) {
+        return '$verb to Group $_currentUploadingGroupIndex/${_selectedGroups.length}...';
+      }
       if (_payload.isTextOnly) return '$verb...';
       return '$verb $_uploaded / $count...';
     }
-    if (_selection == null) return 'Select a destination first';
+
+    if (!_hasSelection) return 'Select a destination first';
+
+    if (_selectedContact != null) {
+      return 'Send $count $typeName$plural to ${_selectedContact!.name}';
+    }
+
+    final numGroups = _selectedGroups.length;
+    if (numGroups == 1) {
+      final group = _selectedGroups.values.first;
+      switch (_target) {
+        case _ShareTarget.gallery:
+          return 'Upload $count $typeName$plural to Gallery';
+        case _ShareTarget.groupChat:
+        case _ShareTarget.directChat:
+          return 'Send $count $typeName$plural to ${group.nameWithPosition}';
+      }
+    }
 
     switch (_target) {
       case _ShareTarget.gallery:
-        return 'Upload $count $typeName$plural to Gallery';
+        return 'Upload $count $typeName$plural to $numGroups Galleries';
       case _ShareTarget.groupChat:
-        return 'Send $count $typeName$plural to ${_selection!.name}';
       case _ShareTarget.directChat:
-        return 'Send $count $typeName$plural to ${_selection!.name}';
+        return 'Send $count $typeName$plural to $numGroups Groups';
     }
   }
 
@@ -562,7 +646,18 @@ class _ShareUploadScreenState extends ConsumerState<ShareUploadScreen>
                 _buildModeInfoBanner(),
 
               // ── Selected destination banner ───────────────────────────────
-              if (_selection != null) _buildSelectedDestinationBanner(),
+              if (_hasSelection) _buildSelectedDestinationBanner(),
+
+              // ── Unified Search Bar (persists across all tabs) ─────────────
+              _SearchBar(
+                controller: _searchController,
+                query: _searchQuery,
+                onChanged: (val) => setState(() => _searchQuery = val.trim()),
+                onClear: () {
+                  _searchController.clear();
+                  setState(() => _searchQuery = '');
+                },
+              ),
 
               // ── Tab views with cached streams ─────────────────────────────
               Expanded(
@@ -570,31 +665,35 @@ class _ShareUploadScreenState extends ConsumerState<ShareUploadScreen>
                   controller: _tabController,
                   children: [
                     // Direct Messages (Tab 0)
-                    _SearchableContactTab(
+                    _ContactList(
                       stream: _directContactsStream,
-                      selectedContact: _selection?.contact,
+                      selectedContact: _selectedContact,
+                      searchQuery: _searchQuery,
                       onSelect: _selectContact,
                       emptyLabel: 'No conversations yet',
                     ),
                     // My Groups (Tab 1)
-                    _SearchableGroupTab(
+                    _GroupList(
                       stream: _myGroupsStream,
-                      selectedGroup: _selection?.group,
-                      onSelect: _selectGroup,
+                      selectedGroupIds: _selectedGroups.keys.toSet(),
+                      searchQuery: _searchQuery,
+                      onToggleGroup: _toggleGroup,
                       emptyLabel: 'No groups available in Queendom',
                     ),
                     // Queen Pooja (Tab 2)
-                    _SearchableGroupTab(
+                    _GroupList(
                       stream: _poojaGroupsStream,
-                      selectedGroup: _selection?.group,
-                      onSelect: _selectGroup,
+                      selectedGroupIds: _selectedGroups.keys.toSet(),
+                      searchQuery: _searchQuery,
+                      onToggleGroup: _toggleGroup,
                       emptyLabel: 'No Queen Pooja groups available',
                     ),
                     // Queen Rashmika (Tab 3)
-                    _SearchableGroupTab(
+                    _GroupList(
                       stream: _rashmikaGroupsStream,
-                      selectedGroup: _selection?.group,
-                      onSelect: _selectGroup,
+                      selectedGroupIds: _selectedGroups.keys.toSet(),
+                      searchQuery: _searchQuery,
+                      onToggleGroup: _toggleGroup,
                       emptyLabel: 'No Queen Rashmika groups available',
                     ),
                   ],
@@ -605,7 +704,8 @@ class _ShareUploadScreenState extends ConsumerState<ShareUploadScreen>
               if (_isUploading)
                 LinearProgressIndicator(
                   value: _payload.files.isNotEmpty
-                      ? _uploaded / _payload.files.length
+                      ? (((_currentUploadingGroupIndex > 0 ? (_currentUploadingGroupIndex - 1) : 0) * _payload.files.length + _uploaded) /
+                          ((_selectedGroups.isNotEmpty ? _selectedGroups.length : 1) * _payload.files.length)).clamp(0.0, 1.0)
                       : null,
                   backgroundColor: const Color(0xFF1E1A2E),
                   valueColor: AlwaysStoppedAnimation<Color>(_submitColor),
@@ -626,7 +726,7 @@ class _ShareUploadScreenState extends ConsumerState<ShareUploadScreen>
                   width: double.infinity,
                   height: 52,
                   child: ElevatedButton(
-                    onPressed: _selection == null || _isUploading
+                    onPressed: !_hasSelection || _isUploading
                         ? null
                         : _submit,
                     style: ElevatedButton.styleFrom(
@@ -636,7 +736,7 @@ class _ShareUploadScreenState extends ConsumerState<ShareUploadScreen>
                           : Colors.white,
                       disabledBackgroundColor: const Color(0xFF221E30),
                       disabledForegroundColor: Colors.grey[600],
-                      elevation: _selection != null ? 6 : 0,
+                      elevation: _hasSelection ? 6 : 0,
                       shadowColor: _submitColor.withValues(alpha: 0.4),
                       shape: RoundedRectangleBorder(
                         borderRadius: BorderRadius.circular(16),
@@ -1112,7 +1212,163 @@ class _ShareUploadScreenState extends ConsumerState<ShareUploadScreen>
   }
 
   Widget _buildSelectedDestinationBanner() {
-    final selection = _selection!;
+    if (_selectedContact != null) {
+      final contact = _selectedContact!;
+      return Container(
+        width: double.infinity,
+        margin: const EdgeInsets.fromLTRB(16, 4, 16, 6),
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+        decoration: BoxDecoration(
+          color: _submitColor.withValues(alpha: 0.12),
+          borderRadius: BorderRadius.circular(14),
+          border: Border.all(
+            color: _submitColor.withValues(alpha: 0.4),
+            width: 1.2,
+          ),
+        ),
+        child: Row(
+          children: [
+            Container(
+              decoration: BoxDecoration(
+                shape: BoxShape.circle,
+                border: Border.all(color: _submitColor, width: 1.5),
+              ),
+              child: CircleAvatar(
+                backgroundImage: contact.profilePic != null &&
+                        contact.profilePic!.isNotEmpty
+                    ? NetworkImage(contact.profilePic!)
+                    : null,
+                radius: 15,
+                backgroundColor: const Color(0xFF1E1A2E),
+                onBackgroundImageError: (contact.profilePic != null &&
+                        contact.profilePic!.isNotEmpty)
+                    ? (_, __) {}
+                    : null,
+                child: contact.profilePic == null || contact.profilePic!.isEmpty
+                    ? const Icon(Icons.person, size: 14, color: Colors.white54)
+                    : null,
+              ),
+            ),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    contact.name,
+                    style: const TextStyle(
+                      color: Colors.white,
+                      fontSize: 13,
+                      fontWeight: FontWeight.bold,
+                    ),
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                  Text(
+                    'Will be sent as chat message',
+                    style: TextStyle(
+                      color: Colors.grey[300],
+                      fontSize: 11,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            IconButton(
+              icon: const Icon(
+                Icons.close_rounded,
+                size: 18,
+                color: Colors.white70,
+              ),
+              onPressed: () => setState(() => _selectedContact = null),
+              padding: EdgeInsets.zero,
+              constraints: const BoxConstraints(),
+            ),
+          ],
+        ),
+      );
+    }
+
+    if (_selectedGroups.length == 1) {
+      final group = _selectedGroups.values.first;
+      return Container(
+        width: double.infinity,
+        margin: const EdgeInsets.fromLTRB(16, 4, 16, 6),
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+        decoration: BoxDecoration(
+          color: _submitColor.withValues(alpha: 0.12),
+          borderRadius: BorderRadius.circular(14),
+          border: Border.all(
+            color: _submitColor.withValues(alpha: 0.4),
+            width: 1.2,
+          ),
+        ),
+        child: Row(
+          children: [
+            Container(
+              decoration: BoxDecoration(
+                shape: BoxShape.circle,
+                border: Border.all(color: _submitColor, width: 1.5),
+              ),
+              child: CircleAvatar(
+                backgroundImage: group.groupPic.isNotEmpty
+                    ? NetworkImage(group.groupPic)
+                    : null,
+                radius: 15,
+                backgroundColor: const Color(0xFF1E1A2E),
+                onBackgroundImageError:
+                    group.groupPic.isNotEmpty ? (_, __) {} : null,
+                child: group.groupPic.isEmpty
+                    ? const Icon(Icons.group, size: 14, color: Colors.white54)
+                    : null,
+              ),
+            ),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  QueendomEmblemHelper.buildRichTitle(
+                    title: group.nameWithPosition,
+                    family: group.family,
+                    fallbackFamily: 'Main',
+                    style: const TextStyle(
+                      color: Colors.white,
+                      fontSize: 13,
+                      fontWeight: FontWeight.bold,
+                    ),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                  Text(
+                    _target == _ShareTarget.gallery
+                        ? 'Will be uploaded to gallery'
+                        : 'Will be sent as chat message',
+                    style: TextStyle(
+                      color: Colors.grey[300],
+                      fontSize: 11,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            IconButton(
+              icon: const Icon(
+                Icons.close_rounded,
+                size: 18,
+                color: Colors.white70,
+              ),
+              onPressed: () => setState(() => _selectedGroups.clear()),
+              padding: EdgeInsets.zero,
+              constraints: const BoxConstraints(),
+            ),
+          ],
+        ),
+      );
+    }
+
+    // Multiple groups selected
+    final numGroups = _selectedGroups.length;
+    final groupsList = _selectedGroups.values.toList();
     return Container(
       width: double.infinity,
       margin: const EdgeInsets.fromLTRB(16, 4, 16, 6),
@@ -1125,204 +1381,126 @@ class _ShareUploadScreenState extends ConsumerState<ShareUploadScreen>
           width: 1.2,
         ),
       ),
-      child: Row(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Container(
-            decoration: BoxDecoration(
-              shape: BoxShape.circle,
-              border: Border.all(color: _submitColor, width: 1.5),
-            ),
-            child: CircleAvatar(
-              backgroundImage: selection.pic.isNotEmpty
-                  ? NetworkImage(selection.pic)
-                  : null,
-              radius: 15,
-              backgroundColor: const Color(0xFF1E1A2E),
-              onBackgroundImageError:
-                  selection.pic.isNotEmpty ? (_, __) {} : null,
-              child: selection.pic.isEmpty
-                  ? Icon(
-                      selection.isGroup ? Icons.group : Icons.person,
-                      size: 14,
-                      color: Colors.white54,
-                    )
-                  : null,
-            ),
-          ),
-          const SizedBox(width: 10),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                if (selection.isGroup && selection.group != null)
-                  QueendomEmblemHelper.buildRichTitle(
-                    title: selection.group!.nameWithPosition,
-                    family: selection.group!.family,
-                    fallbackFamily: 'Main',
-                    style: const TextStyle(
-                      color: Colors.white,
-                      fontSize: 13,
-                      fontWeight: FontWeight.bold,
-                    ),
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                  )
-                else
-                  Text(
-                    selection.name,
-                    style: const TextStyle(
-                      color: Colors.white,
-                      fontSize: 13,
-                      fontWeight: FontWeight.bold,
-                    ),
-                    overflow: TextOverflow.ellipsis,
-                  ),
-                Text(
-                  _target == _ShareTarget.gallery
-                      ? 'Will be uploaded to gallery'
-                      : 'Will be sent as chat message',
-                  style: TextStyle(
-                    color: Colors.grey[300],
-                    fontSize: 11,
-                  ),
+          Row(
+            children: [
+              Container(
+                padding: const EdgeInsets.all(5),
+                decoration: BoxDecoration(
+                  shape: BoxShape.circle,
+                  color: _submitColor.withValues(alpha: 0.2),
+                  border: Border.all(color: _submitColor, width: 1.5),
                 ),
-              ],
-            ),
+                child: Icon(
+                  Icons.groups_rounded,
+                  size: 18,
+                  color: _submitColor,
+                ),
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      '$numGroups Groups Selected',
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontSize: 13,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                    Text(
+                      _target == _ShareTarget.gallery
+                          ? 'Will be uploaded to $numGroups galleries'
+                          : 'Will be sent to $numGroups group chats',
+                      style: TextStyle(
+                        color: Colors.grey[300],
+                        fontSize: 11,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              TextButton(
+                onPressed: () => setState(() => _selectedGroups.clear()),
+                style: TextButton.styleFrom(
+                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                  minimumSize: Size.zero,
+                  tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                ),
+                child: const Text(
+                  'Clear all',
+                  style: TextStyle(color: Colors.white70, fontSize: 12),
+                ),
+              ),
+            ],
           ),
-          IconButton(
-            icon: const Icon(
-              Icons.close_rounded,
-              size: 18,
-              color: Colors.white70,
+          const SizedBox(height: 6),
+          SizedBox(
+            height: 28,
+            child: ListView.separated(
+              scrollDirection: Axis.horizontal,
+              itemCount: groupsList.length,
+              separatorBuilder: (_, __) => const SizedBox(width: 6),
+              itemBuilder: (context, index) {
+                final g = groupsList[index];
+                return GestureDetector(
+                  key: ValueKey('chip_${g.groupId}'),
+                  onTap: () => setState(() => _selectedGroups.remove(g.groupId)),
+                  child: Container(
+                    padding: const EdgeInsets.only(left: 4, right: 6),
+                    decoration: BoxDecoration(
+                      color: Colors.white.withValues(alpha: 0.08),
+                      borderRadius: BorderRadius.circular(14),
+                      border: Border.all(
+                        color: _submitColor.withValues(alpha: 0.3),
+                        width: 1,
+                      ),
+                    ),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        CircleAvatar(
+                          radius: 9,
+                          backgroundImage: g.groupPic.isNotEmpty
+                              ? NetworkImage(g.groupPic)
+                              : null,
+                          backgroundColor: const Color(0xFF1E1A2E),
+                          child: g.groupPic.isEmpty
+                              ? const Icon(Icons.group, size: 10, color: Colors.white54)
+                              : null,
+                        ),
+                        const SizedBox(width: 4),
+                        ConstrainedBox(
+                          constraints: const BoxConstraints(maxWidth: 120),
+                          child: Text(
+                            g.name,
+                            style: const TextStyle(
+                              color: Colors.white,
+                              fontSize: 11,
+                              fontWeight: FontWeight.w500,
+                            ),
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ),
+                        const SizedBox(width: 2),
+                        const Icon(
+                          Icons.close,
+                          size: 14,
+                          color: Colors.white70,
+                        ),
+                      ],
+                    ),
+                  ),
+                );
+              },
             ),
-            onPressed: () => setState(() => _selection = null),
-            padding: EdgeInsets.zero,
-            constraints: const BoxConstraints(),
           ),
         ],
       ),
-    );
-  }
-}
-
-// ── Searchable Group Tab ─────────────────────────────────────────────────────
-
-class _SearchableGroupTab extends StatefulWidget {
-  final Stream<List<GroupModel>> stream;
-  final GroupModel? selectedGroup;
-  final ValueChanged<GroupModel> onSelect;
-  final String emptyLabel;
-
-  const _SearchableGroupTab({
-    required this.stream,
-    required this.selectedGroup,
-    required this.onSelect,
-    required this.emptyLabel,
-  });
-
-  @override
-  State<_SearchableGroupTab> createState() => _SearchableGroupTabState();
-}
-
-class _SearchableGroupTabState extends State<_SearchableGroupTab>
-    with AutomaticKeepAliveClientMixin<_SearchableGroupTab> {
-  final TextEditingController _searchController = TextEditingController();
-  String _searchQuery = '';
-
-  @override
-  bool get wantKeepAlive => true;
-
-  @override
-  void dispose() {
-    _searchController.dispose();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    super.build(context);
-    return Column(
-      children: [
-        _SearchBar(
-          controller: _searchController,
-          query: _searchQuery,
-          onChanged: (val) => setState(() => _searchQuery = val.trim()),
-          onClear: () {
-            _searchController.clear();
-            setState(() => _searchQuery = '');
-          },
-        ),
-        Expanded(
-          child: _GroupList(
-            stream: widget.stream,
-            selectedGroup: widget.selectedGroup,
-            searchQuery: _searchQuery,
-            onSelect: widget.onSelect,
-            emptyLabel: widget.emptyLabel,
-          ),
-        ),
-      ],
-    );
-  }
-}
-
-// ── Searchable Contact Tab ───────────────────────────────────────────────────
-
-class _SearchableContactTab extends StatefulWidget {
-  final Stream<List<ChatContact>> stream;
-  final ChatContact? selectedContact;
-  final ValueChanged<ChatContact> onSelect;
-  final String emptyLabel;
-
-  const _SearchableContactTab({
-    required this.stream,
-    required this.selectedContact,
-    required this.onSelect,
-    required this.emptyLabel,
-  });
-
-  @override
-  State<_SearchableContactTab> createState() => _SearchableContactTabState();
-}
-
-class _SearchableContactTabState extends State<_SearchableContactTab>
-    with AutomaticKeepAliveClientMixin<_SearchableContactTab> {
-  final TextEditingController _searchController = TextEditingController();
-  String _searchQuery = '';
-
-  @override
-  bool get wantKeepAlive => true;
-
-  @override
-  void dispose() {
-    _searchController.dispose();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    super.build(context);
-    return Column(
-      children: [
-        _SearchBar(
-          controller: _searchController,
-          query: _searchQuery,
-          onChanged: (val) => setState(() => _searchQuery = val.trim()),
-          onClear: () {
-            _searchController.clear();
-            setState(() => _searchQuery = '');
-          },
-        ),
-        Expanded(
-          child: _ContactList(
-            stream: widget.stream,
-            selectedContact: widget.selectedContact,
-            searchQuery: _searchQuery,
-            onSelect: widget.onSelect,
-            emptyLabel: widget.emptyLabel,
-          ),
-        ),
-      ],
     );
   }
 }
@@ -1383,54 +1561,65 @@ class _SearchBar extends StatelessWidget {
 
 // ── Group List ────────────────────────────────────────────────────────────────
 
-class _GroupList extends StatelessWidget {
+class _GroupList extends StatefulWidget {
   final Stream<List<GroupModel>> stream;
-  final GroupModel? selectedGroup;
+  final Set<String> selectedGroupIds;
   final String searchQuery;
-  final ValueChanged<GroupModel> onSelect;
+  final ValueChanged<GroupModel> onToggleGroup;
   final String emptyLabel;
 
   const _GroupList({
     required this.stream,
-    required this.selectedGroup,
+    required this.selectedGroupIds,
     required this.searchQuery,
-    required this.onSelect,
+    required this.onToggleGroup,
     required this.emptyLabel,
   });
 
   @override
+  State<_GroupList> createState() => _GroupListState();
+}
+
+class _GroupListState extends State<_GroupList>
+    with AutomaticKeepAliveClientMixin<_GroupList> {
+  @override
+  bool get wantKeepAlive => true;
+
+  @override
   Widget build(BuildContext context) {
+    super.build(context);
+    final query = widget.searchQuery;
     return StreamBuilder<List<GroupModel>>(
-      stream: stream,
+      stream: widget.stream,
       builder: (context, snapshot) {
         if (snapshot.connectionState == ConnectionState.waiting) {
           return const ContactListSkeleton(isGroup: true);
         }
 
         final all = snapshot.data ?? [];
-        final groups = searchQuery.isEmpty
+        final groups = query.isEmpty
             ? all
             : all
                 .where(
                   (g) =>
                       g.nameWithPosition.toLowerCase().contains(
-                            searchQuery.toLowerCase(),
+                            query.toLowerCase(),
                           ) ||
                       g.name.toLowerCase().contains(
-                            searchQuery.toLowerCase(),
+                            query.toLowerCase(),
                           ) ||
                       (g.family ?? '').toLowerCase().contains(
-                            searchQuery.toLowerCase(),
+                            query.toLowerCase(),
                           ) ||
                       (g.position ?? '').toLowerCase().contains(
-                            searchQuery.toLowerCase(),
+                            query.toLowerCase(),
                           ),
                 )
                 .toList();
 
         if (all.isEmpty) {
           return Center(
-            child: Text(emptyLabel, style: TextStyle(color: Colors.grey[500])),
+            child: Text(widget.emptyLabel, style: TextStyle(color: Colors.grey[500])),
           );
         }
 
@@ -1442,7 +1631,7 @@ class _GroupList extends StatelessWidget {
                 Icon(Icons.search_off_rounded, size: 40, color: Colors.grey[700]),
                 const SizedBox(height: 12),
                 Text(
-                  'No results for "$searchQuery"',
+                  'No results for "$query"',
                   style: TextStyle(color: Colors.grey[400], fontSize: 14),
                 ),
               ],
@@ -1461,10 +1650,11 @@ class _GroupList extends StatelessWidget {
           ),
           itemBuilder: (context, index) {
             final group = groups[index];
-            final isSelected = selectedGroup?.groupId == group.groupId;
+            final isSelected = widget.selectedGroupIds.contains(group.groupId);
 
             return InkWell(
-              onTap: () => onSelect(group),
+              key: ValueKey('group_tile_${group.groupId}'),
+              onTap: () => widget.onToggleGroup(group),
               borderRadius: BorderRadius.circular(14),
               child: Container(
                 margin: const EdgeInsets.symmetric(vertical: 2),
@@ -1533,7 +1723,7 @@ class _GroupList extends StatelessWidget {
                           Row(
                             children: [
                               Flexible(
-                                child: searchQuery.isEmpty
+                                child: query.isEmpty
                                     ? QueendomEmblemHelper.buildRichTitle(
                                         title: group.nameWithPosition,
                                         family: group.family,
@@ -1548,7 +1738,7 @@ class _GroupList extends StatelessWidget {
                                       )
                                     : _HighlightedText(
                                         text: group.nameWithPosition,
-                                        query: searchQuery,
+                                        query: query,
                                       ),
                               ),
                               if (group.position != null &&
@@ -1624,7 +1814,7 @@ class _GroupList extends StatelessWidget {
                             size: 22,
                           )
                         : Icon(
-                            Icons.radio_button_unchecked_rounded,
+                            Icons.circle_outlined,
                             color: Colors.grey[700],
                             size: 22,
                           ),
@@ -1641,7 +1831,7 @@ class _GroupList extends StatelessWidget {
 
 // ── Contact List ──────────────────────────────────────────────────────────────
 
-class _ContactList extends StatelessWidget {
+class _ContactList extends StatefulWidget {
   final Stream<List<ChatContact>> stream;
   final ChatContact? selectedContact;
   final String searchQuery;
@@ -1657,28 +1847,39 @@ class _ContactList extends StatelessWidget {
   });
 
   @override
+  State<_ContactList> createState() => _ContactListState();
+}
+
+class _ContactListState extends State<_ContactList>
+    with AutomaticKeepAliveClientMixin<_ContactList> {
+  @override
+  bool get wantKeepAlive => true;
+
+  @override
   Widget build(BuildContext context) {
+    super.build(context);
+    final query = widget.searchQuery;
     return StreamBuilder<List<ChatContact>>(
-      stream: stream,
+      stream: widget.stream,
       builder: (context, snapshot) {
         if (snapshot.connectionState == ConnectionState.waiting) {
           return const ContactListSkeleton();
         }
 
         final all = snapshot.data ?? [];
-        final contacts = searchQuery.isEmpty
+        final contacts = query.isEmpty
             ? all
             : all
                 .where(
                   (c) => c.name.toLowerCase().contains(
-                        searchQuery.toLowerCase(),
+                        query.toLowerCase(),
                       ),
                 )
                 .toList();
 
         if (all.isEmpty) {
           return Center(
-            child: Text(emptyLabel, style: TextStyle(color: Colors.grey[500])),
+            child: Text(widget.emptyLabel, style: TextStyle(color: Colors.grey[500])),
           );
         }
 
@@ -1690,7 +1891,7 @@ class _ContactList extends StatelessWidget {
                 Icon(Icons.search_off_rounded, size: 40, color: Colors.grey[700]),
                 const SizedBox(height: 12),
                 Text(
-                  'No results for "$searchQuery"',
+                  'No results for "$query"',
                   style: TextStyle(color: Colors.grey[400], fontSize: 14),
                 ),
               ],
@@ -1709,10 +1910,10 @@ class _ContactList extends StatelessWidget {
           ),
           itemBuilder: (context, index) {
             final contact = contacts[index];
-            final isSelected = selectedContact?.uid == contact.uid;
+            final isSelected = widget.selectedContact?.uid == contact.uid;
 
             return InkWell(
-              onTap: () => onSelect(contact),
+              onTap: () => widget.onSelect(contact),
               borderRadius: BorderRadius.circular(14),
               child: Container(
                 margin: const EdgeInsets.symmetric(vertical: 2),
@@ -1768,7 +1969,7 @@ class _ContactList extends StatelessWidget {
                         children: [
                           _HighlightedText(
                             text: contact.name,
-                            query: searchQuery,
+                            query: query,
                           ),
                           const SizedBox(height: 3),
                           Text(

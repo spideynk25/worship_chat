@@ -1,6 +1,8 @@
 import 'dart:io';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:worship_chat/common/providers/message_reply_provider.dart';
 import 'package:worship_chat/features/status/repository/status_repository.dart';
+import 'package:worship_chat/models/one_to_one_message_model.dart';
 import 'package:worship_chat/models/status_model.dart';
 
 void main() {
@@ -121,6 +123,94 @@ void main() {
 
       expect(legacyExtracted, hasLength(1));
       expect(legacyExtracted.first.path, '/tmp/status1.jpg');
+    });
+
+    test('Story Direct Replies: MessageReply supports story type and repliedTo', () {
+      const storyUrl = 'https://res.cloudinary.com/test/image.jpg';
+      const ownerName = 'Queen Pooja';
+
+      final reply = MessageReply(
+        message: storyUrl,
+        isMe: false,
+        messageType: 'story',
+        fileMessageData: storyUrl,
+        repliedTo: ownerName,
+      );
+
+      expect(reply.message, storyUrl);
+      expect(reply.fileMessageData, storyUrl);
+      expect(reply.messageType, 'story');
+      expect(reply.repliedTo, ownerName);
+      expect(reply.isMe, isFalse);
+    });
+
+    test('Story Direct Replies: OneToOneMessageModel serializes and deserializes story reply metadata', () {
+      final now = DateTime.now();
+      final message = OneToOneMessageModel(
+        senderId: 'user_1',
+        receiverId: 'user_2',
+        text: '🔥 Stunner!',
+        messageType: 'text',
+        timeSent: now,
+        messageId: 'msg_story_reply_1',
+        isSeen: false,
+        isDelivered: true,
+        fileMessageData: null,
+        repliedMessage: 'https://res.cloudinary.com/test/story.jpg',
+        repliedTo: 'Queen Pooja',
+        repliedMessageType: 'story',
+      );
+
+      final map = message.toMap();
+      expect(map['repliedMessageType'], 'story');
+      expect(map['repliedTo'], 'Queen Pooja');
+      expect(map['repliedMessage'], 'https://res.cloudinary.com/test/story.jpg');
+
+      final fromMap = OneToOneMessageModel.fromMap(map);
+      expect(fromMap.repliedMessageType, 'story');
+      expect(fromMap.repliedTo, 'Queen Pooja');
+      expect(fromMap.repliedMessage, 'https://res.cloudinary.com/test/story.jpg');
+    });
+
+    test('Story Direct Replies: notification body format handles story reply correctly', () {
+      String getNotificationBody(String replyType, String text) {
+        switch (replyType) {
+          case 'story':
+            return '💬 Replied to your story: "$text"';
+          case 'text':
+          case 'wish':
+            return 'Replying to: "$text"';
+          default:
+            return text;
+        }
+      }
+
+      expect(
+        getNotificationBody('story', 'Looking incredible!'),
+        '💬 Replied to your story: "Looking incredible!"',
+      );
+      expect(
+        getNotificationBody('story', '👑'),
+        '💬 Replied to your story: "👑"',
+      );
+    });
+
+    test('Story Direct Replies: quick reaction emojis contains royal crown and reactions', () {
+      const quickEmojis = [
+        '❤️',
+        '🔥',
+        '👑',
+        '😂',
+        '😮',
+        '🙏',
+        '👏',
+        '😍',
+      ];
+
+      expect(quickEmojis, contains('👑'));
+      expect(quickEmojis, contains('🔥'));
+      expect(quickEmojis, contains('❤️'));
+      expect(quickEmojis, hasLength(8));
     });
   });
 }

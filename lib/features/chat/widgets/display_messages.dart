@@ -1655,6 +1655,7 @@ class _DisplayMessagesState extends State<DisplayMessages>
         );
         break;
 
+      case 'story':
       case 'image':
         final hasExplicitHeight =
             widget.mediaHeight != null || !widget.isPreviewable;
@@ -2495,20 +2496,17 @@ class _CachedImageWidgetState extends State<_CachedImageWidget> {
   @override
   Widget build(BuildContext context) {
     if (_localPath != null) {
-      final localFile = File(_localPath!);
-      if (localFile.existsSync() && localFile.lengthSync() > 0) {
-        return Image.file(
-          localFile,
-          width: widget.width,
-          height: widget.height,
-          fit: widget.fit,
-          alignment: widget.alignment,
-          gaplessPlayback: true,
-          errorBuilder: (context, error, stackTrace) {
-            return _buildNetworkImage(context);
-          },
-        );
-      }
+      return Image.file(
+        File(_localPath!),
+        width: widget.width,
+        height: widget.height,
+        fit: widget.fit,
+        alignment: widget.alignment,
+        gaplessPlayback: true,
+        errorBuilder: (context, error, stackTrace) {
+          return _buildNetworkImage(context);
+        },
+      );
     }
 
     return _buildNetworkImage(context);

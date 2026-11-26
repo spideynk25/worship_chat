@@ -8,11 +8,13 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:intl/intl.dart';
 import 'package:worship_chat/colors.dart';
+import 'package:worship_chat/common/utils/utils.dart';
 import 'package:worship_chat/common/widgets/skeleton_loader.dart';
 import 'package:worship_chat/features/chat/controller/chat_controller.dart';
 import 'package:worship_chat/features/chat/screens/one_to_one_chat_screen.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:worship_chat/features/status/controller/status_controller.dart';
+import 'package:worship_chat/features/status/repository/status_repository.dart';
 import 'package:worship_chat/features/status/screens/view_status_screen.dart';
 import 'package:worship_chat/features/status/screens/confirm_status_screen.dart';
 import 'package:hive_flutter/hive_flutter.dart';
@@ -21,9 +23,38 @@ import 'package:worship_chat/models/user_model.dart';
 import 'package:worship_chat/common/widgets/user_avatar.dart';
 import 'package:worship_chat/features/dashboard/widgets/group_shortcuts_grid.dart';
 
-class CombinedContactsScreen extends ConsumerWidget {
+class CombinedContactsScreen extends ConsumerStatefulWidget {
   final bool isAllChats;
   const CombinedContactsScreen({super.key, required this.isAllChats});
+
+  @override
+  ConsumerState<CombinedContactsScreen> createState() =>
+      _CombinedContactsScreenState();
+}
+
+class _CombinedContactsScreenState
+    extends ConsumerState<CombinedContactsScreen> {
+  Stream<List<ChatContact>>? _contactsStream;
+
+  @override
+  void initState() {
+    super.initState();
+    _initStream();
+  }
+
+  @override
+  void didUpdateWidget(covariant CombinedContactsScreen oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.isAllChats != widget.isAllChats) {
+      _initStream();
+    }
+  }
+
+  void _initStream() {
+    _contactsStream = widget.isAllChats
+        ? ref.read(chatControllerProvider).fetchAllContacts()
+        : ref.read(chatControllerProvider).chatContacts();
+  }
 
   /// Returns the index of the first status in [statuses] that the current
   /// user has NOT seen yet. Falls back to 0 if all are seen.
@@ -42,13 +73,55 @@ class CombinedContactsScreen extends ConsumerWidget {
   }
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  Widget build(BuildContext context) {
     final statusAsync = ref.watch(statusStreamProvider);
-    final currentUserUid = FirebaseAuth.instance.currentUser?.uid ?? '';
+    final currentUserUid = safeCurrentUserId() ?? FirebaseAuth.instance.currentUser?.uid ?? '';
 
     // Read current user's profile pic from Hive (same source as HomeScreen)
     final currentUserProfilePic =
         Hive.box<UserModel>('userBox').get('currentUser')?.profilePic ?? '';
+
+    // Cache-first: prioritize stream data, or fallback instantly to memory/Hive cache
+    final List<Map<String, dynamic>> statuses =
+        statusAsync.valueOrNull ?? StatusRepository.getCachedStatuses();
+    final bool isInitialLoading = statusAsync.isLoading && statuses.isEmpty;
+
+    // Group by uid
+    final Map<String, List<Map<String, dynamic>>> userStatusMap = {};
+    for (var s in statuses) {
+      userStatusMap.putIfAbsent(s['uid'] as String, () => []).add(s);
+    }
+
+    // Sort: contacts with unseen stories first, then by most recent status
+    final grouped = userStatusMap.entries.toList()
+      ..sort((a, b) {
+        final aStatuses = a.value;
+        final bStatuses = b.value;
+        final aAllSeen = aStatuses.every(
+          (s) => (s['seenBy'] as Map? ?? {}).containsKey(currentUserUid),
+        );
+        final bAllSeen = bStatuses.every(
+          (s) => (s['seenBy'] as Map? ?? {}).containsKey(currentUserUid),
+        );
+        // Unseen first
+        if (!aAllSeen && bAllSeen) return -1;
+        if (aAllSeen && !bAllSeen) return 1;
+        // Then most recent last-status first
+        final aTime = (aStatuses.last['timeCreated'] as Timestamp).toDate();
+        final bTime = (bStatuses.last['timeCreated'] as Timestamp).toDate();
+        return bTime.compareTo(aTime);
+      });
+
+    // Pull out the current user's own statuses if any
+    final myStatuses = userStatusMap[currentUserUid] ?? [];
+    final hasMyStatus = myStatuses.isNotEmpty;
+
+    // Other contacts only (exclude current user from story strip)
+    final otherStatuses =
+        grouped.where((e) => e.key != currentUserUid).toList();
+
+    final int extraItems =
+        otherStatuses.isNotEmpty ? otherStatuses.length : 1;
 
     return Padding(
       padding: const EdgeInsets.only(top: 10),
@@ -57,140 +130,99 @@ class CombinedContactsScreen extends ConsumerWidget {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             // ── Status / Stories row ───────────────────────────────────
-            statusAsync.when(
-              data: (statuses) {
-                // Group by uid
-                final Map<String, List<Map<String, dynamic>>> userStatusMap =
-                    {};
-                for (var s in statuses) {
-                  userStatusMap
-                      .putIfAbsent(s['uid'] as String, () => [])
-                      .add(s);
-                }
+            Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                SizedBox(
+                  height: 108,
+                  child: ListView.builder(
+                    scrollDirection: Axis.horizontal,
+                    padding: const EdgeInsets.symmetric(horizontal: 14),
+                    itemCount: 1 + extraItems,
+                    itemBuilder: (context, index) {
+                      // ── Slot 0: My Status (ALWAYS interactive on frame 0) ──
+                      if (index == 0) {
+                        return _MyStatusCard(
+                          hasStatus: hasMyStatus,
+                          myStatuses: myStatuses,
+                          currentUserProfilePic: currentUserProfilePic,
+                          onAdd: () => _pickAndOpenMedia(context),
+                          onView: () => Navigator.pushNamed(
+                            context,
+                            ViewStatusesScreen.routeName,
+                            arguments: {
+                              "statuses": myStatuses,
+                              // Own statuses always start from 0
+                              "initialIndex": 0,
+                            },
+                          ),
+                        );
+                      }
 
-                // Sort: contacts with unseen stories first, then by most recent status
-                final grouped = userStatusMap.entries.toList()
-                  ..sort((a, b) {
-                    final aStatuses = a.value;
-                    final bStatuses = b.value;
-                    final aAllSeen = aStatuses.every(
-                      (s) => (s['seenBy'] as Map? ?? {}).containsKey(
-                        currentUserUid,
-                      ),
-                    );
-                    final bAllSeen = bStatuses.every(
-                      (s) => (s['seenBy'] as Map? ?? {}).containsKey(
-                        currentUserUid,
-                      ),
-                    );
-                    // Unseen first
-                    if (!aAllSeen && bAllSeen) return -1;
-                    if (aAllSeen && !bAllSeen) return 1;
-                    // Then most recent last-status first
-                    final aTime = (aStatuses.last['timeCreated'] as Timestamp)
-                        .toDate();
-                    final bTime = (bStatuses.last['timeCreated'] as Timestamp)
-                        .toDate();
-                    return bTime.compareTo(aTime);
-                  });
-
-                // Pull out the current user's own statuses if any
-                final myStatuses = userStatusMap[currentUserUid] ?? [];
-                final hasMyStatus = myStatuses.isNotEmpty;
-
-                // Other contacts only (exclude current user from story strip)
-                final otherStatuses = grouped
-                    .where((e) => e.key != currentUserUid)
-                    .toList();
-
-                return Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    SizedBox(
-                      height: 108,
-                      child: ListView.builder(
-                        scrollDirection: Axis.horizontal,
-                        padding: const EdgeInsets.symmetric(horizontal: 14),
-                        itemCount: otherStatuses.length + 1,
-                        itemBuilder: (context, index) {
-                          // ── Slot 0: My Status ──────────────────────────
-                          if (index == 0) {
-                            return _MyStatusCard(
-                              hasStatus: hasMyStatus,
-                              myStatuses: myStatuses,
-                              currentUserProfilePic: currentUserProfilePic,
-                              onAdd: () => _pickAndOpenMedia(context),
-                              onView: () => Navigator.pushNamed(
-                                context,
-                                ViewStatusesScreen.routeName,
-                                arguments: {
-                                  "statuses": myStatuses,
-                                  // Own statuses always start from 0
-                                  "initialIndex": 0,
-                                },
-                              ),
-                            );
-                          }
-
-                          // ── Contact story ──────────────────────────────
-                          final entry = otherStatuses[index - 1];
-                          final userStatuses = entry.value;
-                          final latest = userStatuses.last;
-                          final total = userStatuses.length;
-                          final seen = userStatuses.where((s) {
-                            final seenBy = Map<String, dynamic>.from(
-                              s['seenBy'] as Map? ?? {},
-                            );
-                            return seenBy.containsKey(currentUserUid);
-                          }).length;
-
-                          // ✅ Start from first unseen status
-                          final initialIndex = _firstUnseenIndex(
-                            userStatuses,
-                            currentUserUid,
+                      // ── Contact stories (if any) ────────────────────────
+                      final contactIndex = index - 1;
+                      if (contactIndex < otherStatuses.length) {
+                        final entry = otherStatuses[contactIndex];
+                        final userStatuses = entry.value;
+                        final latest = userStatuses.last;
+                        final total = userStatuses.length;
+                        final seen = userStatuses.where((s) {
+                          final seenBy = Map<String, dynamic>.from(
+                            s['seenBy'] as Map? ?? {},
                           );
+                          return seenBy.containsKey(currentUserUid);
+                        }).length;
 
-                          return _ContactStoryCard(
-                            profilePic: latest['profilePic'] as String,
-                            userName: latest['userName'] as String,
-                            segmentCount: total,
-                            seenCount: seen,
-                            isVideo:
-                                (latest['mediaType'] as String?) == 'video',
-                            onTap: () => Navigator.pushNamed(
-                              context,
-                              ViewStatusesScreen.routeName,
-                              arguments: {
-                                "statuses": userStatuses,
-                                // ✅ Jump straight to first unseen
-                                "initialIndex": initialIndex,
-                              },
-                            ),
-                          );
-                        },
-                      ),
-                    ),
-                    Divider(
-                      color: Colors.grey.withValues(alpha: 0.12),
-                      thickness: 1,
-                      indent: 14,
-                      endIndent: 14,
-                    ),
-                  ],
-                );
-              },
-              loading: () => const StatusRowSkeleton(),
-              error: (e, _) => const SizedBox.shrink(),
+                        // ✅ Start from first unseen status
+                        final initialIndex = _firstUnseenIndex(
+                          userStatuses,
+                          currentUserUid,
+                        );
+
+                        return _ContactStoryCard(
+                          profilePic: latest['profilePic'] as String,
+                          userName: latest['userName'] as String,
+                          segmentCount: total,
+                          seenCount: seen,
+                          isVideo:
+                              (latest['mediaType'] as String?) == 'video',
+                          onTap: () => Navigator.pushNamed(
+                            context,
+                            ViewStatusesScreen.routeName,
+                            arguments: {
+                              "statuses": userStatuses,
+                              // ✅ Jump straight to first unseen
+                              "initialIndex": initialIndex,
+                            },
+                          ),
+                        );
+                      }
+
+                      // ── Initial loading shimmer outline ─────────────────
+                      if (isInitialLoading) {
+                        return const _StorySkeletonPill();
+                      }
+
+                      // ── Clean empty state prompt when no contact stories ─
+                      return _buildEmptyStoryPrompt(context, hasMyStatus);
+                    },
+                  ),
+                ),
+                Divider(
+                  color: Colors.grey.withValues(alpha: 0.12),
+                  thickness: 1,
+                  indent: 14,
+                  endIndent: 14,
+                ),
+              ],
             ),
 
             // ── Chats list ─────────────────────────────────────────────
             StreamBuilder<List<ChatContact>>(
               initialData: ref
-                  .watch(chatControllerProvider)
-                  .getCachedContacts(isAllChats: isAllChats),
-              stream: isAllChats
-                  ? ref.watch(chatControllerProvider).fetchAllContacts()
-                  : ref.watch(chatControllerProvider).chatContacts(),
+                  .read(chatControllerProvider)
+                  .getCachedContacts(isAllChats: widget.isAllChats),
+              stream: _contactsStream,
               builder: (context, snapshot) {
                 if (snapshot.connectionState == ConnectionState.waiting &&
                     (!snapshot.hasData || snapshot.data!.isEmpty)) {
@@ -424,6 +456,69 @@ class CombinedContactsScreen extends ConsumerWidget {
 
   // ── WhatsApp-style media picker bottom sheet ─────────────────────────────
 
+  Widget _buildEmptyStoryPrompt(BuildContext context, bool hasMyStatus) {
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.only(left: 6, right: 14),
+        child: GestureDetector(
+          onTap: () => _pickAndOpenMedia(context),
+          child: Container(
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+            decoration: BoxDecoration(
+              color: Colors.white.withValues(alpha: 0.05),
+              borderRadius: BorderRadius.circular(16),
+              border: Border.all(
+                color: Colors.white.withValues(alpha: 0.08),
+              ),
+            ),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Container(
+                  padding: const EdgeInsets.all(6),
+                  decoration: BoxDecoration(
+                    color: tabColor.withValues(alpha: 0.15),
+                    shape: BoxShape.circle,
+                  ),
+                  child: const Icon(
+                    Icons.add_photo_alternate_outlined,
+                    size: 16,
+                    color: tabColor,
+                  ),
+                ),
+                const SizedBox(width: 10),
+                Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      hasMyStatus
+                          ? "Add another update"
+                          : "Share your daily story",
+                      style: const TextStyle(
+                        fontSize: 12,
+                        fontWeight: FontWeight.w600,
+                        color: Colors.white,
+                      ),
+                    ),
+                    const SizedBox(height: 2),
+                    Text(
+                      "Disappears after 24 hours",
+                      style: TextStyle(
+                        fontSize: 10,
+                        color: Colors.white.withValues(alpha: 0.5),
+                      ),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
   Future<void> _pickAndOpenMedia(BuildContext context) async {
     await showModalBottomSheet(
       context: context,
@@ -556,6 +651,63 @@ class _MyStatusCard extends StatelessWidget {
     return UserAvatar(
       url: currentUserProfilePic.isNotEmpty ? currentUserProfilePic : null,
       radius: 31,
+    );
+  }
+}
+
+// ── Story skeleton placeholder for rare uncached loads ───────────────────────
+
+class _StorySkeletonPill extends StatelessWidget {
+  const _StorySkeletonPill();
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.only(left: 6),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: List.generate(
+          2,
+          (i) => Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 6),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Container(
+                  width: 68,
+                  height: 68,
+                  decoration: BoxDecoration(
+                    shape: BoxShape.circle,
+                    border: Border.all(
+                      color: Colors.white.withValues(alpha: 0.08),
+                      width: 2,
+                    ),
+                  ),
+                  child: Center(
+                    child: Container(
+                      width: 58,
+                      height: 58,
+                      decoration: BoxDecoration(
+                        shape: BoxShape.circle,
+                        color: Colors.white.withValues(alpha: 0.04),
+                      ),
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 6),
+                Container(
+                  width: 44,
+                  height: 8,
+                  decoration: BoxDecoration(
+                    color: Colors.white.withValues(alpha: 0.06),
+                    borderRadius: BorderRadius.circular(4),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
     );
   }
 }

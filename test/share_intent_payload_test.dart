@@ -335,7 +335,194 @@ void main() {
       expect(find.textContaining('Queen Pooja', findRichText: true), findsWidgets);
       expect(find.text('Send 1 message to Queen Pooja'), findsOneWidget);
     });
+
+    testWidgets('search query persists when switching tabs in intent', (tester) async {
+      final mockGroup1 = GroupModel(
+        senderId: 'user1',
+        name: 'Preity',
+        groupId: 'grp_preity',
+        lastMessage: '',
+        groupPic: '',
+        membersUid: ['user1'],
+        timeSent: DateTime.now(),
+        fcmTokens: [],
+        unseenMessages: const {},
+        position: 'Princess',
+        family: 'Main',
+      );
+
+      final mockGroup2 = GroupModel(
+        senderId: 'user1',
+        name: 'Sreeleela',
+        groupId: 'grp_sreeleela',
+        lastMessage: '',
+        groupPic: '',
+        membersUid: ['user1'],
+        timeSent: DateTime.now(),
+        fcmTokens: [],
+        unseenMessages: const {},
+        position: 'Princess',
+        family: 'Main',
+      );
+
+      final mockGroup = _MockGroupControllerWithMultipleGroups([mockGroup1, mockGroup2]);
+      final mockChat = _MockChatController();
+
+      await tester.pumpWidget(
+        ProviderScope(
+          overrides: [
+            groupControllerProvider.overrideWithValue(mockGroup as dynamic),
+            chatControllerProvider.overrideWithValue(mockChat as dynamic),
+          ],
+          child: const MaterialApp(
+            home: ShareUploadScreen(
+              payload: SharedPayload(
+                text: 'Homage',
+                type: SharedPayloadType.text,
+              ),
+            ),
+          ),
+        ),
+      );
+
+      await tester.pump();
+
+      // Enter search query in Direct Message tab (default initial tab)
+      await tester.enterText(find.byType(TextField).first, 'Sreeleela');
+      await tester.pumpAndSettle();
+
+      // Verify text in TextField is 'Sreeleela'
+      expect(find.text('Sreeleela'), findsOneWidget);
+
+      // Switch to 'My Groups' tab
+      await tester.tap(find.text('My Groups'));
+      await tester.pumpAndSettle();
+
+      // Verify search query did NOT disappear on tab switch
+      final textField = tester.widget<TextField>(find.byType(TextField).first);
+      expect(textField.controller?.text, equals('Sreeleela'));
+
+      // Filtered list should display Sreeleela and filter out Preity
+      expect(find.textContaining('Sreeleela', findRichText: true), findsWidgets);
+      expect(find.textContaining('Preity', findRichText: true), findsNothing);
+
+      // Switch to 'Queen Pooja' tab
+      await tester.tap(find.text('Queen Pooja'));
+      await tester.pumpAndSettle();
+
+      // Verify search query is STILL preserved
+      final textFieldTab2 = tester.widget<TextField>(find.byType(TextField).first);
+      expect(textFieldTab2.controller?.text, equals('Sreeleela'));
+    });
+
+    testWidgets('allows selecting multiple groups and toggling selection in intent', (tester) async {
+      final mockGroup1 = GroupModel(
+        senderId: 'user1',
+        name: 'Preity',
+        groupId: 'grp_preity',
+        lastMessage: '',
+        groupPic: '',
+        membersUid: ['user1'],
+        timeSent: DateTime.now(),
+        fcmTokens: [],
+        unseenMessages: const {},
+        position: 'Princess',
+        family: 'Main',
+      );
+
+      final mockGroup2 = GroupModel(
+        senderId: 'user1',
+        name: 'Sreeleela',
+        groupId: 'grp_sreeleela',
+        lastMessage: '',
+        groupPic: '',
+        membersUid: ['user1'],
+        timeSent: DateTime.now(),
+        fcmTokens: [],
+        unseenMessages: const {},
+        position: 'Princess',
+        family: 'Main',
+      );
+
+      final mockGroup = _MockGroupControllerWithMultipleGroups([mockGroup1, mockGroup2]);
+      final mockChat = _MockChatController();
+
+      await tester.pumpWidget(
+        ProviderScope(
+          overrides: [
+            groupControllerProvider.overrideWithValue(mockGroup as dynamic),
+            chatControllerProvider.overrideWithValue(mockChat as dynamic),
+          ],
+          child: const MaterialApp(
+            home: ShareUploadScreen(
+              payload: SharedPayload(
+                text: 'Royal message',
+                type: SharedPayloadType.text,
+              ),
+            ),
+          ),
+        ),
+      );
+
+      await tester.pump();
+
+      // Switch to 'My Groups' tab
+      await tester.tap(find.text('My Groups'));
+      await tester.pumpAndSettle();
+
+      // Initially no destination is selected
+      expect(find.text('Select a destination first'), findsOneWidget);
+
+      // Tap Group 1 (Preity)
+      await tester.tap(find.byKey(const ValueKey('group_tile_grp_preity')));
+      await tester.pumpAndSettle();
+
+      // Single group selected
+      expect(find.text('Send 1 message to Princess Preity'), findsOneWidget);
+
+      // Tap Group 2 (Sreeleela) to select multiple groups
+      await tester.tap(find.byKey(const ValueKey('group_tile_grp_sreeleela')));
+      await tester.pumpAndSettle();
+
+      // Multi-group banner and button should appear
+      expect(find.text('2 Groups Selected'), findsOneWidget);
+      expect(find.text('Send 1 message to 2 Groups'), findsOneWidget);
+
+      // Tap Group 1 chip in banner to remove / deselect it
+      await tester.tap(find.byKey(const ValueKey('chip_grp_preity')));
+      await tester.pumpAndSettle();
+
+      // Now only Group 2 (Sreeleela) remains selected
+      expect(find.text('Send 1 message to Princess Sreeleela'), findsOneWidget);
+
+      // Tap Group 1 again to reselect
+      await tester.tap(find.byKey(const ValueKey('group_tile_grp_preity')));
+      await tester.pumpAndSettle();
+      expect(find.text('2 Groups Selected'), findsOneWidget);
+
+      // Tap 'Clear all' in the destination banner
+      await tester.tap(find.text('Clear all'));
+      await tester.pumpAndSettle();
+
+      // All selections cleared
+      expect(find.text('Select a destination first'), findsOneWidget);
+    });
   });
+}
+
+class _MockGroupControllerWithMultipleGroups implements GroupController {
+  final List<GroupModel> groups;
+  _MockGroupControllerWithMultipleGroups(this.groups);
+
+  @override
+  Stream<List<GroupModel>> chatGroups() => Stream.value(groups);
+  @override
+  Stream<List<GroupModel>> getQueenPoojaStream() => Stream.value(groups);
+  @override
+  Stream<List<GroupModel>> getQueenRashmikaStream() => Stream.value([]);
+
+  @override
+  dynamic noSuchMethod(Invocation invocation) => null;
 }
 
 class _MockGroupControllerWithGroup implements GroupController {

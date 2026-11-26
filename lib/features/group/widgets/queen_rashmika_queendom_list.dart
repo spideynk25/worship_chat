@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:developer';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -33,11 +34,68 @@ class _QueenRashmikaQueendomListState
 
   int selectedCategoryIndex = 0;
   bool _isSearchOpen = false;
-  bool _isWishingCategory = false;
+  final ValueNotifier<bool> _isWishingCategory = ValueNotifier<bool>(false);
 
   // One ScrollController per category tab so each list remembers its own
   // position independently.
   final Map<int, ScrollController> _scrollControllers = {};
+  
+  List<GroupModel>? _groups;
+  List<GroupModel>? _pendingGroups;
+  Object? _streamError;
+  StreamSubscription<List<GroupModel>>? _groupsSubscription;
+  Timer? _debounceTimer;
+
+  @override
+  void initState() {
+    super.initState();
+    final cached = ref.read(groupControllerProvider).getCachedGroups('groups_rashmika');
+    if (cached.isNotEmpty) {
+      _groups = cached;
+    }
+    _groupsSubscription = ref
+        .read(groupControllerProvider)
+        .getQueenRashmikaStream()
+        .listen(_onStreamData, onError: (err) {
+      if (mounted) {
+        setState(() {
+          _streamError = err;
+        });
+      }
+    });
+  }
+
+  void _onStreamData(List<GroupModel> groups) {
+    if (_isWishingCategory.value) {
+      // Freeze UI updates during wishing to eliminate multiple rebuild cascades
+      _pendingGroups = groups;
+      return;
+    }
+    if (_groups == null || _groups!.isEmpty) {
+      // First load: update immediately
+      if (mounted) {
+        setState(() {
+          _groups = groups;
+          _streamError = null;
+        });
+      }
+      return;
+    }
+    // Debounce rapid updates (e.g. Firestore optimistic write + server confirmation)
+    _debounceTimer?.cancel();
+    _debounceTimer = Timer(const Duration(milliseconds: 250), () {
+      if (_isWishingCategory.value) {
+        _pendingGroups = groups;
+        return;
+      }
+      if (mounted) {
+        setState(() {
+          _groups = groups;
+          _streamError = null;
+        });
+      }
+    });
+  }
 
   ScrollController _controllerFor(int index) {
     return _scrollControllers.putIfAbsent(index, () => ScrollController());
@@ -48,6 +106,9 @@ class _QueenRashmikaQueendomListState
 
   @override
   void dispose() {
+    _debounceTimer?.cancel();
+    _groupsSubscription?.cancel();
+    _isWishingCategory.dispose();
     for (final c in _scrollControllers.values) {
       c.dispose();
     }
@@ -179,9 +240,7 @@ class _QueenRashmikaQueendomListState
 
     HapticFeedback.mediumImpact();
 
-    setState(() {
-      _isWishingCategory = true;
-    });
+    _isWishingCategory.value = true;
 
     try {
       int sentCount = 0;
@@ -225,9 +284,13 @@ class _QueenRashmikaQueendomListState
       }
     } finally {
       if (mounted) {
-        setState(() {
-          _isWishingCategory = false;
-        });
+        _isWishingCategory.value = false;
+        if (_pendingGroups != null) {
+          setState(() {
+            _groups = _pendingGroups;
+            _pendingGroups = null;
+          });
+        }
       }
     }
   }
@@ -241,12 +304,12 @@ class _QueenRashmikaQueendomListState
     return Container(
       key: const ValueKey('normal_header_rashmika'),
       width: double.infinity,
-      padding: const EdgeInsets.fromLTRB(14, 12, 12, 12),
+      padding: const EdgeInsets.fromLTRB(12, 12, 10, 12),
       decoration: BoxDecoration(
         gradient: LinearGradient(
           colors: [
             selectedCategory.color,
-            Color.lerp(selectedCategory.color, Colors.black, 0.35)!,
+            Color.lerp(selectedCategory.color, Colors.black, 0.35) ?? selectedCategory.color,
           ],
           begin: Alignment.topLeft,
           end: Alignment.bottomRight,
@@ -268,22 +331,25 @@ class _QueenRashmikaQueendomListState
             interactive3d: true,
             enableInspect: true,
           ),
-          const SizedBox(width: 12),
+          const SizedBox(width: 10),
           Expanded(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               mainAxisSize: MainAxisSize.min,
               children: [
-                Text(
-                  selectedCategory.title,
-                  style: const TextStyle(
-                    fontSize: 17,
-                    fontWeight: FontWeight.bold,
-                    color: Colors.white,
-                    letterSpacing: 0.3,
+                FittedBox(
+                  fit: BoxFit.scaleDown,
+                  alignment: Alignment.centerLeft,
+                  child: Text(
+                    selectedCategory.title,
+                    style: const TextStyle(
+                      fontSize: 17,
+                      fontWeight: FontWeight.bold,
+                      color: Colors.white,
+                      letterSpacing: 0.15,
+                    ),
+                    maxLines: 1,
                   ),
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
                 ),
                 const SizedBox(height: 1),
                 Text(
@@ -298,62 +364,67 @@ class _QueenRashmikaQueendomListState
               ],
             ),
           ),
-          const SizedBox(width: 8),
+          const SizedBox(width: 6),
           // Royal Category Wish Button
-          Tooltip(
-            message: 'Wish all ${selectedCategory.title}',
-            child: Material(
-              color: Colors.transparent,
-              child: InkWell(
-                borderRadius: BorderRadius.circular(20),
-                splashColor: Colors.white.withValues(alpha: 0.25),
-                onTap: _isWishingCategory || filteredGroups.isEmpty
-                    ? null
-                    : () => _wishAllGroupsInCategory(
-                          context,
-                          selectedCategory,
-                          filteredGroups,
+          ValueListenableBuilder<bool>(
+            valueListenable: _isWishingCategory,
+            builder: (context, isWishing, _) {
+              return Tooltip(
+                message: 'Wish all ${selectedCategory.title}',
+                child: Material(
+                  color: Colors.transparent,
+                  child: InkWell(
+                    borderRadius: BorderRadius.circular(20),
+                    splashColor: Colors.white.withValues(alpha: 0.25),
+                    onTap: isWishing || filteredGroups.isEmpty
+                        ? null
+                        : () => _wishAllGroupsInCategory(
+                              context,
+                              selectedCategory,
+                              filteredGroups,
+                            ),
+                    child: Container(
+                      padding: const EdgeInsets.all(9),
+                      decoration: BoxDecoration(
+                        gradient: LinearGradient(
+                          colors: [
+                            Colors.white.withValues(alpha: 0.25),
+                            Colors.white.withValues(alpha: 0.1),
+                          ],
+                          begin: Alignment.topLeft,
+                          end: Alignment.bottomRight,
                         ),
-                child: Container(
-                  padding: const EdgeInsets.all(9),
-                  decoration: BoxDecoration(
-                    gradient: LinearGradient(
-                      colors: [
-                        Colors.white.withValues(alpha: 0.25),
-                        Colors.white.withValues(alpha: 0.1),
-                      ],
-                      begin: Alignment.topLeft,
-                      end: Alignment.bottomRight,
-                    ),
-                    shape: BoxShape.circle,
-                    border: Border.all(
-                      color: Colors.white.withValues(alpha: 0.4),
-                      width: 1.2,
-                    ),
-                    boxShadow: [
-                      BoxShadow(
-                        color: Colors.black.withValues(alpha: 0.25),
-                        blurRadius: 8,
-                        offset: const Offset(0, 2),
-                      ),
-                    ],
-                  ),
-                  child: _isWishingCategory
-                      ? const SizedBox(
-                          width: 20,
-                          height: 20,
-                          child: CircularProgressIndicator(
-                            strokeWidth: 2,
-                            color: Colors.white,
+                        shape: BoxShape.circle,
+                        border: Border.all(
+                          color: Colors.white.withValues(alpha: 0.4),
+                          width: 1.2,
+                        ),
+                        boxShadow: [
+                          BoxShadow(
+                            color: Colors.black.withValues(alpha: 0.25),
+                            blurRadius: 8,
+                            offset: const Offset(0, 2),
                           ),
-                        )
-                      : const Text(
-                          "🙇🏻‍♂️",
-                          style: TextStyle(fontSize: 16),
-                        ),
+                        ],
+                      ),
+                      child: isWishing
+                          ? const SizedBox(
+                              width: 20,
+                              height: 20,
+                              child: CircularProgressIndicator(
+                                strokeWidth: 2,
+                                color: Colors.white,
+                              ),
+                            )
+                          : const Text(
+                              "🙇🏻‍♂️",
+                              style: TextStyle(fontSize: 16),
+                            ),
+                    ),
+                  ),
                 ),
-              ),
-            ),
+              );
+            },
           ),
           const SizedBox(width: 8),
           // Royal Search Trigger Icon Button
@@ -409,45 +480,50 @@ class _QueenRashmikaQueendomListState
   Widget build(BuildContext context) {
     super.build(context); // required by AutomaticKeepAliveClientMixin
 
-    return StreamBuilder<List<GroupModel>>(
-      initialData: ref
-          .watch(groupControllerProvider)
-          .getCachedGroups('groups_rashmika'),
-      stream: ref.watch(groupControllerProvider).getQueenRashmikaStream(),
-      builder: (context, snapshot) {
-        if (snapshot.connectionState == ConnectionState.waiting &&
-            (!snapshot.hasData || snapshot.data!.isEmpty)) {
-          return const ContactListSkeleton(isGroup: true);
-        }
-        if (snapshot.hasError) {
-          log("Error loading groups: ${snapshot.error}");
-          return Center(
-            child: Column(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                Icon(Icons.error_outline, size: 64, color: Colors.red[400]),
-                const SizedBox(height: 16),
-                Text(
-                  "Error loading groups",
-                  style: TextStyle(fontSize: 18, color: Colors.red[400]),
-                ),
-                const SizedBox(height: 8),
-                Text(
-                  "${snapshot.error}",
-                  style: TextStyle(fontSize: 14, color: Colors.grey[600]),
-                  textAlign: TextAlign.center,
-                ),
-              ],
+    if (_streamError != null && (_groups == null || _groups!.isEmpty)) {
+      log("Error loading groups: $_streamError");
+      return Center(
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Icon(Icons.error_outline, size: 64, color: Colors.red[400]),
+            const SizedBox(height: 16),
+            Text(
+              "Error loading groups",
+              style: TextStyle(fontSize: 18, color: Colors.red[400]),
+            ),
+            const SizedBox(height: 8),
+            Text(
+              "$_streamError",
+              style: TextStyle(fontSize: 14, color: Colors.grey[600]),
+              textAlign: TextAlign.center,
+            ),
+          ],
+        ),
+      );
+    }
+
+    if (_groups == null) {
+      return const ContactListSkeleton(isGroup: true);
+    }
+
+    final groups = _groups!;
+        final currentUserId = safeCurrentUserId();
+        final currentCategories = categories;
+        if (currentCategories.isEmpty) {
+          return const Scaffold(
+            backgroundColor: Colors.black,
+            body: Center(
+              child: Text(
+                'No categories available',
+                style: TextStyle(color: Colors.white70),
+              ),
             ),
           );
         }
-
-        final groups = snapshot.data ?? [];
-        final currentUserId = safeCurrentUserId();
-        final currentCategories = categories;
         final safeIndex = selectedCategoryIndex.clamp(
           0,
-          currentCategories.isEmpty ? 0 : currentCategories.length - 1,
+          currentCategories.length - 1,
         );
         final selectedCategory = currentCategories[safeIndex];
 
@@ -553,6 +629,7 @@ class _QueenRashmikaQueendomListState
                                   .where((g) => g.parentGroupId == group.groupId)
                                   .toList();
                               return _QueendomGroupCard(
+                                key: ValueKey('rashmika_group_${group.groupId}'),
                                 group: group,
                                 accentColor: selectedCategory.color,
                                 hasUnseen: hasUnseen,
@@ -585,9 +662,9 @@ class _QueenRashmikaQueendomListState
                 child: ListView.builder(
                   controller: _sidebarScrollController,
                   padding: const EdgeInsets.symmetric(vertical: 8),
-                  itemCount: categories.length,
+                  itemCount: currentCategories.length,
                   itemBuilder: (context, index) {
-                    final category = categories[index];
+                    final category = currentCategories[index];
                     final isSelected = selectedCategoryIndex == index;
                     final unseenCount = _getUnseenCountForCategory(
                       groups,
@@ -681,8 +758,6 @@ class _QueenRashmikaQueendomListState
             ),
           ],
         );
-      },
-    );
   }
 }
 
@@ -727,13 +802,38 @@ class _QueendomGroupCardState extends State<_QueendomGroupCard>
   void initState() {
     super.initState();
     if (widget.hasUnseen) {
+      _startAnimation();
+    }
+  }
+
+  void _startAnimation() {
+    if (_animationController == null) {
       _animationController = AnimationController(
         duration: const Duration(milliseconds: 800),
         vsync: this,
-      )..repeat(reverse: true);
+      );
       _opacityAnimation = Tween<double>(begin: 0.4, end: 0.8).animate(
         CurvedAnimation(parent: _animationController!, curve: Curves.easeInOut),
       );
+    }
+    if (!_animationController!.isAnimating) {
+      _animationController!.repeat(reverse: true);
+    }
+  }
+
+  void _stopAnimation() {
+    _animationController?.stop();
+  }
+
+  @override
+  void didUpdateWidget(covariant _QueendomGroupCard oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (widget.hasUnseen != oldWidget.hasUnseen) {
+      if (widget.hasUnseen) {
+        _startAnimation();
+      } else {
+        _stopAnimation();
+      }
     }
   }
 
@@ -745,62 +845,93 @@ class _QueendomGroupCardState extends State<_QueendomGroupCard>
 
   @override
   Widget build(BuildContext context) {
-    final color = _safeAccentColor;
-    final sortedSubGroups = List<GroupModel>.from(widget.subGroups)
-      ..sort((a, b) {
-        if (a.isFuckToySubGroup != b.isFuckToySubGroup) {
-          return a.isFuckToySubGroup ? 1 : -1;
-        }
-        return a.name.compareTo(b.name);
-      });
+    try {
+      final color = _safeAccentColor;
+      final sortedSubGroups = List<GroupModel>.from(widget.subGroups)
+        ..sort((a, b) {
+          if (a.isFuckToySubGroup != b.isFuckToySubGroup) {
+            return a.isFuckToySubGroup ? 1 : -1;
+          }
+          return a.name.compareTo(b.name);
+        });
 
-    final cardContent = _buildCardContent(color, sortedSubGroups);
+      final cardContent = _buildCardContent(color, sortedSubGroups);
+      final hasActiveAnim = widget.hasUnseen && _opacityAnimation != null;
 
-    return Container(
-      margin: const EdgeInsets.only(bottom: 10),
-      child: widget.hasUnseen
-          ? AnimatedBuilder(
-              animation: _opacityAnimation!,
-              builder: (context, child) => Container(
+      return Container(
+        margin: const EdgeInsets.only(bottom: 10),
+        child: hasActiveAnim
+            ? AnimatedBuilder(
+                animation: _opacityAnimation!,
+                builder: (context, child) {
+                  final animVal = _opacityAnimation?.value ?? 0.6;
+                  return Container(
+                    padding: const EdgeInsets.fromLTRB(12, 16, 12, 10),
+                    decoration: BoxDecoration(
+                      color: Colors.grey[900],
+                      borderRadius: BorderRadius.circular(14),
+                      border: Border.all(
+                        color: color.withValues(alpha: animVal),
+                        width: 2,
+                      ),
+                      boxShadow: [
+                        BoxShadow(
+                          color: color.withValues(
+                            alpha: animVal * 0.5,
+                          ),
+                          blurRadius: 10,
+                          offset: const Offset(0, 3),
+                        ),
+                      ],
+                    ),
+                    child: child,
+                  );
+                },
+                child: cardContent,
+              )
+            : Container(
                 padding: const EdgeInsets.fromLTRB(12, 16, 12, 10),
                 decoration: BoxDecoration(
                   color: Colors.grey[900],
                   borderRadius: BorderRadius.circular(14),
-                  border: Border.all(
-                    color: color.withValues(alpha: _opacityAnimation!.value),
-                    width: 2,
-                  ),
+                  border: Border.all(color: color.withValues(alpha: 0.4), width: 1.2),
                   boxShadow: [
                     BoxShadow(
-                      color: color.withValues(
-                        alpha: _opacityAnimation!.value * 0.5,
-                      ),
-                      blurRadius: 10,
+                      color: color.withValues(alpha: 0.12),
+                      blurRadius: 6,
                       offset: const Offset(0, 3),
                     ),
                   ],
                 ),
-                child: child,
+                child: cardContent,
               ),
-              child: cardContent,
-            )
-          : Container(
-              padding: const EdgeInsets.fromLTRB(12, 16, 12, 10),
-              decoration: BoxDecoration(
-                color: Colors.grey[900],
-                borderRadius: BorderRadius.circular(14),
-                border: Border.all(color: color.withValues(alpha: 0.4), width: 1.2),
-                boxShadow: [
-                  BoxShadow(
-                    color: color.withValues(alpha: 0.12),
-                    blurRadius: 6,
-                    offset: const Offset(0, 3),
-                  ),
-                ],
+      );
+    } catch (e, stack) {
+      log("Error rendering _QueendomGroupCard (${widget.group.groupId}): $e\n$stack");
+      return Container(
+        margin: const EdgeInsets.only(bottom: 10),
+        padding: const EdgeInsets.all(12),
+        decoration: BoxDecoration(
+          color: Colors.grey[900],
+          borderRadius: BorderRadius.circular(14),
+          border: Border.all(color: Colors.white24, width: 1),
+        ),
+        child: Row(
+          children: [
+            const Icon(Icons.shield_outlined, color: Colors.white54, size: 24),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Text(
+                widget.group.name,
+                style: const TextStyle(color: Colors.white, fontSize: 14),
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
               ),
-              child: cardContent,
             ),
-    );
+          ],
+        ),
+      );
+    }
   }
 
   Widget _buildCardContent(Color color, List<GroupModel> sortedSubGroups) {
@@ -888,10 +1019,18 @@ class _QueendomGroupCardState extends State<_QueendomGroupCard>
                   badgeBottomOffset: 0,
                   badgeRightOffset: 0,
                   child: CircleAvatar(
-                    backgroundImage: NetworkImage(widget.group.groupPic),
+                    backgroundImage: widget.group.groupPic.trim().isNotEmpty
+                        ? NetworkImage(widget.group.groupPic.trim())
+                        : null,
                     radius: 24,
                     backgroundColor: Colors.grey[850],
-                    onBackgroundImageError: (_, __) {},
+                    onBackgroundImageError:
+                        widget.group.groupPic.trim().isNotEmpty
+                            ? (_, __) {}
+                            : null,
+                    child: widget.group.groupPic.trim().isEmpty
+                        ? const Icon(Icons.person, color: Colors.white, size: 24)
+                        : null,
                   ),
                 ),
                 const SizedBox(width: 12),

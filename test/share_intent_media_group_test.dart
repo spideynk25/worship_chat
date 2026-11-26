@@ -112,6 +112,17 @@ class _RecordingGroupController implements GroupController {
           fcmTokens: ['fcm_grp_1'],
           unseenMessages: const {},
         ),
+        GroupModel(
+          senderId: 'current_user_id',
+          name: 'Royal Courtyard',
+          groupId: 'royal_group_2',
+          lastMessage: 'Greetings',
+          groupPic: '',
+          membersUid: ['current_user_id', 'other_uid_2'],
+          timeSent: DateTime.now(),
+          fcmTokens: ['fcm_grp_2'],
+          unseenMessages: const {},
+        ),
       ]);
 
   @override
@@ -303,6 +314,71 @@ void main() {
       // Caption on first only
       expect(mockGroupController.calls[0].text, equals('Royal group greetings'));
       expect(mockGroupController.calls[1].text, equals(''));
+    });
+
+    testWidgets(
+        'Multi-photo intent share to multiple groups sends photos to all selected groups',
+        (tester) async {
+      final mockChatController = _RecordingChatController();
+      final mockGroupController = _RecordingGroupController();
+
+      final payload = SharedPayload(
+        type: SharedPayloadType.image,
+        files: [
+          File('/tmp/royal_photo1.jpg'),
+          File('/tmp/royal_photo2.png'),
+        ],
+        text: 'Royal multi greetings',
+      );
+
+      await tester.pumpWidget(
+        ProviderScope(
+          overrides: [
+            chatControllerProvider.overrideWithValue(mockChatController),
+            groupControllerProvider.overrideWithValue(mockGroupController),
+            userDataAuthProvider.overrideWith((ref) => Future.value(testUser)),
+          ],
+          child: MaterialApp(
+            home: ShareUploadScreen(payload: payload),
+          ),
+        ),
+      );
+
+      await tester.pump();
+      await tester.pumpAndSettle();
+
+      // Switch to 'My Groups' tab
+      await tester.tap(find.text('My Groups'));
+      await tester.pumpAndSettle();
+
+      // Switch to Chat toggle
+      await tester.tap(find.text('Chat'));
+      await tester.pumpAndSettle();
+
+      // Select group 1 ("Royal Chamber")
+      await tester.tap(find.textContaining('Royal Chamber', findRichText: true).first);
+      await tester.pumpAndSettle();
+
+      // Select group 2 ("Royal Courtyard")
+      await tester.tap(find.textContaining('Royal Courtyard', findRichText: true).first);
+      await tester.pumpAndSettle();
+
+      // Verify submit button says: 'Send 2 photos to 2 Groups'
+      final sendButton = find.text('Send 2 photos to 2 Groups');
+      expect(sendButton, findsOneWidget);
+
+      await tester.tap(sendButton);
+      await tester.pumpAndSettle();
+
+      // Total calls = 2 photos * 2 groups = 4 calls
+      expect(mockGroupController.calls.length, equals(4));
+
+      // Calls 0 and 1 are for group 1 (royal_group_1)
+      expect(mockGroupController.calls[0].groupId, equals('royal_group_1'));
+      expect(mockGroupController.calls[1].groupId, equals('royal_group_1'));
+      // Calls 2 and 3 are for group 2 (royal_group_2)
+      expect(mockGroupController.calls[2].groupId, equals('royal_group_2'));
+      expect(mockGroupController.calls[3].groupId, equals('royal_group_2'));
     });
 
     testWidgets('Single photo intent share does not assign groupId',

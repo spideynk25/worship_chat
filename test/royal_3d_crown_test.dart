@@ -2,12 +2,12 @@ import 'dart:ui' as ui;
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:worship_chat/features/group/widgets/royal_3d_crown_widget.dart';
+import 'package:worship_chat/features/group/widgets/cylinder_crown_painter.dart';
 
 void main() {
   group('Volumetric 3D Royal Crown Tests', () {
-    testWidgets('VolumetricCrownPainter renders with surface curvature and bevels',
+    testWidgets('CylinderCrownPainter renders front and rear views with zero gaps',
         (tester) async {
-      // Generate a mock in-memory texture
       final recorder = ui.PictureRecorder();
       final canvas = Canvas(recorder);
       canvas.drawColor(const Color(0xFFD4AF37), BlendMode.src);
@@ -19,15 +19,11 @@ void main() {
             body: Center(
               child: CustomPaint(
                 size: const Size(180, 180),
-                painter: VolumetricCrownPainter(
-                  image: mockImage,
+                painter: CylinderCrownPainter(
+                  frontImage: mockImage,
                   yaw: 0.35,
                   pitch: -0.15,
                   glowColor: const Color(0xFFE5A93C),
-                  enableBackWall: true,
-                  enableExtrusion: true,
-                  enableBaseRing: true,
-                  enableGlint: true,
                 ),
               ),
             ),
@@ -91,22 +87,7 @@ void main() {
       expect(find.text('3D ROYAL CROWN VAULT'), findsNothing);
     });
 
-    test('RearCrownGenerator generates bespoke rear crown architecture and caches properly', () {
-      final img1 = RearCrownGenerator.getOrCreate(accentColor: const Color(0xFFE5A93C));
-      expect(img1.width, 1024);
-      expect(img1.height, 512);
-
-      // Verify cached instance returned for same color
-      final imgCached = RearCrownGenerator.getOrCreate(accentColor: const Color(0xFFE5A93C));
-      expect(identical(img1, imgCached), isTrue);
-
-      // Distinct color creates distinct instance
-      final imgCool = RearCrownGenerator.getOrCreate(accentColor: const Color(0xFF00BFFF));
-      expect(imgCool.width, 1024);
-      expect(imgCool.height, 512);
-    });
-
-    testWidgets('VolumetricCrownPainter accurately renders 180-degree rear view with bespoke rear crown architecture',
+    testWidgets('CylinderCrownPainter accurately renders 180-degree rear view with circlet bandeau',
         (tester) async {
       final recorder = ui.PictureRecorder();
       final canvas = Canvas(recorder);
@@ -119,15 +100,12 @@ void main() {
             body: Center(
               child: CustomPaint(
                 size: const Size(200, 200),
-                painter: VolumetricCrownPainter(
-                  image: frontMock,
+                painter: CylinderCrownPainter(
+                  frontImage: frontMock,
                   yaw: 3.14159, // 180° rear view
                   pitch: 0.10,
                   glowColor: const Color(0xFFE5A93C),
-                  enableBackWall: true,
-                  enableExtrusion: true,
-                  enableBaseRing: true,
-                  enableGlint: true,
+                  hasVelvet: true,
                 ),
               ),
             ),

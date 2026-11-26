@@ -23,6 +23,7 @@ import 'package:worship_chat/common/widgets/user_avatar.dart';
 import 'package:worship_chat/features/auth/controller/auth_controller.dart';
 import 'package:worship_chat/features/chat/controller/chat_controller.dart';
 import 'package:worship_chat/features/chat/screens/user_info_screen.dart';
+import 'package:worship_chat/features/chat/widgets/chat_power_ups.dart';
 import 'package:worship_chat/features/chat/widgets/one_to_one_bottom_chat_field_widget.dart';
 import 'package:worship_chat/features/home/screens/home_screen.dart';
 import 'package:worship_chat/models/user_model.dart';
@@ -62,6 +63,7 @@ class _OneToOneChatScreenState extends ConsumerState<OneToOneChatScreen>
   Stream<bool> _typingStream = Stream.value(false);
   StreamSubscription<DocumentSnapshot<Map<String, dynamic>>>? _backgroundSubscription;
   String? _currentChatBackgroundUrl;
+  final ChatPowerUpController _powerUpController = ChatPowerUpController();
 
   @override
   void initState() {
@@ -122,7 +124,7 @@ class _OneToOneChatScreenState extends ConsumerState<OneToOneChatScreen>
       final prefs = await SharedPreferences.getInstance();
       final cachedBg = prefs.getString('chat_bg_${widget.uid}');
       if (cachedBg != null && cachedBg.isNotEmpty && mounted) {
-        if (_currentChatBackgroundUrl == null || _currentChatBackgroundUrl!.isEmpty) {
+        if (_currentChatBackgroundUrl != cachedBg) {
           setState(() {
             _currentChatBackgroundUrl = cachedBg;
           });
@@ -159,6 +161,7 @@ class _OneToOneChatScreenState extends ConsumerState<OneToOneChatScreen>
 
   @override
   void dispose() {
+    _powerUpController.dispose();
     _backgroundSubscription?.cancel();
     if (!AppCapabilities.current.chatEnabled) {
       super.dispose();
@@ -457,35 +460,25 @@ class _OneToOneChatScreenState extends ConsumerState<OneToOneChatScreen>
                                   overflow: TextOverflow.ellipsis,
                                 ),
                                 const SizedBox(height: 2),
-                                StreamBuilder<bool>(
-                                  stream: _typingStream,
-                                  builder: (context, typingSnapshot) {
-                                    final isTyping =
-                                        typingSnapshot.data ?? false;
-
-                                    if (!snapshot.hasData && user == null) {
-                                      return ShimmerEffect(
-                                        child: Container(
-                                          width: 44,
-                                          height: 9,
-                                          margin: const EdgeInsets.only(top: 2),
-                                          decoration: BoxDecoration(
-                                            color: Colors.white24,
-                                            borderRadius:
-                                                BorderRadius.circular(4),
-                                          ),
-                                        ),
-                                      );
-                                    }
-
-                                    return AppBarStatusSubtitle(
-                                      isTyping: isTyping,
-                                      isOnline: user?.isOnline == true,
-                                      lastSeen: user?.lastSeen,
-                                      accentColor: tabColor,
-                                    );
-                                  },
-                                ),
+                                if (!snapshot.hasData && user == null)
+                                  ShimmerEffect(
+                                    child: Container(
+                                      width: 44,
+                                      height: 9,
+                                      margin: const EdgeInsets.only(top: 2),
+                                      decoration: BoxDecoration(
+                                        color: Colors.white24,
+                                        borderRadius:
+                                            BorderRadius.circular(4),
+                                      ),
+                                    ),
+                                  )
+                                else
+                                  AppBarStatusSubtitle(
+                                    isOnline: user?.isOnline == true,
+                                    lastSeen: user?.lastSeen,
+                                    accentColor: tabColor,
+                                  ),
                               ],
                             ),
                           ),
@@ -499,13 +492,6 @@ class _OneToOneChatScreenState extends ConsumerState<OneToOneChatScreen>
           ),
         ),
         actions: [
-          IconButton(
-            icon: const Icon(CupertinoIcons.photo),
-            padding: const EdgeInsets.symmetric(horizontal: 4),
-            constraints: const BoxConstraints(minWidth: 36, minHeight: 40),
-            tooltip: 'Change Background',
-            onPressed: () => selectImageForBackground(ref, context),
-          ),
           Consumer(
             builder: (context, ref, _) {
               final displayImage = ref.watch(displayImageProvider);
@@ -526,9 +512,22 @@ class _OneToOneChatScreenState extends ConsumerState<OneToOneChatScreen>
                 ),
                 onSelected: (value) {
                   switch (value) {
-                    case 'view_profile':
-                    case 'media_links':
-                      _openUserInfo();
+                    case 'search_messages':
+                      _powerUpController.toggleSearch();
+                      break;
+                    case 'pinned_messages':
+                      PinnedMessagesBanner.showPinnedMessagesSheet(
+                        context,
+                        controller: _powerUpController,
+                        accentColor: tabColor,
+                        onUnpin: (id) async {
+                          ref.read(chatControllerProvider).togglePinMessage(
+                                messageId: id,
+                                receiverUserId: widget.uid,
+                                pin: false,
+                              );
+                        },
+                      );
                       break;
                     case 'change_background':
                       selectImageForBackground(ref, context);
@@ -540,19 +539,25 @@ class _OneToOneChatScreenState extends ConsumerState<OneToOneChatScreen>
                 },
                 itemBuilder: (context) => [
                   PopupMenuItem<String>(
-                    value: 'view_profile',
+                    value: 'search_messages',
                     height: 42,
                     child: Row(
                       children: [
                         Icon(
-                          CupertinoIcons.person_crop_circle,
+                          _powerUpController.searchOpenNotifier.value
+                              ? Icons.search_off_rounded
+                              : Icons.search_rounded,
                           size: 19,
-                          color: tabColor,
+                          color: _powerUpController.searchOpenNotifier.value
+                              ? tabColor
+                              : Colors.white70,
                         ),
                         const SizedBox(width: 12),
-                        const Text(
-                          'View Profile',
-                          style: TextStyle(
+                        Text(
+                          _powerUpController.searchOpenNotifier.value
+                              ? 'Close Search'
+                              : 'Search Messages',
+                          style: const TextStyle(
                             fontSize: 13.5,
                             color: Colors.white,
                             fontWeight: FontWeight.w500,
@@ -561,19 +566,19 @@ class _OneToOneChatScreenState extends ConsumerState<OneToOneChatScreen>
                       ],
                     ),
                   ),
-                  PopupMenuItem<String>(
-                    value: 'media_links',
+                  const PopupMenuItem<String>(
+                    value: 'pinned_messages',
                     height: 42,
                     child: Row(
                       children: [
-                        const Icon(
-                          CupertinoIcons.square_stack_3d_up,
+                        Icon(
+                          Icons.push_pin_outlined,
                           size: 19,
-                          color: Colors.white70,
+                          color: Color(0xFFFFD700),
                         ),
-                        const SizedBox(width: 12),
-                        const Text(
-                          'Media, Links & Docs',
+                        SizedBox(width: 12),
+                        Text(
+                          'Pinned Messages',
                           style: TextStyle(
                             fontSize: 13.5,
                             color: Colors.white,
@@ -662,10 +667,27 @@ class _OneToOneChatScreenState extends ConsumerState<OneToOneChatScreen>
           ),
           Column(
             children: [
+              ChatSearchToolbar(
+                controller: _powerUpController,
+                accentColor: tabColor,
+              ),
+              PinnedMessagesBanner(
+                controller: _powerUpController,
+                accentColor: tabColor,
+                onUnpin: (id) async {
+                  ref.read(chatControllerProvider).togglePinMessage(
+                        messageId: id,
+                        receiverUserId: widget.uid,
+                        pin: false,
+                      );
+                },
+              ),
               Expanded(
                 child: OneToOneChatListWidget(
                   receiverUserId: widget.uid,
                   profilePic: widget.profilePic ?? "",
+                  peerName: widget.name,
+                  powerUpController: _powerUpController,
                 ),
               ),
               // Floating in-chat typing bubble

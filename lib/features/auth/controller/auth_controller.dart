@@ -145,18 +145,22 @@ class AuthController {
     authRepository.resetPassword(context, email);
   }
 
-  void saveUserDatatoFirebase(
+  Future<bool> saveUserDatatoFirebase(
     BuildContext context,
     String name,
     File? profilePic, {
     String? userName, // Added userName parameter
+    bool navigateHomeOnComplete = true,
+    bool removeProfilePic = false,
   }) {
-    authRepository.saveUserDataToFirebase(
+    return authRepository.saveUserDataToFirebase(
       name: name,
       profilePic: profilePic,
       userName: userName, // Pass userName
       ref: ref,
       context: context,
+      navigateHomeOnComplete: navigateHomeOnComplete,
+      removeProfilePic: removeProfilePic,
     );
   }
 

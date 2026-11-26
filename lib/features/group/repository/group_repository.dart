@@ -103,7 +103,7 @@ class GroupRepository {
       log('✅ Group updated successfully');
     } catch (e) {
       log('❌ Error updating group: $e');
-      showSnackBar(context: context, content: e.toString());
+      if (context.mounted) showSnackBar(context: context, content: e.toString());
     }
   }
 
@@ -240,7 +240,7 @@ class GroupRepository {
       log('✅ Group created successfully');
     } catch (e) {
       log('❌ Error creating group: $e');
-      showSnackBar(context: context, content: e.toString());
+      if (context.mounted) showSnackBar(context: context, content: e.toString());
     }
   }
 
@@ -354,6 +354,7 @@ class GroupRepository {
   Stream<List<GroupChatMessageModel>> getGroupChatStream(String groupId) {
     final localKey = groupId;
     final controller = StreamController<List<GroupChatMessageModel>>();
+    final currentUserId = auth.currentUser?.uid;
 
     bool areGroupMessagesEqual(
       List<GroupChatMessageModel> prev,
@@ -365,14 +366,20 @@ class GroupRepository {
         final p = prev[i];
         final n = next[i];
         if (p.messageId != n.messageId ||
-            p.isSeen != n.isSeen ||
-            p.isDelivered != n.isDelivered ||
-            p.isSending != n.isSending ||
+            p.messageType != n.messageType ||
             p.text != n.text ||
             p.isEdited != n.isEdited ||
             p.isDeleted != n.isDeleted ||
+            p.isPinned != n.isPinned ||
+            p.pinnedAt != n.pinnedAt ||
+            p.pinnedBy != n.pinnedBy ||
             p.fileMessageData != n.fileMessageData ||
             !mapEquals(p.reactions, n.reactions)) {
+          return false;
+        }
+        if (p.isSeen != n.isSeen ||
+            p.isDelivered != n.isDelivered ||
+            p.isSending != n.isSending) {
           return false;
         }
       }
@@ -395,8 +402,17 @@ class GroupRepository {
       if (Hive.isBoxOpen('messages')) {
         final box = Hive.box('messages');
         final cachedData = box.get(localKey, defaultValue: []);
-        final cachedMessages = _safeCastGroupMessages(cachedData);
+        var cachedMessages = _safeCastGroupMessages(cachedData);
         if (cachedMessages.isNotEmpty) {
+          // Optimistically mark incoming messages as seen in cachedMessages
+          if (currentUserId != null) {
+            cachedMessages = cachedMessages.map((m) {
+              if (m.senderId != currentUserId && (!m.isSeen || !m.isDelivered)) {
+                return m.copyWith(isSeen: true, isDelivered: true);
+              }
+              return m;
+            }).toList();
+          }
           log('⚡ [Instant Cache] Emitted ${cachedMessages.length} cached group messages for $groupId');
           emitGroupMessages(cachedMessages);
         }
@@ -404,6 +420,11 @@ class GroupRepository {
     } catch (e) {
       log('❌ Error emitting cached group messages: $e');
     }
+
+    // Sync any pending background notification replies into Hive
+    FirebaseNotificationService.syncPendingBackgroundRepliesToHive(
+      specificChatId: localKey,
+    );
 
     _activeGroupChatListeners.putIfAbsent(localKey, () => []).add(emitGroupMessages);
 
@@ -495,6 +516,7 @@ class GroupRepository {
 
     // Build map starting from cached messages
     final Map<String, GroupChatMessageModel> allMessagesMap = {};
+    final Map<String, GroupChatMessageModel> cachedMap = {};
 
     // Load cached messages safely
     if (box != null) {
@@ -502,6 +524,7 @@ class GroupRepository {
         final cachedData = box.get(localKey, defaultValue: []);
         final localMessages = _safeCastGroupMessages(cachedData);
         for (var m in localMessages) {
+          cachedMap[m.messageId] = m;
           if (currentUserId != null && m.deletedFor.contains(currentUserId)) {
             continue;
           }
@@ -523,14 +546,20 @@ class GroupRepository {
       }
     }
 
-    // Firestore overwrites cache (newer data wins, but preserve local delivery confirmation)
+    // Firestore overwrites cache (newer data wins, but preserve local delivery confirmation & seen state)
     for (var m in firestoreMessages) {
       if (currentUserId != null && m.deletedFor.contains(currentUserId)) {
         continue;
       }
-      final cached = allMessagesMap[m.messageId];
-      if (cached != null && cached.isDelivered && !m.isDelivered) {
-        allMessagesMap[m.messageId] = m.copyWith(isDelivered: true);
+      final cached = cachedMap[m.messageId];
+      final bool isSeen = m.isSeen || (cached?.isSeen ?? false);
+      final bool isDelivered =
+          isSeen || m.isDelivered || (cached?.isDelivered ?? false);
+      if (isSeen != m.isSeen || isDelivered != m.isDelivered) {
+        allMessagesMap[m.messageId] = m.copyWith(
+          isSeen: isSeen,
+          isDelivered: isDelivered,
+        );
       } else {
         allMessagesMap[m.messageId] = m;
       }
@@ -614,14 +643,20 @@ class GroupRepository {
 
 
 
+  String? _getEffectiveUserId() {
+    final authUid = auth.currentUser?.uid;
+    if (authUid != null && authUid.isNotEmpty) return authUid;
+    return safeCurrentUserId();
+  }
+
   List<GroupModel> getCachedGroups(String category) {
-    final currentUser = auth.currentUser;
-    if (currentUser == null) return [];
+    final uid = _getEffectiveUserId();
+    if (uid == null) return [];
     try {
       if (Hive.isBoxOpen('groups_cache')) {
         final box = Hive.box('groups_cache');
         final cachedRaw =
-            box.get('${category}_${currentUser.uid}', defaultValue: []);
+            box.get('${category}_$uid', defaultValue: []);
         if (cachedRaw is List && cachedRaw.isNotEmpty) {
           return cachedRaw
               .map((item) =>
@@ -636,8 +671,8 @@ class GroupRepository {
   }
 
   Stream<List<GroupModel>> getQueenPoojaStream() async* {
-    final currentUser = auth.currentUser;
-    if (currentUser == null) return;
+    final uid = _getEffectiveUserId();
+    if (uid == null) return;
 
     // 1. Immediately emit cached Pooja groups from Hive (0ms)
     final cached = getCachedGroups('groups_pooja');
@@ -657,7 +692,7 @@ class GroupRepository {
           for (var document in event.docs) {
             try {
               var group = GroupModel.fromMap(document.data());
-              if (group.membersUid.contains(currentUser.uid)) {
+              if (group.membersUid.contains(uid)) {
                 groups.add(group);
               }
             } catch (e) {
@@ -668,7 +703,7 @@ class GroupRepository {
           try {
             if (Hive.isBoxOpen('groups_cache')) {
               Hive.box('groups_cache').put(
-                'groups_pooja_${currentUser.uid}',
+                'groups_pooja_$uid',
                 groups.map((g) => g.toMap()).toList(),
               );
             }
@@ -681,8 +716,8 @@ class GroupRepository {
   }
 
   Stream<List<GroupModel>> getQueenRashmikaStream() async* {
-    final currentUser = auth.currentUser;
-    if (currentUser == null) return;
+    final uid = _getEffectiveUserId();
+    if (uid == null) return;
 
     // 1. Immediately emit cached Rashmika groups from Hive (0ms)
     final cached = getCachedGroups('groups_rashmika');
@@ -702,7 +737,7 @@ class GroupRepository {
           for (var document in event.docs) {
             try {
               var group = GroupModel.fromMap(document.data());
-              if (group.membersUid.contains(currentUser.uid)) {
+              if (group.membersUid.contains(uid)) {
                 groups.add(group);
               }
             } catch (e) {
@@ -713,7 +748,7 @@ class GroupRepository {
           try {
             if (Hive.isBoxOpen('groups_cache')) {
               Hive.box('groups_cache').put(
-                'groups_rashmika_${currentUser.uid}',
+                'groups_rashmika_$uid',
                 groups.map((g) => g.toMap()).toList(),
               );
             }
@@ -725,73 +760,32 @@ class GroupRepository {
         });
   }
 
-  Stream<List<GroupModel>> getChatGroups() async* {
-    final currentUser = auth.currentUser;
-    if (currentUser == null) return;
-
-    // 1. Immediately emit cached chat groups from Hive (0ms)
-    final cached = getCachedGroups('groups_none');
-    if (cached.isNotEmpty) {
-      log('⚡ [Instant Cache] Emitted ${cached.length} chat groups from Hive');
-      yield cached;
-    }
-
-    // 2. Stream from Firestore and update Hive
-    yield* firestore
-        .collection('groups')
-        .where('queendom', isEqualTo: 'None')
-        .snapshots()
-        .map((event) {
-          List<GroupModel> groups = [];
-          for (var document in event.docs) {
-            try {
-              var group = GroupModel.fromMap(document.data());
-              if (group.membersUid.contains(currentUser.uid)) {
-                groups.add(group);
-              }
-            } catch (e) {
-              log("Error parsing group: $e");
-            }
-          }
-
-          try {
-            if (Hive.isBoxOpen('groups_cache')) {
-              Hive.box('groups_cache').put(
-                'groups_none_${currentUser.uid}',
-                groups.map((g) => g.toMap()).toList(),
-              );
-            }
-          } catch (e) {
-            log('Error saving chat groups to Hive: $e');
-          }
-
-          return groups;
-        });
+  Stream<List<GroupModel>> getChatGroups() {
+    // Return all groups (Queen Pooja and Queen Rashmika queendoms) where user is a member
+    return getAllUserGroups();
   }
 
-  /// Returns all groups (Queen Pooja, Queen Rashmika, and General groups) where the user is a member.
+  /// Returns all groups (Queen Pooja and Queen Rashmika queendoms) where the user is a member.
   Stream<List<GroupModel>> getAllUserGroups() async* {
-    final currentUser = auth.currentUser;
-    if (currentUser == null) return;
+    final uid = _getEffectiveUserId();
+    if (uid == null) return;
 
     // 1. Immediately emit cached groups from Hive for instant 0ms load
     try {
       final pooja = getCachedGroups('groups_pooja');
       final rashmika = getCachedGroups('groups_rashmika');
-      final general = getCachedGroups('groups_none');
       final allCached = getCachedGroups('groups_all');
 
       final Map<String, GroupModel> mergedMap = {};
       for (final g in allCached) {
-        mergedMap[g.groupId] = g;
+        if (g.queendom == 'Queen Pooja' || g.queendom == 'Queen Rashmika') {
+          mergedMap[g.groupId] = g;
+        }
       }
       for (final g in pooja) {
         mergedMap[g.groupId] = g;
       }
       for (final g in rashmika) {
-        mergedMap[g.groupId] = g;
-      }
-      for (final g in general) {
         mergedMap[g.groupId] = g;
       }
 
@@ -806,12 +800,16 @@ class GroupRepository {
     }
 
     // 2. Stream all groups where user is a member from Firestore
-    yield* firestore.collection('groups').snapshots().map((event) {
+    yield* firestore
+        .collection('groups')
+        .where('queendom', whereIn: ['Queen Pooja', 'Queen Rashmika'])
+        .snapshots()
+        .map((event) {
       final List<GroupModel> groups = [];
       for (var document in event.docs) {
         try {
           var group = GroupModel.fromMap(document.data());
-          if (group.membersUid.contains(currentUser.uid)) {
+          if (group.membersUid.contains(uid)) {
             groups.add(group);
           }
         } catch (e) {
@@ -825,7 +823,7 @@ class GroupRepository {
       try {
         if (Hive.isBoxOpen('groups_cache')) {
           Hive.box('groups_cache').put(
-            'groups_all_${currentUser.uid}',
+            'groups_all_$uid',
             groups.map((g) => g.toMap()).toList(),
           );
         }
@@ -1822,6 +1820,56 @@ class GroupRepository {
       });
     } catch (e) {
       log('❌ Error editing group message in Firestore: $e');
+    }
+  }
+
+  Future<void> togglePinGroupMessage({
+    required String groupId,
+    required String messageId,
+    required bool pin,
+  }) async {
+    final currentUserId = auth.currentUser?.uid;
+    if (currentUserId == null) return;
+
+    final now = DateTime.now();
+
+    // 1. Optimistically update local Hive cache for instant banner/badge feedback
+    try {
+      if (Hive.isBoxOpen('messages')) {
+        final box = Hive.box('messages');
+        final cachedData = box.get(groupId, defaultValue: []);
+        final messages = _safeCastGroupMessages(cachedData);
+        final idx = messages.indexWhere((m) => m.messageId == messageId);
+        if (idx >= 0) {
+          messages[idx] = pin
+              ? messages[idx].copyWith(
+                  isPinned: true,
+                  pinnedAt: now,
+                  pinnedBy: currentUserId,
+                )
+              : messages[idx].copyWith(clearPin: true);
+          await box.put(groupId, messages);
+          notifyGroupChatListeners(groupId, messages);
+        }
+      }
+    } catch (e) {
+      log('❌ Error updating Hive cache for pinned group message: $e');
+    }
+
+    // 2. Persist to Firestore
+    try {
+      final msgRef = firestore
+          .collection('groups')
+          .doc(groupId)
+          .collection('chats')
+          .doc(messageId);
+      await msgRef.update({
+        'isPinned': pin,
+        'pinnedAt': pin ? now.millisecondsSinceEpoch : null,
+        'pinnedBy': pin ? currentUserId : null,
+      });
+    } catch (e) {
+      log('❌ Error updating group pin state in Firestore: $e');
     }
   }
 

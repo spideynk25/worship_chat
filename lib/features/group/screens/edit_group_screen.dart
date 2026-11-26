@@ -35,7 +35,7 @@ class _EditGroupScreenState extends ConsumerState<EditGroupScreen> {
   late String selectedFamily;
   late String selectedPosition;
 
-  final List<String> queendom = ['None', 'Queen Rashmika', 'Queen Pooja'];
+  final List<String> queendom = ['Queen Pooja', 'Queen Rashmika'];
   List<String> get families => ref.watch(queendomCustomizationProvider).allFamilies;
   List<String> get positions => ref.watch(queendomCustomizationProvider).allPositions;
 
@@ -86,7 +86,11 @@ class _EditGroupScreenState extends ConsumerState<EditGroupScreen> {
     priorityController = TextEditingController(
       text: (widget.group.priority ?? widget.group.order)?.toString() ?? '',
     );
-    selectedQueendom = widget.group.queendom ?? 'None';
+    selectedQueendom = (widget.group.queendom != null &&
+            widget.group.queendom != 'None' &&
+            queendom.contains(widget.group.queendom))
+        ? widget.group.queendom!
+        : 'Queen Pooja';
     selectedFamily = widget.group.family ?? 'None';
     selectedPosition = widget.group.position ?? 'None';
 
@@ -108,7 +112,7 @@ class _EditGroupScreenState extends ConsumerState<EditGroupScreen> {
   }
 
   Future<void> _fetchTakenPriorities() async {
-    if (selectedQueendom == 'None' || selectedPosition == 'None') {
+    if (selectedPosition == 'None') {
       if (mounted) setState(() => _takenPriorities = []);
       return;
     }
@@ -488,11 +492,7 @@ class _EditGroupScreenState extends ConsumerState<EditGroupScreen> {
                     .toList(),
                 onChanged: (value) {
                   setState(() {
-                    selectedQueendom = value ?? "None";
-                    if (selectedQueendom == 'None') {
-                      selectedFamily = 'None';
-                      selectedPosition = 'None';
-                    }
+                    selectedQueendom = value ?? "Queen Pooja";
                     _onCategoryOrQueendomChanged();
                   });
                 },
@@ -529,14 +529,12 @@ class _EditGroupScreenState extends ConsumerState<EditGroupScreen> {
                       ),
                     )
                     .toList(),
-                onChanged: selectedQueendom == 'None'
-                    ? null
-                    : (value) {
-                        setState(() {
-                          selectedPosition = value ?? "None";
-                          _onCategoryOrQueendomChanged();
-                        });
-                      },
+                onChanged: (value) {
+                  setState(() {
+                    selectedPosition = value ?? "None";
+                    _onCategoryOrQueendomChanged();
+                  });
+                },
               ),
 
               // 4. Family dropdown (only visible when category has other families)
@@ -569,13 +567,11 @@ class _EditGroupScreenState extends ConsumerState<EditGroupScreen> {
                         ),
                       )
                       .toList(),
-                  onChanged: selectedQueendom == 'None'
-                      ? null
-                      : (value) {
-                          setState(() {
-                            selectedFamily = value ?? "None";
-                          });
-                        },
+                  onChanged: (value) {
+                    setState(() {
+                      selectedFamily = value ?? "None";
+                    });
+                  },
                 ),
               ],
 

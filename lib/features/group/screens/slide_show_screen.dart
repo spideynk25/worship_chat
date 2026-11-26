@@ -7,9 +7,32 @@ import 'package:flutter/services.dart';
 import 'package:photo_view/photo_view.dart';
 import 'package:worship_chat/common/utils/google_lens_service.dart';
 import 'package:worship_chat/common/utils/utils.dart';
+import 'package:worship_chat/common/widgets/wallpaper_widget_sheet.dart';
 import 'package:worship_chat/features/group/services/gallery_media_service.dart';
 import 'package:worship_chat/features/group/utils/multi_gallery_shuffler_helper.dart';
 import 'package:worship_chat/models/group_gallery_image.dart';
+
+Widget _buildSlideshowWallpaperButton({
+  required BuildContext context,
+  required GroupGalleryImage photo,
+  required bool isNetwork,
+  required String groupName,
+}) {
+  return IconButton(
+    icon: const Icon(Icons.wallpaper_rounded, color: Colors.white),
+    tooltip: 'Wallpaper & Home Widget',
+    onPressed: () => WallpaperAndWidgetSheet.show(
+      context,
+      photoId: 'ss_${photo.imageId}',
+      imageUrl: isNetwork ? photo.imageUrl : null,
+      localPath: isNetwork ? null : photo.imageUrl,
+      title: (photo.caption?.trim().isNotEmpty ?? false)
+          ? photo.caption!.trim()
+          : (groupName.isNotEmpty ? groupName : 'Worship Slideshow'),
+      subtitle: 'Slideshow',
+    ),
+  );
+}
 
 enum TwoPhotosLayout {
   stacked,
@@ -820,6 +843,12 @@ class _SlideshowScreenState extends State<SlideshowScreen>
                         localPath: isNetwork ? null : photo.imageUrl,
                       ),
                     ),
+                    _buildSlideshowWallpaperButton(
+                      context: context,
+                      photo: photo,
+                      isNetwork: isNetwork,
+                      groupName: groupName,
+                    ),
                     IconButton(
                       icon: const Icon(Icons.download_rounded,
                           color: Colors.white),
@@ -1288,6 +1317,12 @@ class PhotoLightboxViewer extends StatelessWidget {
                           imageUrl: isNetwork ? photo.imageUrl : null,
                           localPath: isNetwork ? null : photo.imageUrl,
                         ),
+                      ),
+                      _buildSlideshowWallpaperButton(
+                        context: context,
+                        photo: photo,
+                        isNetwork: isNetwork,
+                        groupName: groupName,
                       ),
                       IconButton(
                         icon: const Icon(Icons.download_rounded,

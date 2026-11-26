@@ -297,6 +297,18 @@ class GroupController {
     );
   }
 
+  void togglePinGroupMessage({
+    required String groupId,
+    required String messageId,
+    required bool pin,
+  }) {
+    groupRepository.togglePinGroupMessage(
+      groupId: groupId,
+      messageId: messageId,
+      pin: pin,
+    );
+  }
+
   void deleteGroupMessageForMe({
     required String groupId,
     required String messageId,

@@ -1,4 +1,3 @@
-import 'dart:ui';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -28,10 +27,12 @@ class SenderMessageCard extends StatefulWidget {
   final void Function(String emoji)? onReactionSelected;
   final VoidCallback? onForward;
   final VoidCallback? onDelete;
+  final VoidCallback? onPin;
   final VoidCallback? onReplyTap;
   final bool isNewlyReceived;
   final bool isEdited;
   final bool isDeleted;
+  final bool isPinned;
 
   const SenderMessageCard({
     super.key,
@@ -51,10 +52,12 @@ class SenderMessageCard extends StatefulWidget {
     this.onReactionSelected,
     this.onForward,
     this.onDelete,
+    this.onPin,
     this.onReplyTap,
     this.isNewlyReceived = false,
     this.isEdited = false,
     this.isDeleted = false,
+    this.isPinned = false,
   });
 
   @override
@@ -265,6 +268,8 @@ class _SenderMessageCardState extends State<SenderMessageCard>
                                   imageUrl: mediaUrl,
                                 );
                               },
+                        onPin: widget.isDeleted ? null : widget.onPin,
+                        isPinned: widget.isPinned,
                         onDelete: widget.onDelete,
                         isMyMessage: false,
                         isDeleted: widget.isDeleted,
@@ -326,12 +331,7 @@ class _SenderMessageCardState extends State<SenderMessageCard>
                                                 mediaWidth,
                                                 mediaHeight,
                                               ))
-                            : BackdropFilter(
-                                filter: ImageFilter.blur(
-                                  sigmaX: 13,
-                                  sigmaY: 13,
-                                ),
-                                child: Consumer(
+                            : Consumer(
                                   builder: (context, ref, _) {
                                     final bubbleSettings = ref.watch(chatBubbleSettingsProvider);
                                     final gradientColors = bubbleSettings.getBubbleGradientColors(isMe: false);
@@ -398,7 +398,6 @@ class _SenderMessageCardState extends State<SenderMessageCard>
                                     );
                                   },
                                 ),
-                              ),
                       ),
                     ),
                   ),
@@ -533,6 +532,8 @@ class _SenderMessageCardState extends State<SenderMessageCard>
             ),
           ),
           const SizedBox(width: 8),
+          if (widget.isPinned)
+            MessagePinBadge(size: isSmallScreen ? 10.5 : 11.5),
           if (widget.isEdited) ...[
             Text(
               'edited',
@@ -613,6 +614,7 @@ class _SenderMessageCardState extends State<SenderMessageCard>
             child: Row(
               mainAxisSize: MainAxisSize.min,
               children: [
+                if (widget.isPinned) const MessagePinBadge(size: 10.5),
                 if (widget.isEdited) ...[
                   Text(
                     'edited',
@@ -745,6 +747,8 @@ class _SenderMessageCardState extends State<SenderMessageCard>
                 crossAxisAlignment: CrossAxisAlignment.center,
                 children: [
                   const SizedBox(width: 14), // Minimum separation
+                  if (widget.isPinned)
+                    MessagePinBadge(size: isSmallScreen ? 10.5 : 11.5),
                   if (widget.isEdited) ...[
                     Text(
                       'edited',
@@ -779,6 +783,7 @@ class _SenderMessageCardState extends State<SenderMessageCard>
   Widget _buildReplyHeader(BuildContext context, [BubbleTextContrast? contrast]) {
     final effectiveContrast = contrast ??
         ChatBubbleSettings.contrastForBackground(const Color(0xFF15141F));
+    final isStoryReply = widget.repliedMessageType == 'story';
     return GestureDetector(
       onTap: widget.onReplyTap,
       behavior: HitTestBehavior.opaque,
@@ -793,6 +798,8 @@ class _SenderMessageCardState extends State<SenderMessageCard>
             left: BorderSide(
               color: widget.repliedMessageType == 'wish'
                   ? const Color(0xFFFFD700)
+                  : isStoryReply
+                  ? const Color(0xFFFF2D55)
                   : (effectiveContrast.isLightBackground
                       ? const Color(0xFF6B186B)
                       : const Color(0xFF8B7FF5)), // Iris lavender accent
@@ -803,17 +810,49 @@ class _SenderMessageCardState extends State<SenderMessageCard>
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text(
-              widget.username,
-              style: TextStyle(
-                fontWeight: FontWeight.w700,
-                fontSize: 13,
-                color: widget.repliedMessageType == 'wish'
-                    ? const Color(0xFFFFD700)
-                    : (effectiveContrast.isLightBackground
-                        ? const Color(0xFF5A189A)
-                        : const Color(0xFFB1A9FF)),
-              ),
+            Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                if (isStoryReply) ...[
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1.5),
+                    margin: const EdgeInsets.only(right: 6),
+                    decoration: BoxDecoration(
+                      gradient: const LinearGradient(
+                        colors: [Color(0xFFFF2D55), Color(0xFFFF7A00)],
+                      ),
+                      borderRadius: BorderRadius.circular(4),
+                    ),
+                    child: const Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(Icons.history_toggle_off, color: Colors.white, size: 10),
+                        SizedBox(width: 3),
+                        Text(
+                          'Story',
+                          style: TextStyle(
+                            fontSize: 9.5,
+                            fontWeight: FontWeight.bold,
+                            color: Colors.white,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+                Text(
+                  widget.username.isNotEmpty ? widget.username : (isStoryReply ? 'Story' : ''),
+                  style: TextStyle(
+                    fontWeight: FontWeight.w700,
+                    fontSize: 13,
+                    color: widget.repliedMessageType == 'wish'
+                        ? const Color(0xFFFFD700)
+                        : (effectiveContrast.isLightBackground
+                            ? const Color(0xFF5A189A)
+                            : const Color(0xFFB1A9FF)),
+                  ),
+                ),
+              ],
             ),
             const SizedBox(height: 2),
             DisplayMessages(

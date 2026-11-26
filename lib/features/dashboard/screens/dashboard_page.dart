@@ -14,7 +14,6 @@ import 'package:worship_chat/features/dashboard/screens/event_calender_page.dart
 import 'package:worship_chat/features/dashboard/widgets/event_shortcuts_widget.dart';
 import 'package:worship_chat/features/dashboard/widgets/today_birthdays_slideshow_widget.dart';
 import 'package:worship_chat/features/dashboard/widgets/todo_page.dart';
-import 'package:worship_chat/features/group/screens/folder_gallery_screen.dart';
 import 'package:worship_chat/models/bookmark_model.dart';
 
 class DashboardPage extends ConsumerStatefulWidget {
@@ -219,15 +218,6 @@ class _BannerSection extends ConsumerWidget {
                         physics: const BouncingScrollPhysics(),
                         child: Row(
                           children: [
-                            // Folder pill
-                            _ActionPill(
-                              icon: Icons.folder_open_rounded,
-                              iconColor: const Color(0xFF64B5F6),
-                              label: 'Folder',
-                              onTap: () =>
-                                  FolderGalleryScreen.showPickerOptions(context),
-                            ),
-                            const SizedBox(width: 10),
                             // Bookmark pill
                             _ActionPill(
                               icon: Icons.bookmark_rounded,

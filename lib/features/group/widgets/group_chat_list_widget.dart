@@ -1,17 +1,21 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:developer';
+import 'dart:math' as math;
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:hive_flutter/hive_flutter.dart';
 import 'package:intl/intl.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+import 'package:worship_chat/common/utils/firebase_notification_service.dart';
 import 'package:worship_chat/common/enums/message_status_enum.dart';
 import 'package:worship_chat/common/providers/message_reply_provider.dart';
 import 'package:worship_chat/common/providers/message_edit_provider.dart';
 import 'package:worship_chat/common/widgets/skeleton_loader.dart';
 import 'package:worship_chat/features/auth/controller/auth_controller.dart';
+import 'package:worship_chat/features/chat/widgets/chat_power_ups.dart';
 import 'package:worship_chat/features/chat/widgets/delete_message_dialog.dart';
 import 'package:worship_chat/features/chat/widgets/media_group_widget.dart';
 import 'package:worship_chat/features/chat/widgets/sender_message_card.dart';
@@ -65,12 +69,14 @@ class GroupChatListWidget extends ConsumerStatefulWidget {
   final String groupId;
   final Color? accentColor;
   final String? queendom;
+  final ChatPowerUpController? powerUpController;
 
   const GroupChatListWidget({
     super.key,
     required this.groupId,
     this.accentColor,
     this.queendom,
+    this.powerUpController,
   });
 
   @override
@@ -81,6 +87,8 @@ class GroupChatListWidget extends ConsumerStatefulWidget {
 class _GroupChatListWidgetState extends ConsumerState<GroupChatListWidget>
     with AutomaticKeepAliveClientMixin {
   final ScrollController messageController = ScrollController();
+  final ChatScrollToBottomController _scrollBottomController =
+      ChatScrollToBottomController();
   final Set<String> _processedMessages = {};
   bool _isAtBottom = true;
   String? _lastMessageId;
@@ -90,16 +98,17 @@ class _GroupChatListWidgetState extends ConsumerState<GroupChatListWidget>
   bool _isInitialLoad = true;
 
   // ── Scroll to Load (Pagination) ──────────────────────────────────────────
-  static const int _pageSize = 30;
+  static const int _pageSize = 45;
   int _visibleCount = _pageSize;
-  bool _isLoadingMore = false;
   int _prevTotalMessages = 0;
+  bool _isLoadingMore = false;
   final Set<String> _initialMessageIds = <String>{};
   final Set<String> _newlyArrivedIds = <String>{};
   bool _hasRecordedInitialIds = false;
   final Map<String, GlobalKey> _messageKeys = {};
   String? _highlightedMessageId;
   Timer? _highlightTimer;
+  int _jumpGeneration = 0;
 
   GlobalKey _getMessageKey(String messageId) {
     return _messageKeys.putIfAbsent(messageId, () => GlobalKey());
@@ -111,10 +120,39 @@ class _GroupChatListWidgetState extends ConsumerState<GroupChatListWidget>
   @override
   void initState() {
     super.initState();
+    widget.powerUpController?.attachJumpHandler(_scrollToAndHighlightMessage);
     _initializeUserProfile();
     _loadInitialCachedMessages();
     _setupScrollListener();
     _subscribeToStream();
+  }
+
+  void _pushPowerUpMessages() {
+    final controller = widget.powerUpController;
+    if (controller == null) return;
+    final uid = _resolveCurrentUserId() ?? '';
+    Box<UserModel>? userBox;
+    try {
+      if (Hive.isBoxOpen('userBox')) {
+        userBox = Hive.box<UserModel>('userBox');
+      }
+    } catch (_) {}
+
+    final summaries = _displayMessages.map((m) {
+      String? senderName;
+      if (m.senderId.isNotEmpty &&
+          m.senderId != uid &&
+          m.senderId != 'roleplay') {
+        senderName = userBox?.get(m.senderId)?.name;
+      }
+      return ChatMessageSummary.fromGroup(
+        m,
+        currentUserId: uid,
+        senderName: senderName,
+      );
+    }).toList(growable: false);
+
+    controller.updateMessages(summaries);
   }
 
   void _subscribeToStream() {
@@ -123,7 +161,12 @@ class _GroupChatListWidgetState extends ConsumerState<GroupChatListWidget>
         ref.read(groupControllerProvider).getGroupChat(widget.groupId);
     _chatSubscription = stream.listen(
       _onNewMessages,
-      onError: (e) => log('❌ Group chat stream error: $e'),
+      onError: (e) {
+        log('❌ Group chat stream error: $e');
+        if (mounted && _isInitialLoad) {
+          setState(() => _isInitialLoad = false);
+        }
+      },
     );
   }
 
@@ -142,10 +185,29 @@ class _GroupChatListWidgetState extends ConsumerState<GroupChatListWidget>
   @override
   void didUpdateWidget(covariant GroupChatListWidget oldWidget) {
     super.didUpdateWidget(oldWidget);
+    if (oldWidget.powerUpController != widget.powerUpController) {
+      oldWidget.powerUpController
+          ?.detachJumpHandler(_scrollToAndHighlightMessage);
+      widget.powerUpController?.attachJumpHandler(_scrollToAndHighlightMessage);
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) _pushPowerUpMessages();
+      });
+    }
     if (oldWidget.groupId != widget.groupId) {
+      _jumpGeneration++;
+      _highlightTimer?.cancel();
+      _highlightedMessageId = null;
+      _displayMessages = [];
+      _isInitialLoad = true;
+      _visibleCount = _pageSize;
+      _prevTotalMessages = 0;
+      _lastMessageId = null;
+      _isLoadingMore = false;
       _hasRecordedInitialIds = false;
       _initialMessageIds.clear();
       _newlyArrivedIds.clear();
+      _messageKeys.clear();
+      _scrollBottomController.reset();
       _loadInitialCachedMessages();
       _subscribeToStream();
     }
@@ -153,20 +215,31 @@ class _GroupChatListWidgetState extends ConsumerState<GroupChatListWidget>
 
   void _loadInitialCachedMessages() {
     try {
+      final currentUserId = _resolveCurrentUserId();
       final localKey = widget.groupId;
       if (Hive.isBoxOpen('messages')) {
         final box = Hive.box('messages');
         final cachedData = box.get(localKey, defaultValue: []);
         if (cachedData is List && cachedData.isNotEmpty) {
           final List<GroupChatMessageModel> parsed = [];
+          bool hasUnseenIncoming = false;
           for (final item in cachedData) {
+            GroupChatMessageModel? m;
             if (item is GroupChatMessageModel) {
-              parsed.add(item);
+              m = item;
             } else if (item is Map) {
               try {
-                parsed.add(GroupChatMessageModel.fromMap(
-                    Map<String, dynamic>.from(item)));
+                m = GroupChatMessageModel.fromMap(
+                    Map<String, dynamic>.from(item));
               } catch (_) {}
+            }
+            if (m != null) {
+              // Optimistically mark incoming unseen messages as seen immediately on chat open
+              if (currentUserId != null && m.senderId != currentUserId && (!m.isSeen || !m.isDelivered)) {
+                hasUnseenIncoming = true;
+                m = m.copyWith(isSeen: true, isDelivered: true);
+              }
+              parsed.add(m);
             }
           }
           if (parsed.isNotEmpty) {
@@ -177,9 +250,50 @@ class _GroupChatListWidgetState extends ConsumerState<GroupChatListWidget>
             _hasRecordedInitialIds = true;
             _isInitialLoad = false;
             log('⚡ Pre-seeded ${_displayMessages.length} group messages from Hive in initState');
+            WidgetsBinding.instance.addPostFrameCallback((_) {
+              if (mounted) _pushPowerUpMessages();
+            });
+
+            if (hasUnseenIncoming) {
+              box.put(localKey, parsed).catchError((e) {
+                log('Note: Error saving optimistically seen group messages to Hive: $e');
+              });
+            }
           }
         }
       }
+
+      // Merge any pending background notification replies from SharedPreferences
+      SharedPreferences.getInstance().then((prefs) {
+        final pending =
+            FirebaseNotificationService.getPendingBackgroundRepliesForChat<
+                GroupChatMessageModel>(
+          chatId: localKey,
+          isGroup: true,
+          prefs: prefs,
+        );
+        if (pending.isNotEmpty && mounted) {
+          bool anyAdded = false;
+          for (final m in pending) {
+            if (!_displayMessages.any((x) => x.messageId == m.messageId)) {
+              _displayMessages.add(m);
+              anyAdded = true;
+            }
+          }
+          if (anyAdded) {
+            _displayMessages.sort((a, b) => a.timeSent.compareTo(b.timeSent));
+            _lastMessageId = _displayMessages.last.messageId;
+            _prevTotalMessages = _displayMessages.length;
+            _initialMessageIds.addAll(_displayMessages.map((m) => m.messageId));
+            setState(() {
+              _isInitialLoad = false;
+            });
+            _pushPowerUpMessages();
+            FirebaseNotificationService.syncPendingBackgroundRepliesToHive(
+                specificChatId: localKey);
+          }
+        }
+      });
     } catch (e) {
       log('Error pre-seeding cached group messages: $e');
     }
@@ -191,12 +305,12 @@ class _GroupChatListWidgetState extends ConsumerState<GroupChatListWidget>
       final position = messageController.position;
       final atBottom = position.pixels <= 10.0;
       if (atBottom != _isAtBottom) {
-        setState(() => _isAtBottom = atBottom);
+        _isAtBottom = atBottom;
       }
+      _scrollBottomController.handleScroll(position);
 
       // Check if user is scrolling up towards older messages (near top in reverse list)
       if (position.pixels >= position.maxScrollExtent - 250 &&
-          !_isLoadingMore &&
           _visibleCount < _displayMessages.length) {
         _loadMoreMessages();
       }
@@ -205,23 +319,21 @@ class _GroupChatListWidgetState extends ConsumerState<GroupChatListWidget>
 
   void _loadMoreMessages() {
     if (_isLoadingMore || _visibleCount >= _displayMessages.length) return;
+    _isLoadingMore = true;
     setState(() {
-      _isLoadingMore = true;
+      _visibleCount =
+          (_visibleCount + _pageSize).clamp(0, _displayMessages.length);
     });
-
-    Future.delayed(const Duration(milliseconds: 150), () {
-      if (mounted) {
-        setState(() {
-          _visibleCount =
-              (_visibleCount + _pageSize).clamp(0, _displayMessages.length);
-          _isLoadingMore = false;
-        });
-      }
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _isLoadingMore = false;
     });
   }
 
   @override
   void dispose() {
+    _jumpGeneration++;
+    widget.powerUpController?.detachJumpHandler(_scrollToAndHighlightMessage);
+    _scrollBottomController.dispose();
     _chatSubscription?.cancel();
     _highlightTimer?.cancel();
     messageController.dispose();
@@ -301,9 +413,10 @@ class _GroupChatListWidgetState extends ConsumerState<GroupChatListWidget>
         totalCount > effectiveCount ? totalCount - effectiveCount : 0;
 
     if (targetIdx < startIndex) {
-      final neededCount = totalCount - targetIdx + 10;
+      final neededCount =
+          (totalCount - targetIdx + 15).clamp(_pageSize, totalCount);
       setState(() {
-        _visibleCount = neededCount;
+        _visibleCount = math.max(_visibleCount, neededCount);
       });
     }
 
@@ -313,58 +426,68 @@ class _GroupChatListWidgetState extends ConsumerState<GroupChatListWidget>
   }
 
   void _scrollToAndHighlightMessage(String targetMessageId) {
-    if (!mounted) return;
+    _runConvergentJump(targetMessageId, ++_jumpGeneration);
+  }
 
-    final key = _messageKeys[targetMessageId];
-    final context = key?.currentContext;
+  void _runConvergentJump(String targetMessageId, int generation) {
+    if (!mounted || generation != _jumpGeneration) return;
 
-    if (context != null) {
-      Scrollable.ensureVisible(
-        context,
-        duration: const Duration(milliseconds: 350),
-        curve: Curves.easeInOutCubic,
-        alignment: 0.5,
-      ).then((_) {
-        _triggerMessageHighlight(targetMessageId);
+    final totalCount = _displayMessages.length;
+    final targetIdx =
+        _displayMessages.indexWhere((m) => m.messageId == targetMessageId);
+    if (targetIdx < 0) return;
+
+    final currentStart =
+        totalCount > _visibleCount ? totalCount - _visibleCount : 0;
+    if (targetIdx < currentStart) {
+      final neededCount =
+          (totalCount - targetIdx + 15).clamp(_pageSize, totalCount);
+      setState(() {
+        _visibleCount = math.max(_visibleCount, neededCount);
       });
-    } else {
-      final totalCount = _displayMessages.length;
-      final effectiveCount = _visibleCount.clamp(0, totalCount);
-      final startIndex =
-          totalCount > effectiveCount ? totalCount - effectiveCount : 0;
-      final targetIdx =
-          _displayMessages.indexWhere((m) => m.messageId == targetMessageId);
-
-      if (targetIdx >= 0 && messageController.hasClients) {
-        final visibleIdx = targetIdx - startIndex;
-        final itemIndex =
-            (effectiveCount - 1 - visibleIdx).clamp(0, effectiveCount - 1);
-        final maxExtent = messageController.position.maxScrollExtent;
-        final estimatedOffset =
-            ((itemIndex / (effectiveCount > 0 ? effectiveCount : 1)) *
-                    maxExtent)
-                .clamp(0.0, maxExtent);
-
-        messageController.jumpTo(estimatedOffset);
-
-        WidgetsBinding.instance.addPostFrameCallback((_) {
-          if (!mounted) return;
-          final retryCtx = _messageKeys[targetMessageId]?.currentContext;
-          if (retryCtx != null) {
-            Scrollable.ensureVisible(
-              retryCtx,
-              duration: const Duration(milliseconds: 350),
-              curve: Curves.easeInOutCubic,
-              alignment: 0.5,
-            ).then((_) {
-              _triggerMessageHighlight(targetMessageId);
-            });
-          } else {
-            _triggerMessageHighlight(targetMessageId);
-          }
-        });
-      }
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        _runConvergentJump(targetMessageId, generation);
+      });
+      return;
     }
+
+    List<_GroupChatRow> computeVisibleRows() {
+      final total = _displayMessages.length;
+      final eff = _visibleCount.clamp(0, total);
+      final start = total > eff ? total - eff : 0;
+      final visible = _displayMessages.sublist(start);
+      final uid = _resolveCurrentUserId();
+      return _buildRows(visible, _displayMessages, start, uid);
+    }
+
+    ChatListJumpHelper.convergeToMessage(
+      generation: generation,
+      currentGeneration: () => _jumpGeneration,
+      isMounted: () => mounted,
+      scrollController: messageController,
+      targetMessageId: targetMessageId,
+      keyForPrimaryId: _getMessageKey,
+      onHighlight: _triggerMessageHighlight,
+      lookupTargetRow: () {
+        final rows = computeVisibleRows();
+        for (int i = 0; i < rows.length; i++) {
+          if (rows[i].messages.any((m) => m.messageId == targetMessageId)) {
+            return ChatRowLookup(
+              rowCount: rows.length,
+              targetRowIndex: i,
+              primaryMessageId: rows[i].messages.first.messageId,
+            );
+          }
+        }
+        return null;
+      },
+      orderedPrimaryIds: () {
+        final rows = computeVisibleRows();
+        return rows
+            .map((r) => r.messages.first.messageId)
+            .toList(growable: false);
+      },
+    );
   }
 
   void _triggerMessageHighlight(String targetMessageId) {
@@ -458,15 +581,23 @@ class _GroupChatListWidgetState extends ConsumerState<GroupChatListWidget>
   bool _hasDeliveryOrSeenStatusChanged(List<GroupChatMessageModel> newMessages) {
     if (_displayMessages.length != newMessages.length) return true;
     for (int i = 0; i < newMessages.length; i++) {
-      if (_displayMessages[i].messageId != newMessages[i].messageId ||
-          _displayMessages[i].isSeen != newMessages[i].isSeen ||
-          _displayMessages[i].isDelivered != newMessages[i].isDelivered ||
-          _displayMessages[i].isSending != newMessages[i].isSending ||
-          _displayMessages[i].text != newMessages[i].text ||
-          _displayMessages[i].fileMessageData != newMessages[i].fileMessageData ||
-          _displayMessages[i].isEdited != newMessages[i].isEdited ||
-          _displayMessages[i].isDeleted != newMessages[i].isDeleted ||
-          !mapEquals(_displayMessages[i].reactions, newMessages[i].reactions)) {
+      final oldMsg = _displayMessages[i];
+      final newMsg = newMessages[i];
+      if (oldMsg.messageId != newMsg.messageId ||
+          oldMsg.messageType != newMsg.messageType ||
+          oldMsg.text != newMsg.text ||
+          oldMsg.fileMessageData != newMsg.fileMessageData ||
+          oldMsg.isEdited != newMsg.isEdited ||
+          oldMsg.isDeleted != newMsg.isDeleted ||
+          oldMsg.isPinned != newMsg.isPinned ||
+          oldMsg.pinnedAt != newMsg.pinnedAt ||
+          oldMsg.pinnedBy != newMsg.pinnedBy ||
+          !mapEquals(oldMsg.reactions, newMsg.reactions)) {
+        return true;
+      }
+      if (oldMsg.isSeen != newMsg.isSeen ||
+          oldMsg.isDelivered != newMsg.isDelivered ||
+          oldMsg.isSending != newMsg.isSending) {
         return true;
       }
     }
@@ -492,9 +623,11 @@ class _GroupChatListWidgetState extends ConsumerState<GroupChatListWidget>
       }
     }
 
-    // Skip redundant rebuild if incoming messages are identical to what's already showing
+    // Skip redundant rebuild if incoming messages have no visual changes
     if (_displayMessages.isNotEmpty && !_hasDeliveryOrSeenStatusChanged(newMessages)) {
+      _displayMessages = newMessages; // Silently update backing models
       _isInitialLoad = false;
+      _pushPowerUpMessages();
       return;
     }
 
@@ -505,6 +638,17 @@ class _GroupChatListWidgetState extends ConsumerState<GroupChatListWidget>
         (newMessages.isNotEmpty && newLastMessageId != _lastMessageId);
     final hasStatusChanges = _hasDeliveryOrSeenStatusChanged(newMessages);
     final addedCount = newMessages.length - _prevTotalMessages;
+
+    int newTailCount = 0;
+    if (_hasRecordedInitialIds && _lastMessageId != null && newMessages.isNotEmpty) {
+      final oldLastIdxInNew =
+          newMessages.lastIndexWhere((m) => m.messageId == _lastMessageId);
+      if (oldLastIdxInNew >= 0) {
+        newTailCount = newMessages.length - 1 - oldLastIdxInNew;
+      } else if (addedCount > 0 && _prevTotalMessages >= _pageSize) {
+        newTailCount = addedCount;
+      }
+    }
 
     if (!_hasRecordedInitialIds) {
       _initialMessageIds.addAll(newMessages.map((m) => m.messageId));
@@ -519,11 +663,10 @@ class _GroupChatListWidgetState extends ConsumerState<GroupChatListWidget>
     }
 
     setState(() {
-      if (addedCount > 0 && _prevTotalMessages > 0) {
-        _visibleCount += addedCount;
-      } else if (_visibleCount == _pageSize ||
-          _visibleCount > newMessages.length) {
-        _visibleCount = _pageSize.clamp(0, newMessages.length);
+      if (newTailCount > 0 && _prevTotalMessages > 0) {
+        _visibleCount = math.max(_pageSize, _visibleCount + newTailCount);
+      } else if (_visibleCount < _pageSize) {
+        _visibleCount = _pageSize;
       }
 
       _prevTotalMessages = newMessages.length;
@@ -531,11 +674,16 @@ class _GroupChatListWidgetState extends ConsumerState<GroupChatListWidget>
       _displayMessages = newMessages;
       _isInitialLoad = false;
     });
+    _pushPowerUpMessages();
 
     if (_isAtBottom && (hasNewMessage || hasStatusChanges)) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (mounted) _scrollToBottom();
       });
+    } else if (!_isAtBottom && hasNewMessage) {
+      _scrollBottomController.notifyIncomingMessages(
+        newTailCount > 0 ? newTailCount : 1,
+      );
     }
   }
 
@@ -632,102 +780,91 @@ class _GroupChatListWidgetState extends ConsumerState<GroupChatListWidget>
       currentUserId,
     );
 
-    return NotificationListener<OverscrollIndicatorNotification>(
-      onNotification: (notification) {
-        notification.disallowIndicator();
-        return true;
+    ChatPaginationHelper.scheduleUnderfilledCheck(
+      scrollController: messageController,
+      hasMore: hasMore,
+      isLoadingMore: _isLoadingMore,
+      onLoadMore: () {
+        if (mounted) _loadMoreMessages();
       },
-      child: ListView.builder(
-        controller: messageController,
-        reverse: true,
-        physics: const AlwaysScrollableScrollPhysics(),
-        itemCount: rows.length + (hasMore ? 1 : 0),
-        findChildIndexCallback: (Key key) {
-          if (key is ValueKey<String>) {
-            final keyVal = key.value;
-            for (int i = 0; i < rows.length; i++) {
-              final revIndex = rows.length - 1 - i;
-              if (rows[revIndex].messages.any((m) => keyVal.startsWith('group_item_${m.messageId}'))) {
-                return i;
+    );
+
+    return Stack(
+      children: [
+        NotificationListener<OverscrollIndicatorNotification>(
+          onNotification: (notification) {
+            notification.disallowIndicator();
+            return true;
+          },
+          child: ListView.builder(
+            controller: messageController,
+            reverse: true,
+            physics: const AlwaysScrollableScrollPhysics(),
+            itemCount: rows.length + (hasMore ? 1 : 0),
+            findChildIndexCallback: (Key key) {
+              if (key is ValueKey<String>) {
+                final keyVal = key.value;
+                for (int i = 0; i < rows.length; i++) {
+                  final revIndex = rows.length - 1 - i;
+                  if (rows[revIndex].messages.any((m) => keyVal.startsWith('group_item_${m.messageId}'))) {
+                    return i;
+                  }
+                }
               }
-            }
-          }
-          return null;
-        },
-        itemBuilder: (context, index) {
-          // Top spinner for loading older messages in reverse list
-          if (index == rows.length) {
-            return Padding(
-              padding: const EdgeInsets.symmetric(vertical: 14),
-              child: Center(
-                child: SizedBox(
-                  width: 20,
-                  height: 20,
-                  child: CircularProgressIndicator(
-                    strokeWidth: 2,
-                    color: tabColor,
+              return null;
+            },
+            itemBuilder: (context, index) {
+              // Top spinner for loading older messages in reverse list
+              if (index == rows.length) {
+                return Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 14),
+                  child: Center(
+                    child: SizedBox(
+                      width: 20,
+                      height: 20,
+                      child: CircularProgressIndicator(
+                        strokeWidth: 2,
+                        color: tabColor,
+                      ),
+                    ),
                   ),
-                ),
-              ),
-            );
-          }
+                );
+              }
 
-          final reversedIndex = rows.length - 1 - index;
-          final row = rows[reversedIndex];
+              final reversedIndex = rows.length - 1 - index;
+              final row = rows[reversedIndex];
 
-          if (currentUserId == null) return const SizedBox.shrink();
+              if (currentUserId == null) return const SizedBox.shrink();
 
-          for (final m in row.messages) {
-            _markMessageAsSeen(m);
-          }
+              for (final m in row.messages) {
+                _markMessageAsSeen(m);
+              }
 
-          final rowReactionsKey = row.messages
-              .map((m) => m.reactions.entries
-                  .map((e) => '${e.key}:${e.value}')
-                  .join(','))
-              .join(';');
+              final rowReactionsKey = row.messages
+                  .map((m) =>
+                      '${m.isPinned}:${m.reactions.entries.map((e) => '${e.key}:${e.value}').join(',')}')
+                  .join(';');
 
-          final isNewlyArrived = row.messages.any((m) => _newlyArrivedIds.remove(m.messageId)) ||
-              (index == 0 &&
-                  (DateTime.now()
-                          .difference(row.messages.last.timeSent)
-                          .inSeconds
-                          .abs() <
-                      5));
+              final isNewlyArrived = row.messages.any((m) => _newlyArrivedIds.remove(m.messageId)) ||
+                  (index == 0 &&
+                      (DateTime.now()
+                              .difference(row.messages.last.timeSent)
+                              .inSeconds
+                              .abs() <
+                          5));
 
-          final primaryMsgId = row.messages.first.messageId;
-          for (final m in row.messages) {
-            _messageKeys[m.messageId] = _getMessageKey(primaryMsgId);
-          }
+              final primaryMsgId = row.messages.first.messageId;
+              for (final m in row.messages) {
+                _messageKeys[m.messageId] = _getMessageKey(primaryMsgId);
+              }
 
-          final isHighlighted = _highlightedMessageId != null &&
-              row.messages.any((m) => m.messageId == _highlightedMessageId);
+              final isHighlighted = _highlightedMessageId != null &&
+                  row.messages.any((m) => m.messageId == _highlightedMessageId);
 
-          // RepaintBoundary isolates each row's raster cache so that when
-          // a new message arrives, only the new/changed rows repaint —
-          // video and link preview rows are NOT repainted at all.
-          return KeyedSubtree(
-            key: _getMessageKey(primaryMsgId),
-            child: AnimatedContainer(
-              duration: const Duration(milliseconds: 300),
-              curve: Curves.easeOut,
-              decoration: BoxDecoration(
-                borderRadius: BorderRadius.circular(20),
-                color: isHighlighted
-                    ? const Color(0xFFFFD700).withValues(alpha: 0.25)
-                    : Colors.transparent,
-                boxShadow: isHighlighted
-                    ? [
-                        BoxShadow(
-                          color:
-                              const Color(0xFFFFD700).withValues(alpha: 0.40),
-                          blurRadius: 18,
-                          spreadRadius: 3,
-                        ),
-                      ]
-                    : null,
-              ),
-              child: RepaintBoundary(
+              // RepaintBoundary isolates each row's raster cache so that when
+              // a new message arrives, only the new/changed rows repaint —
+              // video and link preview rows are NOT repainted at all.
+              final rowWidget = RepaintBoundary(
                 key: ValueKey('group_item_$primaryMsgId'),
                 child: _GroupMessageItemWidget(
                   key: ValueKey(
@@ -745,11 +882,43 @@ class _GroupChatListWidgetState extends ConsumerState<GroupChatListWidget>
                   queendom: widget.queendom,
                   onReplyTap: () => _navigateToRepliedMessage(row.messages.first),
                 ),
-              ),
-            ),
-          );
-        },
-      ),
+              );
+
+              if (isHighlighted) {
+                return KeyedSubtree(
+                  key: _getMessageKey(primaryMsgId),
+                  child: AnimatedContainer(
+                    duration: const Duration(milliseconds: 300),
+                    curve: Curves.easeOut,
+                    decoration: BoxDecoration(
+                      borderRadius: BorderRadius.circular(20),
+                      color: const Color(0xFFFFD700).withValues(alpha: 0.25),
+                      boxShadow: [
+                        BoxShadow(
+                          color: const Color(0xFFFFD700).withValues(alpha: 0.40),
+                          blurRadius: 18,
+                          spreadRadius: 3,
+                        ),
+                      ],
+                    ),
+                    child: rowWidget,
+                  ),
+                );
+              }
+
+              return KeyedSubtree(
+                key: _getMessageKey(primaryMsgId),
+                child: rowWidget,
+              );
+            },
+          ),
+        ),
+        ChatScrollToBottomButton(
+          controller: _scrollBottomController,
+          scrollController: messageController,
+          accentColor: widget.accentColor ?? tabColor,
+        ),
+      ],
     );
   }
 
@@ -916,11 +1085,21 @@ class _GroupMessageItemWidget extends ConsumerWidget {
         children: [
           if (showDateSeparator) _buildDateSeparator(firstMsg.timeSent),
           RoleplayMessageCard(
-            key: ValueKey('roleplay_${firstMsg.messageId}_$reactionsKey'),
+            key: ValueKey(
+              'roleplay_${firstMsg.messageId}_${firstMsg.isPinned}_$reactionsKey',
+            ),
             messageData: firstMsg,
             isNewlySent: isNewlySent,
+            isPinned: firstMsg.isPinned,
             accentColor: accentColor,
             queendom: queendom,
+            onPin: () {
+              ref.read(groupControllerProvider).togglePinGroupMessage(
+                    groupId: firstMsg.groupId,
+                    messageId: firstMsg.messageId,
+                    pin: !firstMsg.isPinned,
+                  );
+            },
             onSwipe: () => onMessageSwipe(
               firstMsg.text.isNotEmpty ? firstMsg.text : 'Roleplay photo',
               false,
@@ -1046,7 +1225,7 @@ class _GroupMessageItemWidget extends ConsumerWidget {
                   Flexible(
                     child: MyMessageCard(
                       key: ValueKey(
-                        'my_${messageData.messageId}_$reactionsKey',
+                        'my_${messageData.messageId}_${messageData.isSending}_${messageData.isDelivered}_${messageData.isSeen}_${messageData.isPinned}_$reactionsKey',
                       ),
                       message: messageData.text,
                       date: timeSent,
@@ -1070,6 +1249,14 @@ class _GroupMessageItemWidget extends ConsumerWidget {
                       reactions: messageData.reactions,
                       isEdited: messageData.isEdited,
                       isDeleted: messageData.isDeleted,
+                      isPinned: messageData.isPinned,
+                      onPin: () {
+                        ref.read(groupControllerProvider).togglePinGroupMessage(
+                              groupId: messageData.groupId,
+                              messageId: messageData.messageId,
+                              pin: !messageData.isPinned,
+                            );
+                      },
                       onEdit: (messageData.isDeleted || messageData.messageType != 'text')
                           ? null
                           : () {
@@ -1137,7 +1324,7 @@ class _GroupMessageItemWidget extends ConsumerWidget {
                   Flexible(
                     child: SenderMessageCard(
                       key: ValueKey(
-                        'sender_${messageData.messageId}_$reactionsKey',
+                        'sender_${messageData.messageId}_${messageData.isPinned}_$reactionsKey',
                       ),
                       message: messageData.text,
                       date: timeSent,
@@ -1159,6 +1346,14 @@ class _GroupMessageItemWidget extends ConsumerWidget {
                       reactions: messageData.reactions,
                       isEdited: messageData.isEdited,
                       isDeleted: messageData.isDeleted,
+                      isPinned: messageData.isPinned,
+                      onPin: () {
+                        ref.read(groupControllerProvider).togglePinGroupMessage(
+                              groupId: messageData.groupId,
+                              messageId: messageData.messageId,
+                              pin: !messageData.isPinned,
+                            );
+                      },
                       onDelete: () {
                         DeleteMessageDialog.show(
                           context: context,

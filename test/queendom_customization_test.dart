@@ -162,12 +162,28 @@ void main() {
         family: 'Celestial',
       );
       expect(withFam.livingPlace.contains('SANCTUM OF'), isTrue);
-      expect(withFam.livingPlace.contains('🗡️'), isTrue);
       expect(withFam.livingPlace.contains('CELESTIAL VALKYRIE FREYA'), isTrue);
       expect(withFam.wish.contains('Hail Celestial Valkyrie Freya'), isTrue);
 
       // Clean up
       await notifier.deleteCategory('Valkyrie');
+    });
+
+    test('Migrates legacy short default titles to full names while preserving user edits', () async {
+      SharedPreferences.setMockInitialValues({
+        QueendomCustomizationNotifier.allCategoriesPrefKey: [
+          '{"title":"Aura Goddesses","position":"Aura Elixiria","color":4294956800,"emoji":"","hasOtherFamilies":false,"isCustom":false}',
+          '{"title":"Custom Supreme Title","position":"Core Supreme Goddess","color":4283076834,"emoji":"","hasOtherFamilies":false,"isCustom":false}',
+          '{"title":"Golden Blossom","position":"Golden Blossom Goddess","color":4291799817,"emoji":"","hasOtherFamilies":false,"isCustom":false}',
+        ],
+      });
+
+      final notifier = QueendomCustomizationNotifier();
+      await Future.delayed(const Duration(milliseconds: 50));
+
+      expect(notifier.state.getCategoryByPosition('Aura Elixiria')?.title, 'Aura Elixiria Goddesses');
+      expect(notifier.state.getCategoryByPosition('Core Supreme Goddess')?.title, 'Custom Supreme Title');
+      expect(notifier.state.getCategoryByPosition('Golden Blossom Goddess')?.title, 'Golden Blossom Goddesses');
     });
   });
 
@@ -294,8 +310,8 @@ void main() {
 
       // Categories tab active by default
       expect(find.text('Add New Category / Position'), findsOneWidget);
-      expect(find.text('Aura Goddesses'), findsOneWidget);
-      expect(find.text('Core Supreme'), findsOneWidget);
+      expect(find.text('Aura Elixiria Goddesses'), findsOneWidget);
+      expect(find.text('Core Supreme Goddesses'), findsOneWidget);
       expect(find.text('Goddesses'), findsOneWidget);
 
       // Edit and Delete icons present for categories

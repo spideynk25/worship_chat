@@ -177,7 +177,7 @@ class TurntableCrownPainter extends CustomPainter {
       old.yaw != yaw || old.frames != frames || old.glowColor != glowColor;
 }
 
-/// Real 3D frames if they exist for this crown, otherwise the cylinder fallback.
+/// Real 3D frames if they exist for this crown, otherwise the universal royal 3D painter.
 CustomPainter buildCrownPainter({
   required String assetPath,
   required ui.Image frontImage,
@@ -195,11 +195,13 @@ CustomPainter buildCrownPainter({
       glowColor: glowColor,
     );
   }
+  final isQueenImperial = assetPath.toLowerCase().contains('queen.png');
   return CylinderCrownPainter(
     frontImage: frontImage,
     rearImage: rearImage,
     yaw: yaw,
     pitch: pitch,
     glowColor: glowColor,
+    hasVelvet: isQueenImperial,
   );
 }

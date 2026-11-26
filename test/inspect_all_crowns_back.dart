@@ -3,7 +3,7 @@ import 'dart:math' as math;
 import 'dart:ui' as ui;
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:worship_chat/features/group/widgets/royal_3d_crown_widget.dart';
+import 'package:worship_chat/features/group/widgets/cylinder_crown_painter.dart';
 
 void main() {
   test('inspect back of all crowns', () async {
@@ -53,10 +53,9 @@ void main() {
       final canvas = Canvas(recorder, Rect.fromLTWH(0, 0, size.width, size.height));
       canvas.drawColor(const Color(0xFF0F0E17), BlendMode.src);
 
-      final painter = MultiAngleCrownPainter(
+      final painter = CylinderCrownPainter(
         frontImage: image,
         rearImage: rearImage,
-        profileImage: profileImage,
         yaw: math.pi, // 180° BACK
         pitch: -0.15,
         glowColor: const Color(0xFFE5A93C),

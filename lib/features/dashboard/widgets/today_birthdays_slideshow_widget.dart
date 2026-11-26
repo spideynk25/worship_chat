@@ -24,7 +24,7 @@ import 'package:worship_chat/models/group_gallery_image.dart';
 class TodayBirthdaysSlideshowWidget extends ConsumerStatefulWidget {
   const TodayBirthdaysSlideshowWidget({super.key});
 
-  /// Cleans out any living place prefixes (e.g. "SHRINE OF 🍀", "SANCTUM OF 🏮", "TEMPLE OF 🪷", "GOLDEN SANCTUM OF 🍂")
+  /// Cleans out any living place prefixes (e.g. "SHRINE OF", "SANCTUM OF", "TEMPLE OF", "GOLDEN SANCTUM OF")
   /// and suffixes (e.g. "Royal Palace", "Queendom", "Devotees") while strictly preserving celebrant roles and names.
   static String cleanLivingPlace(String text) {
     var result = text.trim();
@@ -76,7 +76,7 @@ class TodayBirthdaysSlideshowWidget extends ConsumerStatefulWidget {
   }
 
   /// Extracts a clean celebrant title plus name from event title (e.g. "Golden Blossom Goddess Vani Bhojan's Birthday" -> "Golden Blossom Goddess Vani Bhojan").
-  /// Removes living place prefixes (e.g. "SHRINE OF 🍀", "SANCTUM OF 🏮", "TEMPLE OF 🪷", "GOLDEN SANCTUM OF 🍂")
+  /// Removes living place prefixes (e.g. "SHRINE OF", "SANCTUM OF", "TEMPLE OF", "GOLDEN SANCTUM OF")
   /// and suffixes (e.g. "Royal Palace", "Queendom", "Devotees") while strictly preserving roles and names.
   static String extractCelebrantName(String title, {String? connectedGroupName}) {
     final trimmed = title.trim();
@@ -1369,21 +1369,21 @@ class _SingleCelebrantCardState extends State<_SingleCelebrantCard> {
       celebrationCategory = 'BIRTHDAY CELEBRATION';
     }
 
-    final String categoryIcon;
+    final String? categoryAsset;
     if (isQueen) {
-      categoryIcon = '👑';
+      categoryAsset = 'assets/emojis/queen.png';
     } else if (isDarkAngel) {
-      categoryIcon = '🖤';
+      categoryAsset = 'assets/emojis/dark_angel.png';
     } else if (isEnchantress) {
-      categoryIcon = '🍀';
+      categoryAsset = 'assets/emojis/enchantress.png';
     } else if (isElfwitch) {
-      categoryIcon = '🍁';
+      categoryAsset = 'assets/emojis/elfwitch.png';
     } else if (isGoddess) {
-      categoryIcon = '✨';
+      categoryAsset = 'assets/emojis/goddess.png';
     } else if (isPrincess) {
-      categoryIcon = '👑';
+      categoryAsset = 'assets/emojis/first_born_princess.png';
     } else {
-      categoryIcon = '🎂';
+      categoryAsset = null;
     }
 
     return GestureDetector(
@@ -1452,10 +1452,19 @@ class _SingleCelebrantCardState extends State<_SingleCelebrantCard> {
                         ),
                       ],
                     ),
-                    child: Text(
-                      categoryIcon,
-                      style: const TextStyle(fontSize: 15),
-                    ),
+                    child: categoryAsset != null
+                        ? Image.asset(
+                            categoryAsset,
+                            width: 16,
+                            height: 16,
+                            fit: BoxFit.contain,
+                            errorBuilder: (_, __, ___) =>
+                                const Text('🎂', style: TextStyle(fontSize: 15)),
+                          )
+                        : const Text(
+                            '🎂',
+                            style: TextStyle(fontSize: 15),
+                          ),
                   ),
                 const SizedBox(width: 10),
                 Expanded(
@@ -1695,10 +1704,20 @@ class _SingleCelebrantCardState extends State<_SingleCelebrantCard> {
                         ),
                         const SizedBox(width: 10),
                       ] else ...[
-                        Text(
-                          categoryIcon,
-                          style: const TextStyle(fontSize: 18),
-                        ),
+                        if (categoryAsset != null)
+                          Image.asset(
+                            categoryAsset,
+                            width: 18,
+                            height: 18,
+                            fit: BoxFit.contain,
+                            errorBuilder: (_, __, ___) =>
+                                const Text('🎂', style: TextStyle(fontSize: 18)),
+                          )
+                        else
+                          const Text(
+                            '🎂',
+                            style: TextStyle(fontSize: 18),
+                          ),
                         const SizedBox(width: 10),
                       ],
                       Expanded(

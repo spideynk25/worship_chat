@@ -278,7 +278,12 @@ class _EventShortcutsWidgetState extends ConsumerState<EventShortcutsWidget> {
                     children: [
                       Row(
                         children: [
-                          const Text('👑', style: TextStyle(fontSize: 14)),
+                          Image.asset(
+                            'assets/emojis/queen.png',
+                            width: 14,
+                            height: 14,
+                            fit: BoxFit.contain,
+                          ),
                           const SizedBox(width: 6),
                           const Text(
                             'Connect to Queendom Group',
@@ -897,7 +902,6 @@ class _EventShortcutsWidgetState extends ConsumerState<EventShortcutsWidget> {
           'groups_all',
           'groups_pooja',
           'groups_rashmika',
-          'groups_none',
         ]) {
           final cached = ctrl.getCachedGroups(cat);
           for (final g in cached) {

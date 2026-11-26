@@ -35,8 +35,60 @@ final GlobalKey<NavigatorState> navigatorKey = GlobalKey<NavigatorState>();
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
+  // Graceful dark-themed error widget fallback to prevent red screens of death
+  ErrorWidget.builder = (FlutterErrorDetails details) {
+    debugPrint(
+      '⚠️ UI Error caught by ErrorWidget.builder: ${details.exception}',
+    );
+    return Material(
+      color: Colors.transparent,
+      child: Center(
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+          margin: const EdgeInsets.all(12),
+          decoration: BoxDecoration(
+            color: const Color(0xFF1E1B2E),
+            borderRadius: BorderRadius.circular(12),
+            border: Border.all(color: Colors.white12),
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Icon(
+                Icons.warning_amber_rounded,
+                color: Colors.amber,
+                size: 18,
+              ),
+              const SizedBox(width: 8),
+              Flexible(
+                child: Text(
+                  'Content temporarily unavailable',
+                  style: TextStyle(
+                    color: Colors.white.withValues(alpha: 0.8),
+                    fontSize: 12,
+                  ),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  };
+
   await AppCapabilities.initialize();
   await Firebase.initializeApp(options: DefaultFirebaseOptions.currentPlatform);
+
+  try {
+    FirebaseFirestore.instance.settings = const Settings(
+      persistenceEnabled: true,
+      cacheSizeBytes: Settings.CACHE_SIZE_UNLIMITED,
+    );
+  } catch (e) {
+    debugPrint('⚠️ Could not set Firestore persistence: $e');
+  }
 
   if (AppCapabilities.current.notificationsEnabled) {
     await createDefaultNotificationChannels();
@@ -61,13 +113,14 @@ Future<void> main() async {
     await _safeOpenHiveBox('contacts_cache');
     await _safeOpenHiveBox('roleplay_settings');
     await _safeOpenHiveBox('displayImage');
+    await _safeOpenHiveBox('status_cache');
     unawaited(LocationService.instance.resumeActiveLiveLocationTracking());
     unawaited(RoleplayService.instance.restoreActiveSessions());
   }
   await _safeOpenHiveBox('groups_cache');
 
   if (AppCapabilities.current.notificationsEnabled) {
-    await FCMTokenManager.initializeFCM();
+    unawaited(FCMTokenManager.initializeFCM());
     if (AppCapabilities.current.chatEnabled) {
       WishReminderService.instance.start();
     }
@@ -251,7 +304,7 @@ class _MyAppState extends ConsumerState<MyApp> with WidgetsBindingObserver {
       navigatorKey: navigatorKey,
       theme: MyApp.theme,
       onGenerateRoute: (settings) => generateRoute(settings),
-      home: widget.initialChatScreen ?? const RootGate(),
+      home: RootGate(initialChatScreen: widget.initialChatScreen),
     );
   }
 }
@@ -262,7 +315,8 @@ class _MyAppState extends ConsumerState<MyApp> with WidgetsBindingObserver {
 /// Uses imperative Navigator.pushReplacement so we never get a blank frame
 /// from a setState-triggered rebuild racing with the animation controller.
 class RootGate extends StatefulWidget {
-  const RootGate({super.key});
+  final Widget? initialChatScreen;
+  const RootGate({super.key, this.initialChatScreen});
 
   @override
   State<RootGate> createState() => _RootGateState();
@@ -297,7 +351,10 @@ class _RootGateState extends State<RootGate> {
   Widget _computeSafeFallbackDestination() {
     try {
       final user = FirebaseAuth.instance.currentUser;
-      if (user != null && user.emailVerified) {
+      final cachedUser = Hive.isBoxOpen('userBox')
+          ? Hive.box<UserModel>('userBox').get('currentUser')
+          : null;
+      if ((user != null && user.emailVerified) || cachedUser != null) {
         return const HomeScreen();
       }
       return AppCapabilities.current.chatEnabled
@@ -354,7 +411,7 @@ class _RootGateState extends State<RootGate> {
     final minSplashFuture = Future.delayed(const Duration(milliseconds: 750));
 
     Widget destination;
-    Widget? directChatScreen;
+    Widget? directChatScreen = widget.initialChatScreen;
 
     try {
       User? user;
@@ -367,77 +424,67 @@ class _RootGateState extends State<RootGate> {
         user = null;
       }
 
-      if (user != null) {
-        try {
-          // Timeout reload to max 1.5 seconds so slow/offline networks never freeze boot
-          await user.reload().timeout(
-            const Duration(milliseconds: 1500),
-            onTimeout: () {
-              debugPrint(
-                '⚠️ user.reload timed out; continuing with cached session',
-              );
-            },
-          );
-          user = FirebaseAuth.instance.currentUser;
-        } catch (reloadError) {
-          debugPrint('⚠️ Note: FirebaseAuth reload error: $reloadError');
+      final cachedUser = Hive.isBoxOpen('userBox')
+          ? Hive.box<UserModel>('userBox').get('currentUser')
+          : null;
+
+      final bool isLocallyAuthenticated =
+          (user != null && user.emailVerified) || cachedUser != null;
+
+      if (isLocallyAuthenticated) {
+        if (user != null) {
+          try {
+            // Quick 500ms timeout for online token refresh; if offline, proceed immediately with cached session
+            await user.reload().timeout(
+              const Duration(milliseconds: 500),
+              onTimeout: () {
+                debugPrint(
+                  '⚠️ user.reload timed out; continuing with cached session',
+                );
+              },
+            );
+            user = FirebaseAuth.instance.currentUser;
+          } catch (reloadError) {
+            debugPrint('⚠️ Note: FirebaseAuth reload error: $reloadError');
+          }
         }
 
         if (user != null && AppCapabilities.current.notificationsEnabled) {
           try {
-            await FCMTokenManager.refreshAndSaveFCMToken().timeout(
-              const Duration(milliseconds: 1500),
-              onTimeout: () {
-                debugPrint('⚠️ FCMTokenManager refresh timed out');
-                return null;
-              },
-            );
+            unawaited(FCMTokenManager.refreshAndSaveFCMToken());
           } catch (e) {
             debugPrint('Note: initial token refresh error: $e');
           }
         }
 
-        if (user != null && user.emailVerified) {
-          // Pre-warm Hive user cache & check cold-start notification in parallel with timeout
-          final prewarmFuture = _prewarmUserCache(user.uid).timeout(
-            const Duration(milliseconds: 1500),
-            onTimeout: () {
-              debugPrint('⚠️ _prewarmUserCache timed out');
-            },
-          );
+        final uid = user?.uid ?? cachedUser?.uid;
+        if (uid != null && uid.isNotEmpty) {
+          unawaited(_prewarmUserCache(uid));
+        }
 
-          final notificationFuture =
-              AppCapabilities.current.notificationsEnabled
-              ? FirebaseNotificationService.getInitialNotificationData()
-                    .timeout(
-                      const Duration(milliseconds: 1500),
-                      onTimeout: () => null,
-                    )
-              : Future<Map<String, dynamic>?>.value(null);
-
+        if (AppCapabilities.current.notificationsEnabled) {
           try {
-            await Future.wait([prewarmFuture, notificationFuture]);
-          } catch (_) {}
-
-          final notifData = await notificationFuture.catchError((_) => null);
-          if (notifData != null) {
-            try {
+            final notifData =
+                await FirebaseNotificationService.getInitialNotificationData()
+                    .timeout(
+                      const Duration(milliseconds: 400),
+                      onTimeout: () => null,
+                    );
+            if (notifData != null) {
               directChatScreen =
                   await FirebaseNotificationService.buildChatScreenFromNotificationData(
                     notifData,
                   ).timeout(
-                    const Duration(milliseconds: 1500),
+                    const Duration(milliseconds: 400),
                     onTimeout: () => null,
                   );
-            } catch (e) {
-              debugPrint('⚠️ buildChatScreenFromNotificationData error: $e');
             }
+          } catch (e) {
+            debugPrint('⚠️ notification resolving error: $e');
           }
-
-          destination = const HomeScreen();
-        } else {
-          destination = LoginScreen();
         }
+
+        destination = const HomeScreen();
       } else {
         destination = AppCapabilities.current.chatEnabled
             ? const LandingScreen()
@@ -473,9 +520,31 @@ class _RootGateState extends State<RootGate> {
     if (directChatScreen != null) {
       FirebaseNotificationService.clearPendingNotification();
       _navigateToDestination(
-        directChatScreen,
+        const HomeScreen(),
         duration: const Duration(milliseconds: 150),
       );
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        try {
+          final nav = navigatorKey.currentState;
+          nav?.push(
+            PageRouteBuilder(
+              pageBuilder: (_, __, ___) => directChatScreen!,
+              transitionsBuilder: (_, animation, __, child) => FadeTransition(
+                opacity: CurvedAnimation(
+                  parent: animation,
+                  curve: Curves.easeOut,
+                ),
+                child: child,
+              ),
+              transitionDuration: const Duration(milliseconds: 150),
+            ),
+          );
+        } catch (e) {
+          debugPrint(
+            '⚠️ Error pushing direct chat screen on top of HomeScreen: $e',
+          );
+        }
+      });
       return;
     }
 

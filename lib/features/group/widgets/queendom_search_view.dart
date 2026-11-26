@@ -430,7 +430,12 @@ class _QueendomSearchViewState extends State<QueendomSearchView> {
                 child: Row(
                   mainAxisSize: MainAxisSize.min,
                   children: [
-                    const Text('👑', style: TextStyle(fontSize: 12)),
+                    Image.asset(
+                      'assets/emojis/queen.png',
+                      width: 13,
+                      height: 13,
+                      fit: BoxFit.contain,
+                    ),
                     const SizedBox(width: 4),
                     Text(
                       widget.realmName.replaceAll('Queen ', ''),

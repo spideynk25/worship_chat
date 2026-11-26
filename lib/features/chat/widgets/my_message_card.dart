@@ -1,4 +1,3 @@
-import 'dart:ui';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -32,9 +31,11 @@ class MyMessageCard extends StatefulWidget {
   final VoidCallback? onForward;
   final VoidCallback? onEdit;
   final VoidCallback? onDelete;
+  final VoidCallback? onPin;
   final VoidCallback? onReplyTap;
   final bool isEdited;
   final bool isDeleted;
+  final bool isPinned;
 
   const MyMessageCard({
     super.key,
@@ -58,9 +59,11 @@ class MyMessageCard extends StatefulWidget {
     this.onForward,
     this.onEdit,
     this.onDelete,
+    this.onPin,
     this.onReplyTap,
     this.isEdited = false,
     this.isDeleted = false,
+    this.isPinned = false,
   });
 
   final bool isNewlySent;
@@ -325,6 +328,8 @@ class _MyMessageCardState extends State<MyMessageCard>
                                   imageUrl: mediaUrl,
                                 );
                               },
+                        onPin: widget.isDeleted ? null : widget.onPin,
+                        isPinned: widget.isPinned,
                         onEdit: widget.isDeleted ? null : widget.onEdit,
                         onDelete: widget.onDelete,
                         isMyMessage: true,
@@ -402,46 +407,40 @@ class _MyMessageCardState extends State<MyMessageCard>
                                         : 1.0,
                                     child: child,
                                   )
-                                : BackdropFilter(
-                                    filter: ImageFilter.blur(
-                                      sigmaX: 13,
-                                      sigmaY: 13,
-                                    ),
-                                    child: Container(
-                                      decoration: isWish
-                                          ? BoxDecoration(
-                                              borderRadius: bubbleRadius,
-                                              gradient: WishHelper.getBubbleGradient(
-                                                isMe: true,
-                                                text: widget.message,
-                                                isSending: isSending,
-                                                pulse: pulse,
-                                              ),
-                                              border: WishHelper.getBubbleBorder(
-                                                text: widget.message,
-                                                isSending: isSending,
-                                                pulse: pulse,
-                                              ),
-                                            )
-                                          : BoxDecoration(
-                                              borderRadius: bubbleRadius,
-                                              gradient: LinearGradient(
-                                                begin: Alignment.topLeft,
-                                                end: Alignment.bottomRight,
-                                                colors: gradientColors,
-                                                stops: const [0.0, 0.50, 1.0],
-                                              ),
-                                              border: Border.all(
-                                                color: borderColor,
-                                                width: isSending ? (1.0 + 0.35 * pulse) : 1.0,
-                                              ),
+                                : Container(
+                                    decoration: isWish
+                                        ? BoxDecoration(
+                                            borderRadius: bubbleRadius,
+                                            gradient: WishHelper.getBubbleGradient(
+                                              isMe: true,
+                                              text: widget.message,
+                                              isSending: isSending,
+                                              pulse: pulse,
                                             ),
-                                      child: Opacity(
-                                        opacity: isSending
-                                            ? (0.92 + 0.08 * (1.0 - pulse * 0.3))
-                                            : 1.0,
-                                        child: child,
-                                      ),
+                                            border: WishHelper.getBubbleBorder(
+                                              text: widget.message,
+                                              isSending: isSending,
+                                              pulse: pulse,
+                                            ),
+                                          )
+                                        : BoxDecoration(
+                                            borderRadius: bubbleRadius,
+                                            gradient: LinearGradient(
+                                              begin: Alignment.topLeft,
+                                              end: Alignment.bottomRight,
+                                              colors: gradientColors,
+                                              stops: const [0.0, 0.50, 1.0],
+                                            ),
+                                            border: Border.all(
+                                              color: borderColor,
+                                              width: isSending ? (1.0 + 0.35 * pulse) : 1.0,
+                                            ),
+                                          ),
+                                    child: Opacity(
+                                      opacity: isSending
+                                          ? (0.92 + 0.08 * (1.0 - pulse * 0.3))
+                                          : 1.0,
+                                      child: child,
                                     ),
                                   ),
                           )
@@ -632,6 +631,8 @@ class _MyMessageCardState extends State<MyMessageCard>
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.center,
             children: [
+              if (widget.isPinned)
+                MessagePinBadge(size: isSmallScreen ? 10.5 : 11.5),
               if (widget.isEdited) ...[
                 Text(
                   'edited',
@@ -721,6 +722,7 @@ class _MyMessageCardState extends State<MyMessageCard>
             child: Row(
               mainAxisSize: MainAxisSize.min,
               children: [
+                if (widget.isPinned) const MessagePinBadge(size: 10.5),
                 if (widget.isEdited) ...[
                   Text(
                     'edited',
@@ -853,6 +855,8 @@ class _MyMessageCardState extends State<MyMessageCard>
                 crossAxisAlignment: CrossAxisAlignment.center,
                 children: [
                   const SizedBox(width: 14), // Minimum separation
+                  if (widget.isPinned)
+                    MessagePinBadge(size: isSmallScreen ? 10.5 : 11.5),
                   if (widget.isEdited) ...[
                     Text(
                       'edited',
@@ -892,6 +896,7 @@ class _MyMessageCardState extends State<MyMessageCard>
   /// Sleek glassy reply preview quote
   Widget _buildReplyHeader(BuildContext context, [BubbleTextContrast? contrast]) {
     final effectiveContrast = contrast ?? ChatBubbleSettings.contrastForBackground(const Color(0xFF15141F));
+    final isStoryReply = widget.repliedMessageType == 'story';
     return GestureDetector(
       onTap: widget.onReplyTap,
       behavior: HitTestBehavior.opaque,
@@ -906,6 +911,8 @@ class _MyMessageCardState extends State<MyMessageCard>
             left: BorderSide(
               color: widget.repliedMessageType == 'wish'
                   ? const Color(0xFFFFD700)
+                  : isStoryReply
+                  ? const Color(0xFFFF2D55)
                   : const Color(0xFFFF6584), // Premium coral pink accent
               width: 3.5,
             ),
@@ -914,17 +921,49 @@ class _MyMessageCardState extends State<MyMessageCard>
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text(
-              widget.username,
-              style: TextStyle(
-                fontWeight: FontWeight.w700,
-                fontSize: 13,
-                color: widget.repliedMessageType == 'wish'
-                    ? const Color(0xFFFFD700)
-                    : (effectiveContrast.isLightBackground
-                        ? const Color(0xFFD81B60)
-                        : const Color(0xFFFF85A1)),
-              ),
+            Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                if (isStoryReply) ...[
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1.5),
+                    margin: const EdgeInsets.only(right: 6),
+                    decoration: BoxDecoration(
+                      gradient: const LinearGradient(
+                        colors: [Color(0xFFFF2D55), Color(0xFFFF7A00)],
+                      ),
+                      borderRadius: BorderRadius.circular(4),
+                    ),
+                    child: const Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(Icons.history_toggle_off, color: Colors.white, size: 10),
+                        SizedBox(width: 3),
+                        Text(
+                          'Story',
+                          style: TextStyle(
+                            fontSize: 9.5,
+                            fontWeight: FontWeight.bold,
+                            color: Colors.white,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+                Text(
+                  widget.username.isNotEmpty ? widget.username : (isStoryReply ? 'Story' : ''),
+                  style: TextStyle(
+                    fontWeight: FontWeight.w700,
+                    fontSize: 13,
+                    color: widget.repliedMessageType == 'wish'
+                        ? const Color(0xFFFFD700)
+                        : (effectiveContrast.isLightBackground
+                            ? const Color(0xFFD81B60)
+                            : const Color(0xFFFF85A1)),
+                  ),
+                ),
+              ],
             ),
             const SizedBox(height: 2),
             DisplayMessages(

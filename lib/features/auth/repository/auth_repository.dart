@@ -36,20 +36,27 @@ class AuthRepository {
   }
 
   Future<UserModel?> getCurrentUserData() async {
-    final userId = auth.currentUser?.uid;
+    final userId = auth.currentUser?.uid ?? (Hive.isBoxOpen('userBox') ? Hive.box<UserModel>('userBox').get('currentUser')?.uid : null);
     if (userId == null) return null;
-    var userData = await firestore
-        .collection('users')
-        .doc(userId)
-        .get();
-    // A previous account's in-flight read must not overwrite the new cache.
-    if (auth.currentUser?.uid != userId) return null;
-    UserModel? user;
-    if (userData.data() != null) {
-      user = UserModel.fromMap(userData.data()!);
-      await _saveUserToHive(user); // Save to Hive
+    try {
+      var userData = await firestore
+          .collection('users')
+          .doc(userId)
+          .get();
+      // A previous account's in-flight read must not overwrite the new cache.
+      if (auth.currentUser?.uid != null && auth.currentUser?.uid != userId) return null;
+      UserModel? user;
+      if (userData.data() != null) {
+        user = UserModel.fromMap(userData.data()!);
+        await _saveUserToHive(user); // Save to Hive
+      }
+      return user ?? (Hive.isBoxOpen('userBox') ? Hive.box<UserModel>('userBox').get('currentUser') : null);
+    } catch (_) {
+      if (Hive.isBoxOpen('userBox')) {
+        return Hive.box<UserModel>('userBox').get('currentUser');
+      }
+      return null;
     }
-    return user;
   }
 
   Future<void> registerWithEmail(
@@ -241,44 +248,87 @@ class AuthRepository {
     }
   }
 
-  Future<void> saveUserDataToFirebase({
+  Future<bool> saveUserDataToFirebase({
     required String name,
     required File? profilePic,
     String? userName, // Added userName parameter
     required Ref ref,
     required BuildContext context,
+    bool navigateHomeOnComplete = true,
+    bool removeProfilePic = false,
   }) async {
     try {
-      User currentUserData = auth.currentUser!;
-      String? photoUrl = currentUserData.photoURL;
-      if (profilePic != null) {
-        photoUrl = await uploadImageToCloudinary(profilePic);
+      final currentUserData = auth.currentUser;
+      if (currentUserData == null) {
+        if (context.mounted) {
+          AppSnackBar.error(context, 'Not signed in. Please log in again.');
+        }
+        return false;
+      }
+
+      final cleanName = name.trim();
+      final cleanUserName = userName?.trim();
+
+      if (cleanName.isEmpty) {
+        if (context.mounted) {
+          AppSnackBar.warning(context, 'Display name cannot be empty.');
+        }
+        return false;
+      }
+
+      // Validate username format & uniqueness BEFORE uploading any new photo.
+      if (cleanUserName != null) {
+        if (cleanUserName.isEmpty) {
+          if (context.mounted) {
+            AppSnackBar.warning(context, 'Username cannot be empty.');
+          }
+          return false;
+        }
+        if (RegExp(r'\s').hasMatch(cleanUserName)) {
+          if (context.mounted) {
+            AppSnackBar.warning(context, 'Username cannot contain spaces.');
+          }
+          return false;
+        }
+        if (cleanUserName != currentUserData.displayName) {
+          final usernameQuery = await firestore
+              .collection('users')
+              .where('userName', isEqualTo: cleanUserName)
+              .get();
+          if (usernameQuery.docs.isNotEmpty &&
+              usernameQuery.docs.first.id != currentUserData.uid) {
+            if (context.mounted) {
+              AppSnackBar.error(
+                context,
+                'Username is already taken. Please choose another.',
+              );
+            }
+            return false;
+          }
+        }
+      }
+
+      String? photoUrl = removeProfilePic ? '' : currentUserData.photoURL;
+      if (!removeProfilePic && profilePic != null) {
+        final uploadedUrl = await uploadImageToCloudinary(profilePic);
+        if (uploadedUrl == null || uploadedUrl.isEmpty) {
+          if (context.mounted) {
+            AppSnackBar.error(
+              context,
+              'Failed to upload profile photo. Please try again.',
+            );
+          }
+          return false;
+        }
+        photoUrl = uploadedUrl;
       }
       if (photoUrl != null && photoUrl.startsWith('http://')) {
         photoUrl = photoUrl.replaceFirst('http://', 'https://');
       }
 
-      // Check if userName is provided and different from current
-      if (userName != null && userName != currentUserData.displayName) {
-        // Check for username uniqueness
-        final usernameQuery = await firestore
-            .collection('users')
-            .where('userName', isEqualTo: userName)
-            .get();
-        if (usernameQuery.docs.isNotEmpty &&
-            usernameQuery.docs.first.id != currentUserData.uid) {
-          AppSnackBar.error(
-            context,
-            'Username is already taken. Please choose another.',
-          );
-          return;
-        }
-        await currentUserData.updateDisplayName(userName);
-      }
-
       await currentUserData.updateProfile(
-        displayName: userName ?? currentUserData.displayName,
-        photoURL: photoUrl,
+        displayName: cleanUserName ?? currentUserData.displayName,
+        photoURL: removeProfilePic ? null : photoUrl,
       );
 
       // Preserve existing user fields like fcmToken and groupId
@@ -316,12 +366,12 @@ class AuthRepository {
       }
 
       var user = UserModel(
-        userName: userName ?? currentUserData.displayName!,
-        name: name,
+        userName: cleanUserName ?? currentUserData.displayName ?? '',
+        name: cleanName,
         uid: currentUserData.uid,
         profilePic: photoUrl ?? "",
         isOnline: AppCapabilities.current.chatEnabled ? true : existingOnline,
-        email: currentUserData.email!,
+        email: currentUserData.email ?? '',
         groupId: existingGroup,
         fcmToken: existingFcm,
         lastSeen: existingLastSeen,
@@ -365,7 +415,7 @@ class AuthRepository {
             for (final doc in chunk) {
               batch.update(doc.reference, {
                 'userProfilePic': photoUrl ?? "",
-                'userName': name,
+                'userName': cleanName,
               });
             }
             await batch.commit();
@@ -376,14 +426,20 @@ class AuthRepository {
         log('⚠️ Could not batch update bookmarks on profile pic change: $e');
       }
 
-      Navigator.pushAndRemoveUntil(
-        context,
-        MaterialPageRoute(builder: (context) => const HomeScreen()),
-        (route) => false,
-      );
+      if (navigateHomeOnComplete && context.mounted) {
+        Navigator.pushAndRemoveUntil(
+          context,
+          MaterialPageRoute(builder: (context) => const HomeScreen()),
+          (route) => false,
+        );
+      }
+      return true;
     } catch (e) {
       log("Error saving user data: $e");
-      showSnackBar(context: context, content: e.toString());
+      if (context.mounted) {
+        AppSnackBar.error(context, e.toString());
+      }
+      return false;
     }
   }
 

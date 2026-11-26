@@ -210,6 +210,18 @@ class ChatController {
     );
   }
 
+  void togglePinMessage({
+    required String messageId,
+    required String receiverUserId,
+    required bool pin,
+  }) {
+    chatRepository.togglePinMessage(
+      messageId: messageId,
+      receiverUserId: receiverUserId,
+      pin: pin,
+    );
+  }
+
   void deleteMessageForMe({
     required String messageId,
     required String receiverUserId,

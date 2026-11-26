@@ -9,12 +9,17 @@ import 'package:worship_chat/features/auth/screens/user_information_screen.dart'
 import 'package:worship_chat/features/chat/screens/one_to_one_chat_screen.dart';
 import 'package:worship_chat/features/chat/widgets/all_user_screen.dart';
 import 'package:worship_chat/features/group/screens/create_group_screen.dart';
+import 'package:worship_chat/features/group/screens/duplicate_finder_screen.dart';
+import 'package:worship_chat/features/home/screens/gallery_home_screen.dart';
+import 'package:worship_chat/models/group_gallery_image.dart';
+import 'package:worship_chat/features/home/screens/photo_count_screen.dart';
 import 'package:worship_chat/features/status/screens/confirm_status_screen.dart';
 import 'package:worship_chat/features/status/screens/view_status_screen.dart';
 import 'package:worship_chat/features/dashboard/widgets/todo_page.dart';
 import 'package:worship_chat/features/dashboard/screens/event_calender_page.dart';
 import 'package:worship_chat/features/settings/screens/settings_screen.dart';
 import 'package:worship_chat/features/settings/screens/display_settings_screen.dart';
+import 'package:worship_chat/features/settings/screens/home_widget_settings_screen.dart';
 import 'package:worship_chat/features/settings/screens/queendom_management_screen.dart';
 
 Route<dynamic> generateRoute(RouteSettings settings) {
@@ -99,8 +104,28 @@ Route<dynamic> generateRoute(RouteSettings settings) {
     case DisplaySettingsScreen.routeName:
       return MaterialPageRoute(builder: (context) => const DisplaySettingsScreen());
 
+    case HomeWidgetSettingsScreen.routeName:
+      return MaterialPageRoute(builder: (context) => const HomeWidgetSettingsScreen());
+
     case QueendomManagementScreen.routeName:
       return MaterialPageRoute(builder: (context) => const QueendomManagementScreen());
+
+    case GalleryHomeScreen.routeName:
+      return MaterialPageRoute(builder: (context) => const GalleryHomeScreen());
+
+    case PhotoCountScreen.routeName:
+      return MaterialPageRoute(builder: (context) => const PhotoCountScreen());
+
+    case DuplicateFinderScreen.routeName:
+      final args = settings.arguments as Map<String, dynamic>?;
+      return MaterialPageRoute(
+        builder: (context) => DuplicateFinderScreen(
+          initialImages: args?['initialImages'] as List<GroupGalleryImage>?,
+          groupId: args?['groupId'] as String?,
+          groupName: args?['groupName'] as String?,
+          accentColor: (args?['accentColor'] as Color?) ?? Colors.amber,
+        ),
+      );
 
     default:
       return MaterialPageRoute(

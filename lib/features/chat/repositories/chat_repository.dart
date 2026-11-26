@@ -32,7 +32,9 @@ final chatRepositoryProvider = Provider(
 final currentUserProvider = FutureProvider<User?>((ref) async {
   final user = FirebaseAuth.instance.currentUser;
   if (user != null) {
-    await user.reload();
+    try {
+      await user.reload().timeout(const Duration(milliseconds: 500));
+    } catch (_) {}
     return FirebaseAuth.instance.currentUser;
   }
   return null;
@@ -105,8 +107,14 @@ class ChatRepository {
     }
   }
 
+  String? _getEffectiveUserId() {
+    final authUid = auth.currentUser?.uid;
+    if (authUid != null && authUid.isNotEmpty) return authUid;
+    return safeCurrentUserId();
+  }
+
   List<ChatContact> getCachedContacts({required bool isAllChats}) {
-    final currentUserId = auth.currentUser?.uid;
+    final currentUserId = _getEffectiveUserId();
     if (currentUserId == null) return [];
     try {
       if (Hive.isBoxOpen('contacts_cache')) {
@@ -127,7 +135,7 @@ class ChatRepository {
   }
 
   Stream<List<ChatContact>> fetchAllContacts() async* {
-    final currentUserId = auth.currentUser?.uid;
+    final currentUserId = _getEffectiveUserId();
 
     // 1. Immediately emit cached contacts from Hive (0ms)
     final cached = getCachedContacts(isAllChats: true);
@@ -185,7 +193,7 @@ class ChatRepository {
   }
 
   Stream<List<ChatContact>> getChatContact() async* {
-    final currentUserId = auth.currentUser?.uid;
+    final currentUserId = _getEffectiveUserId();
     if (currentUserId == null) {
       yield [];
       return;
@@ -389,6 +397,14 @@ class ChatRepository {
         final cachedData = box.get(localKey, defaultValue: []);
         cachedMessages = _safeCastMessages(cachedData);
         if (cachedMessages.isNotEmpty) {
+          // Optimistically mark incoming messages as seen in cachedMessages
+          // so the initial emission matches what the screen pre-seeds
+          cachedMessages = cachedMessages.map((m) {
+            if (m.receiverId == currentUserId && (!m.isSeen || !m.isDelivered)) {
+              return m.copyWith(isSeen: true, isDelivered: true);
+            }
+            return m;
+          }).toList();
           debugPrint(
               '⚡ [Instant Cache] Found ${cachedMessages.length} cached messages for $receiverUserId');
         }
@@ -396,6 +412,11 @@ class ChatRepository {
     } catch (e) {
       debugPrint('❌ Error reading cached 1-to-1 messages: $e');
     }
+
+    // Sync any pending background notification replies into Hive
+    FirebaseNotificationService.syncPendingBackgroundRepliesToHive(
+      specificChatId: localKey,
+    );
 
     final controller = StreamController<List<OneToOneMessageModel>>();
 
@@ -409,14 +430,20 @@ class ChatRepository {
         final p = prev[i];
         final n = next[i];
         if (p.messageId != n.messageId ||
-            p.isSeen != n.isSeen ||
-            p.isDelivered != n.isDelivered ||
-            p.isSending != n.isSending ||
+            p.messageType != n.messageType ||
             p.text != n.text ||
             p.isEdited != n.isEdited ||
             p.isDeleted != n.isDeleted ||
+            p.isPinned != n.isPinned ||
+            p.pinnedAt != n.pinnedAt ||
+            p.pinnedBy != n.pinnedBy ||
             p.fileMessageData != n.fileMessageData ||
             !mapEquals(p.reactions, n.reactions)) {
+          return false;
+        }
+        if (p.isSeen != n.isSeen ||
+            p.isDelivered != n.isDelivered ||
+            p.isSending != n.isSending) {
           return false;
         }
       }
@@ -557,11 +584,14 @@ class ChatRepository {
 
     // Merge: Firestore is authoritative ground truth
     final Map<String, OneToOneMessageModel> messagesMap = {};
+    final Map<String, OneToOneMessageModel> cachedMap = {
+      for (var m in cachedMessages) m.messageId: m,
+    };
 
     if (firestoreMessages.isNotEmpty) {
       // 1. Keep cached outgoing messages that are still sending or recent (<5min)
       for (var m in cachedMessages) {
-        if (currentUid != null && m.deletedFor.contains(currentUid)) continue;
+        if (m.deletedFor.contains(currentUid)) continue;
         if (m.senderId == currentUid &&
             (m.isSending || !firestoreIds.contains(m.messageId))) {
           if (DateTime.now().difference(m.timeSent).inMinutes < 5) {
@@ -569,12 +599,18 @@ class ChatRepository {
           }
         }
       }
-      // 2. Add all Firestore messages (they overwrite any cache, but preserve local delivery confirmation)
+      // 2. Add all Firestore messages (they overwrite any cache, but preserve local delivery confirmation & seen state)
       for (var m in firestoreMessages) {
-        if (currentUid != null && m.deletedFor.contains(currentUid)) continue;
-        final cached = messagesMap[m.messageId];
-        if (cached != null && cached.isDelivered && !m.isDelivered) {
-          messagesMap[m.messageId] = m.copyWith(isDelivered: true);
+        if (m.deletedFor.contains(currentUid)) continue;
+        final cached = cachedMap[m.messageId];
+        final bool isSeen = m.isSeen || (cached?.isSeen ?? false);
+        final bool isDelivered =
+            isSeen || m.isDelivered || (cached?.isDelivered ?? false);
+        if (isSeen != m.isSeen || isDelivered != m.isDelivered) {
+          messagesMap[m.messageId] = m.copyWith(
+            isSeen: isSeen,
+            isDelivered: isDelivered,
+          );
         } else {
           messagesMap[m.messageId] = m;
         }
@@ -582,7 +618,7 @@ class ChatRepository {
     } else {
       // If Firestore returned 0 docs (offline or brand new chat), use cache
       for (var m in cachedMessages) {
-        if (currentUid != null && m.deletedFor.contains(currentUid)) continue;
+        if (m.deletedFor.contains(currentUid)) continue;
         messagesMap[m.messageId] = m;
       }
     }
@@ -963,6 +999,8 @@ class ChatRepository {
           : messageReply.fileMessageData,
       repliedTo: messageReply == null
           ? ''
+          : (messageReply.repliedTo != null && messageReply.repliedTo!.isNotEmpty)
+          ? messageReply.repliedTo!
           : messageReply.isMe
           ? senderUsername
           : receiverUserName ?? '',
@@ -1046,6 +1084,9 @@ class ChatRepository {
 
         if (messageReply != null) {
           switch (messageReply.messageType) {
+            case 'story':
+              body = '💬 Replied to your story: "$text"';
+              break;
             case 'text':
             case 'wish':
               body = 'Replying to: "${messageReply.message}"';
@@ -1122,7 +1163,9 @@ class ChatRepository {
               'fileMessageData': fileMessageData,
             if (messageReply != null) ...{
               'repliedMessage': messageReply.message,
-              'repliedTo': messageReply.isMe
+              'repliedTo': (messageReply.repliedTo != null && messageReply.repliedTo!.isNotEmpty)
+                  ? messageReply.repliedTo!
+                  : messageReply.isMe
                   ? (senderUsername ?? '')
                   : (receiverUserName ?? ''),
               'repliedMessageType':
@@ -1192,8 +1235,10 @@ class ChatRepository {
             : messageReply.fileMessageData,
         repliedTo: messageReply == null
             ? ''
+            : (messageReply.repliedTo != null && messageReply.repliedTo!.isNotEmpty)
+            ? messageReply.repliedTo!
             : messageReply.isMe
-            ? (senderUser.name ?? 'User')
+            ? 'You'
             : '',
         repliedMessageType: messageReply == null ? 'text' : messageReply.messageType,
       );
@@ -1948,6 +1993,74 @@ class ChatRepository {
       }
     } catch (e) {
       log('❌ Error editing message in Firestore: $e');
+    }
+  }
+
+  Future<void> togglePinMessage({
+    required String messageId,
+    required String receiverUserId,
+    required bool pin,
+  }) async {
+    final currentUserId = auth.currentUser?.uid;
+    if (currentUserId == null) return;
+
+    final now = DateTime.now();
+    final localKey = '${currentUserId}_$receiverUserId';
+
+    // 1. Optimistically update local Hive cache for instant banner/badge feedback
+    try {
+      if (Hive.isBoxOpen('messages')) {
+        final box = Hive.box('messages');
+        final cachedData = box.get(localKey, defaultValue: []);
+        final messages = _safeCastMessages(cachedData);
+        final idx = messages.indexWhere((m) => m.messageId == messageId);
+        if (idx >= 0) {
+          messages[idx] = pin
+              ? messages[idx].copyWith(
+                  isPinned: true,
+                  pinnedAt: now,
+                  pinnedBy: currentUserId,
+                )
+              : messages[idx].copyWith(clearPin: true);
+          await box.put(localKey, messages);
+          notifyChatListeners(localKey, messages);
+        }
+      }
+    } catch (e) {
+      log('❌ Error updating Hive cache for pinned message: $e');
+    }
+
+    // 2. Persist to Firestore
+    final payload = <String, dynamic>{
+      'isPinned': pin,
+      'pinnedAt': pin ? now.millisecondsSinceEpoch : null,
+      'pinnedBy': pin ? currentUserId : null,
+    };
+
+    try {
+      final senderMsgRef = fireStore
+          .collection('users')
+          .doc(currentUserId)
+          .collection('chats')
+          .doc(receiverUserId)
+          .collection('messages')
+          .doc(messageId);
+      await senderMsgRef.update(payload);
+
+      try {
+        final receiverMsgRef = fireStore
+            .collection('users')
+            .doc(receiverUserId)
+            .collection('chats')
+            .doc(currentUserId)
+            .collection('messages')
+            .doc(messageId);
+        await receiverMsgRef.update(payload);
+      } catch (e) {
+        log('⚠️ Notice updating receiver doc for pin: $e');
+      }
+    } catch (e) {
+      log('❌ Error updating pin state in Firestore: $e');
     }
   }
 

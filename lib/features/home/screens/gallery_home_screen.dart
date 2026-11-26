@@ -5,8 +5,7 @@ import 'package:hive_flutter/hive_flutter.dart';
 import 'package:worship_chat/colors.dart';
 import 'package:worship_chat/common/widgets/user_avatar.dart';
 import 'package:worship_chat/features/auth/controller/auth_controller.dart';
-import 'package:worship_chat/features/bookmark/screens/bookmark_screen.dart';
-import 'package:worship_chat/features/group/screens/folder_gallery_screen.dart';
+import 'package:worship_chat/features/group/screens/duplicate_finder_screen.dart';
 import 'package:worship_chat/features/group/screens/group_gallery_screen.dart';
 import 'package:worship_chat/features/group/widgets/multi_gallery_shuffle_sheet.dart';
 import 'package:worship_chat/features/home/screens/profile_screen.dart';
@@ -36,8 +35,15 @@ final galleryGroupsProvider = StreamProvider.autoDispose<List<GroupModel>>((
 
 /// Desktop and tablet entry point. Only gallery data is subscribed here.
 class GalleryHomeScreen extends ConsumerStatefulWidget {
+  static const String routeName = '/gallery-home';
   final bool showAppBar;
-  const GalleryHomeScreen({super.key, this.showAppBar = true});
+  final String title;
+
+  const GalleryHomeScreen({
+    super.key,
+    this.showAppBar = true,
+    this.title = 'Worship Gallery',
+  });
 
   @override
   ConsumerState<GalleryHomeScreen> createState() => _GalleryHomeScreenState();
@@ -46,12 +52,40 @@ class GalleryHomeScreen extends ConsumerStatefulWidget {
 class _GalleryHomeScreenState extends ConsumerState<GalleryHomeScreen> {
   String _search = '';
   String _category = 'All';
+  String _sortBy = 'Most Photos';
+  bool _onlyWithPhotos = false;
 
   Future<void> _logout() async {
     if (Hive.isBoxOpen('userBox')) {
       await Hive.box<UserModel>('userBox').delete('currentUser');
     }
     if (mounted) ref.read(authControllerProvider).logout(context);
+  }
+
+  PopupMenuItem<String> _buildSortMenuItem(String label, IconData icon) {
+    final isSelected = _sortBy == label;
+    return PopupMenuItem<String>(
+      value: label,
+      height: 38,
+      child: Row(
+        children: [
+          Icon(
+            icon,
+            size: 16,
+            color: isSelected ? tabColor : Colors.white70,
+          ),
+          const SizedBox(width: 8),
+          Text(
+            label,
+            style: TextStyle(
+              fontSize: 12.5,
+              fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
+              color: isSelected ? tabColor : Colors.white,
+            ),
+          ),
+        ],
+      ),
+    );
   }
 
   @override
@@ -65,133 +99,312 @@ class _GalleryHomeScreenState extends ConsumerState<GalleryHomeScreen> {
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Padding(
-                  padding: const EdgeInsets.fromLTRB(20, 20, 20, 12),
-                  child: TextField(
-                    onChanged: (value) =>
-                        setState(() => _search = value.trim().toLowerCase()),
-                    decoration: InputDecoration(
-                      hintText: 'Search galleries',
-                      prefixIcon: const Icon(Icons.search),
-                      filled: true,
-                      fillColor: mobileChatBoxColor,
-                      border: OutlineInputBorder(
-                        borderRadius: BorderRadius.circular(14),
-                      ),
+                padding: const EdgeInsets.fromLTRB(20, 16, 20, 10),
+                child: TextField(
+                  onChanged: (value) =>
+                      setState(() => _search = value.trim().toLowerCase()),
+                  decoration: InputDecoration(
+                    hintText: 'Search galleries',
+                    prefixIcon: const Icon(Icons.search),
+                    filled: true,
+                    fillColor: mobileChatBoxColor,
+                    border: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(14),
                     ),
                   ),
                 ),
-                SingleChildScrollView(
-                  scrollDirection: Axis.horizontal,
-                  padding: const EdgeInsets.symmetric(horizontal: 20),
-                  child: Row(
-                    children: [
-                      Padding(
-                        padding: const EdgeInsets.only(right: 8),
-                        child: ActionChip(
-                          avatar: const Icon(Icons.folder_open_rounded, size: 16),
-                          label: const Text('Open Folder / ZIP'),
-                          onPressed: () =>
-                              FolderGalleryScreen.showPickerOptions(context),
-                        ),
-                      ),
-                      Padding(
-                        padding: const EdgeInsets.only(right: 8),
-                        child: ActionChip(
-                          avatar: const Icon(Icons.shuffle_rounded, size: 16, color: tabColor),
-                          label: const Text('Multi Shuffle'),
-                          onPressed: () {
-                            galleries.whenData((groups) {
-                              MultiGalleryShuffleSheet.show(
-                                context,
-                                availableGroups: groups,
-                                accentColor: tabColor,
-                              );
-                            });
+              ),
+              SingleChildScrollView(
+                scrollDirection: Axis.horizontal,
+                padding: const EdgeInsets.symmetric(horizontal: 20),
+                child: Row(
+                  children: [
+                    // Sort By selector
+                    Padding(
+                      padding: const EdgeInsets.only(right: 8),
+                      child: Builder(
+                        builder: (btnContext) => InkWell(
+                          borderRadius: BorderRadius.circular(12),
+                          onTap: () async {
+                            final box = btnContext.findRenderObject() as RenderBox?;
+                            final overlay = Overlay.of(btnContext).context.findRenderObject() as RenderBox?;
+                            if (box == null || overlay == null) return;
+                            final position = RelativeRect.fromRect(
+                              Rect.fromPoints(
+                                box.localToGlobal(Offset.zero, ancestor: overlay),
+                                box.localToGlobal(box.size.bottomRight(Offset.zero), ancestor: overlay),
+                              ),
+                              Offset.zero & overlay.size,
+                            );
+                            final selected = await showMenu<String>(
+                              context: btnContext,
+                              position: position,
+                              color: const Color(0xFF1C182A),
+                              shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(12),
+                                side: BorderSide(
+                                  color: Colors.white.withValues(alpha: 0.12),
+                                  width: 0.8,
+                                ),
+                              ),
+                              items: [
+                                _buildSortMenuItem('Most Photos', Icons.arrow_downward_rounded),
+                                _buildSortMenuItem('Least Photos', Icons.arrow_upward_rounded),
+                                _buildSortMenuItem('Name (A-Z)', Icons.sort_by_alpha_rounded),
+                                _buildSortMenuItem('Name (Z-A)', Icons.sort_by_alpha_rounded),
+                              ],
+                            );
+                            if (selected != null) {
+                              setState(() => _sortBy = selected);
+                            }
                           },
-                        ),
-                      ),
-                      ...['All', 'Queen Pooja', 'Queen Rashmika', 'General']
-                          .map(
-                            (category) => Padding(
-                              padding: const EdgeInsets.only(right: 8),
-                              child: ChoiceChip(
-                                label: Text(category),
-                                selected: _category == category,
-                                onSelected: (_) =>
-                                    setState(() => _category = category),
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 10,
+                              vertical: 7,
+                            ),
+                            decoration: BoxDecoration(
+                              color: tabColor.withValues(alpha: 0.12),
+                              borderRadius: BorderRadius.circular(12),
+                              border: Border.all(
+                                color: tabColor.withValues(alpha: 0.4),
+                                width: 1,
                               ),
                             ),
-                          ),
-                    ],
-                  ),
-                ),
-                const SizedBox(height: 12),
-                Expanded(
-                  child: galleries.when(
-                    loading: () =>
-                        const Center(child: CircularProgressIndicator()),
-                    error: (error, _) => Center(
-                      child: SingleChildScrollView(
-                        child: Column(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            const Text('Unable to load galleries.'),
-                            TextButton(
-                              onPressed: () =>
-                                  ref.invalidate(galleryGroupsProvider),
-                              child: const Text('Retry'),
+                            child: Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                const Icon(
+                                  Icons.swap_vert_rounded,
+                                  size: 15,
+                                  color: tabColor,
+                                ),
+                                const SizedBox(width: 4),
+                                Text(
+                                  _sortBy,
+                                  style: const TextStyle(
+                                    fontSize: 12,
+                                    color: tabColor,
+                                    fontWeight: FontWeight.bold,
+                                  ),
+                                ),
+                              ],
                             ),
-                          ],
+                          ),
                         ),
                       ),
                     ),
-                    data: (groups) {
-                      final filtered = groups.where((group) {
-                        final general =
-                            group.queendom == null ||
-                            group.queendom == 'None' ||
-                            group.queendom!.isEmpty;
-                        final matchesCategory =
-                            _category == 'All' ||
-                            (_category == 'General'
-                                ? general
-                                : group.queendom == _category);
-                        final matchesSearch =
-                            '${group.name} ${group.effectiveLivingPlace} ${group.parentGroupName ?? ''}'
-                                .toLowerCase()
-                                .contains(_search);
-                        return matchesCategory && matchesSearch;
-                      }).toList();
-                      if (filtered.isEmpty) {
-                        return Center(
-                          child: Text(
-                            groups.isEmpty
-                                ? 'Your group galleries will appear here.'
-                                : 'No galleries match your search.',
+                    Padding(
+                      padding: const EdgeInsets.only(right: 8),
+                      child: ActionChip(
+                        avatar: const Icon(Icons.shuffle_rounded, size: 16, color: tabColor),
+                        label: const Text('Multi Shuffle'),
+                        onPressed: () {
+                          galleries.whenData((groups) {
+                            MultiGalleryShuffleSheet.show(
+                              context,
+                              availableGroups: groups,
+                              accentColor: tabColor,
+                            );
+                          });
+                        },
+                      ),
+                    ),
+                    ...['All', 'Queen Pooja', 'Queen Rashmika'].map(
+                      (category) => Padding(
+                        padding: const EdgeInsets.only(right: 8),
+                        child: ChoiceChip(
+                          label: Text(category),
+                          selected: _category == category,
+                          onSelected: (_) =>
+                              setState(() => _category = category),
+                        ),
+                      ),
+                    ),
+                    Padding(
+                      padding: const EdgeInsets.only(right: 8),
+                      child: FilterChip(
+                        label: const Text('With Photos (>0)'),
+                        selected: _onlyWithPhotos,
+                        onSelected: (val) =>
+                            setState(() => _onlyWithPhotos = val),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 8),
+              Expanded(
+                child: galleries.when(
+                  loading: () =>
+                      const Center(child: CircularProgressIndicator()),
+                  error: (error, _) => Center(
+                    child: SingleChildScrollView(
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          const Text('Unable to load galleries.'),
+                          TextButton(
+                            onPressed: () =>
+                                ref.invalidate(galleryGroupsProvider),
+                            child: const Text('Retry'),
                           ),
-                        );
-                      }
-                      return GridView.builder(
-                        padding: const EdgeInsets.fromLTRB(20, 4, 20, 20),
-                        gridDelegate:
-                            const SliverGridDelegateWithMaxCrossAxisExtent(
+                        ],
+                      ),
+                    ),
+                  ),
+                  data: (groups) {
+                    final filtered = groups.where((group) {
+                      final matchesCategory =
+                          _category == 'All' || group.queendom == _category;
+                      final matchesSearch =
+                          '${group.nameWithPosition} ${group.name} ${group.effectiveLivingPlace} ${group.parentGroupName ?? ''}'
+                              .toLowerCase()
+                              .contains(_search);
+                      final matchesPhotos =
+                          !_onlyWithPhotos || group.galleryCount > 0;
+                      return matchesCategory && matchesSearch && matchesPhotos;
+                    }).toList();
+
+                    // Apply Sort By
+                    if (_sortBy == 'Most Photos') {
+                      filtered.sort((a, b) => b.galleryCount.compareTo(a.galleryCount));
+                    } else if (_sortBy == 'Least Photos') {
+                      filtered.sort((a, b) => a.galleryCount.compareTo(b.galleryCount));
+                    } else if (_sortBy == 'Name (A-Z)') {
+                      filtered.sort((a, b) => a.name.toLowerCase().compareTo(b.name.toLowerCase()));
+                    } else if (_sortBy == 'Name (Z-A)') {
+                      filtered.sort((a, b) => b.name.toLowerCase().compareTo(a.name.toLowerCase()));
+                    }
+
+                    if (filtered.isEmpty) {
+                      return Center(
+                        child: Text(
+                          groups.isEmpty
+                              ? 'Your group galleries will appear here.'
+                              : 'No galleries match your search.',
+                        ),
+                      );
+                    }
+
+                    final totalFilteredPhotos = filtered.fold<int>(
+                      0,
+                      (total, g) => total + g.galleryCount,
+                    );
+
+                    return Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        // Total Count Header
+                        Padding(
+                          padding: const EdgeInsets.fromLTRB(20, 4, 20, 8),
+                          child: Row(
+                            children: [
+                              Container(
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 10,
+                                  vertical: 4,
+                                ),
+                                decoration: BoxDecoration(
+                                  color: tabColor.withValues(alpha: 0.15),
+                                  borderRadius: BorderRadius.circular(10),
+                                  border: Border.all(
+                                    color: tabColor.withValues(alpha: 0.35),
+                                    width: 0.8,
+                                  ),
+                                ),
+                                child: Text(
+                                  '$totalFilteredPhotos Photos',
+                                  style: const TextStyle(
+                                    color: tabColor,
+                                    fontSize: 12,
+                                    fontWeight: FontWeight.bold,
+                                  ),
+                                ),
+                              ),
+                              const SizedBox(width: 8),
+                              Text(
+                                'across ${filtered.length} ${filtered.length == 1 ? 'gallery' : 'galleries'}',
+                                style: const TextStyle(
+                                  color: greyColor,
+                                  fontSize: 12,
+                                ),
+                              ),
+                              const Spacer(),
+                              InkWell(
+                                onTap: () {
+                                  Navigator.push(
+                                    context,
+                                    MaterialPageRoute(
+                                      builder: (_) => const DuplicateFinderScreen(
+                                        accentColor: tabColor,
+                                      ),
+                                    ),
+                                  );
+                                },
+                                borderRadius: BorderRadius.circular(10),
+                                child: Container(
+                                  padding: const EdgeInsets.symmetric(
+                                    horizontal: 8,
+                                    vertical: 4,
+                                  ),
+                                  decoration: BoxDecoration(
+                                    color: Colors.orange.withValues(alpha: 0.12),
+                                    borderRadius: BorderRadius.circular(10),
+                                    border: Border.all(
+                                      color: Colors.orange.withValues(alpha: 0.35),
+                                      width: 0.8,
+                                    ),
+                                  ),
+                                  child: const Row(
+                                    mainAxisSize: MainAxisSize.min,
+                                    children: [
+                                      Icon(
+                                        Icons.copy_rounded,
+                                        size: 13,
+                                        color: Colors.orangeAccent,
+                                      ),
+                                      SizedBox(width: 4),
+                                      Text(
+                                        'Find Duplicates',
+                                        style: TextStyle(
+                                          color: Colors.orangeAccent,
+                                          fontSize: 11,
+                                          fontWeight: FontWeight.bold,
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                        Expanded(
+                          child: GridView.builder(
+                            padding: const EdgeInsets.fromLTRB(20, 4, 20, 20),
+                            gridDelegate:
+                                const SliverGridDelegateWithMaxCrossAxisExtent(
                               maxCrossAxisExtent: 300,
                               mainAxisExtent: 220,
                               crossAxisSpacing: 16,
                               mainAxisSpacing: 16,
                             ),
-                        itemCount: filtered.length,
-                        itemBuilder: (_, index) =>
-                            _GalleryCard(group: filtered[index]),
-                      );
-                    },
-                  ),
+                            itemCount: filtered.length,
+                            itemBuilder: (_, index) =>
+                                _GalleryCard(group: filtered[index]),
+                          ),
+                        ),
+                      ],
+                    );
+                  },
                 ),
-              ],
-            ),
+              ),
+            ],
           ),
         ),
-      );
+      ),
+    );
 
     if (!widget.showAppBar) {
       return bodyContent;
@@ -199,13 +412,8 @@ class _GalleryHomeScreenState extends ConsumerState<GalleryHomeScreen> {
 
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Worship Gallery'),
+        title: Text(widget.title),
         actions: [
-          IconButton(
-            tooltip: 'Open Folder / ZIP',
-            icon: const Icon(Icons.folder_open_rounded),
-            onPressed: () => FolderGalleryScreen.showPickerOptions(context),
-          ),
           IconButton(
             tooltip: 'Multi Gallery Shuffle',
             icon: const Icon(Icons.shuffle_rounded),
@@ -218,14 +426,6 @@ class _GalleryHomeScreenState extends ConsumerState<GalleryHomeScreen> {
                 );
               });
             },
-          ),
-          IconButton(
-            tooltip: 'Bookmarks',
-            icon: const Icon(Icons.bookmark_outline),
-            onPressed: () => Navigator.push(
-              context,
-              MaterialPageRoute(builder: (_) => const BookmarkScreen()),
-            ),
           ),
           PopupMenuButton<String>(
             tooltip: 'Account',
@@ -270,19 +470,11 @@ class _GalleryHomeScreenState extends ConsumerState<GalleryHomeScreen> {
                   context,
                   MaterialPageRoute(builder: (_) => const SettingsScreen()),
                 );
-              } else if (value == 'folder') {
-                FolderGalleryScreen.showPickerOptions(context);
               } else {
                 _logout();
               }
             },
             itemBuilder: (_) => [
-              _buildGalleryMenuItem(
-                value: 'folder',
-                icon: Icons.folder_open_rounded,
-                color: tabColor,
-                title: 'Open Folder',
-              ),
               _buildGalleryMenuItem(
                 value: 'profile',
                 icon: Icons.person_rounded,
@@ -376,6 +568,13 @@ class _GalleryCard extends StatelessWidget {
     final accent = group.queendom == 'Queen Pooja' ? Colors.amber : tabColor;
     return Card(
       color: mobileChatBoxColor,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(16),
+        side: BorderSide(
+          color: accent.withValues(alpha: 0.22),
+          width: 1,
+        ),
+      ),
       clipBehavior: Clip.antiAlias,
       child: InkWell(
         onTap: () => Navigator.push(
@@ -389,23 +588,38 @@ class _GalleryCard extends StatelessWidget {
           ),
         ),
         child: Padding(
-          padding: const EdgeInsets.all(16),
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 14),
           child: Column(
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
-              UserAvatar(url: group.groupPic, radius: 36),
-              const SizedBox(height: 12),
+              UserAvatar(url: group.groupPic, radius: 34),
+              const SizedBox(height: 10),
               Text(
                 group.nameWithPosition,
                 textAlign: TextAlign.center,
                 maxLines: 2,
                 overflow: TextOverflow.ellipsis,
-                style: const TextStyle(fontWeight: FontWeight.w600),
+                style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 13.5),
               ),
-              const SizedBox(height: 6),
-              Text(
-                '${group.galleryCount} photos',
-                style: const TextStyle(color: greyColor),
+              const SizedBox(height: 8),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 3.5),
+                decoration: BoxDecoration(
+                  color: accent.withValues(alpha: 0.15),
+                  borderRadius: BorderRadius.circular(10),
+                  border: Border.all(
+                    color: accent.withValues(alpha: 0.45),
+                    width: 0.8,
+                  ),
+                ),
+                child: Text(
+                  '${group.galleryCount} photos',
+                  style: TextStyle(
+                    color: accent,
+                    fontWeight: FontWeight.bold,
+                    fontSize: 12,
+                  ),
+                ),
               ),
             ],
           ),

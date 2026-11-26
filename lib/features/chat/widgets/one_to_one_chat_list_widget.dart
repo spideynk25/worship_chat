@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:math' as math;
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
@@ -7,6 +8,8 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:hive_flutter/adapters.dart';
 import 'package:intl/intl.dart';
 import 'dart:developer';
+import 'package:shared_preferences/shared_preferences.dart';
+import 'package:worship_chat/common/utils/firebase_notification_service.dart';
 import 'package:worship_chat/common/enums/message_status_enum.dart';
 import 'package:worship_chat/common/providers/message_reply_provider.dart';
 import 'package:worship_chat/common/providers/message_edit_provider.dart';
@@ -14,6 +17,7 @@ import 'package:worship_chat/common/widgets/skeleton_loader.dart';
 import 'package:worship_chat/common/widgets/user_avatar.dart';
 import 'package:worship_chat/features/chat/controller/chat_controller.dart';
 import 'package:worship_chat/features/chat/widgets/delete_message_dialog.dart';
+import 'package:worship_chat/features/chat/widgets/chat_power_ups.dart';
 import 'package:worship_chat/features/chat/widgets/media_group_widget.dart';
 import 'package:worship_chat/features/chat/widgets/sender_message_card.dart';
 import 'package:worship_chat/models/one_to_one_message_model.dart';
@@ -25,11 +29,15 @@ import 'package:worship_chat/models/user_model.dart';
 class OneToOneChatListWidget extends ConsumerStatefulWidget {
   final String receiverUserId;
   final String profilePic;
+  final String peerName;
+  final ChatPowerUpController? powerUpController;
 
   const OneToOneChatListWidget({
     super.key,
     required this.receiverUserId,
     required this.profilePic,
+    this.peerName = '',
+    this.powerUpController,
   });
 
   @override
@@ -40,6 +48,8 @@ class OneToOneChatListWidget extends ConsumerStatefulWidget {
 class _OneToOneChatListWidgetState extends ConsumerState<OneToOneChatListWidget>
     with AutomaticKeepAliveClientMixin {
   final ScrollController messageController = ScrollController();
+  final ChatScrollToBottomController _scrollBottomController =
+      ChatScrollToBottomController();
   final Set<String> _processedMessages = {};
   bool _isAtBottom = true;
   String? _lastMessageId;
@@ -50,16 +60,17 @@ class _OneToOneChatListWidgetState extends ConsumerState<OneToOneChatListWidget>
   bool _isInitialLoad = true;
 
   // ── Scroll to Load (Pagination) ──────────────────────────────────────────
-  static const int _pageSize = 30;
+  static const int _pageSize = 45;
   int _visibleCount = _pageSize;
-  bool _isLoadingMore = false;
   int _prevTotalMessages = 0;
+  bool _isLoadingMore = false;
   final Set<String> _initialMessageIds = <String>{};
   final Set<String> _newlyArrivedIds = <String>{};
   bool _hasRecordedInitialIds = false;
   final Map<String, GlobalKey> _messageKeys = {};
   String? _highlightedMessageId;
   Timer? _highlightTimer;
+  int _jumpGeneration = 0;
 
   GlobalKey _getMessageKey(String messageId) {
     return _messageKeys.putIfAbsent(messageId, () => GlobalKey());
@@ -71,10 +82,27 @@ class _OneToOneChatListWidgetState extends ConsumerState<OneToOneChatListWidget>
   @override
   void initState() {
     super.initState();
+    widget.powerUpController?.attachJumpHandler(_scrollToAndHighlightMessage);
     _loadInitialCachedMessages();
     _initializeUserProfile();
     _setupScrollListener();
     _subscribeToStream();
+  }
+
+  void _pushPowerUpMessages() {
+    final controller = widget.powerUpController;
+    if (controller == null) return;
+    final uid = FirebaseAuth.instance.currentUser?.uid ?? '';
+    final summaries = _displayMessages
+        .map(
+          (m) => ChatMessageSummary.fromOneToOne(
+            m,
+            currentUserId: uid,
+            peerName: widget.peerName.isNotEmpty ? widget.peerName : 'Contact',
+          ),
+        )
+        .toList(growable: false);
+    controller.updateMessages(summaries);
   }
 
   void _subscribeToStream() {
@@ -83,7 +111,12 @@ class _OneToOneChatListWidgetState extends ConsumerState<OneToOneChatListWidget>
         ref.read(chatControllerProvider).chatStream(widget.receiverUserId);
     _chatSubscription = stream.listen(
       _onNewMessages,
-      onError: (e) => log('❌ Chat stream error: $e'),
+      onError: (e) {
+        log('❌ Chat stream error: $e');
+        if (mounted && _isInitialLoad) {
+          setState(() => _isInitialLoad = false);
+        }
+      },
     );
   }
 
@@ -92,13 +125,7 @@ class _OneToOneChatListWidgetState extends ConsumerState<OneToOneChatListWidget>
 
     final currentUserId = FirebaseAuth.instance.currentUser?.uid;
 
-    // Check if newMessages has any changes compared to current _displayMessages
-    if (_displayMessages.isNotEmpty && !_hasDeliveryOrSeenStatusChanged(newMessages)) {
-      _isInitialLoad = false;
-      return; // Skip redundant build if messages are identical to initial Hive cache
-    }
-
-    // Mark unseen messages
+    // Mark unseen messages whenever incoming unseen messages exist
     if (currentUserId != null) {
       final hasUnseenIncoming = newMessages.any(
         (m) => m.receiverId == currentUserId && !m.isSeen,
@@ -114,12 +141,31 @@ class _OneToOneChatListWidgetState extends ConsumerState<OneToOneChatListWidget>
       }
     }
 
+    // Check if newMessages has any changes compared to current _displayMessages
+    if (_displayMessages.isNotEmpty && !_hasDeliveryOrSeenStatusChanged(newMessages)) {
+      _displayMessages = newMessages; // Silently update backing models
+      _isInitialLoad = false;
+      _pushPowerUpMessages();
+      return; // Skip redundant build if messages have no visual differences
+    }
+
     final newLastMessageId =
         newMessages.isNotEmpty ? newMessages.last.messageId : null;
     final oldMessageCount = _displayMessages.length;
     final hasNewMessage = newMessages.length > oldMessageCount ||
         (newMessages.isNotEmpty && newLastMessageId != _lastMessageId);
     final addedCount = newMessages.length - _prevTotalMessages;
+
+    int newTailCount = 0;
+    if (_hasRecordedInitialIds && _lastMessageId != null && newMessages.isNotEmpty) {
+      final oldLastIdxInNew =
+          newMessages.lastIndexWhere((m) => m.messageId == _lastMessageId);
+      if (oldLastIdxInNew >= 0) {
+        newTailCount = newMessages.length - 1 - oldLastIdxInNew;
+      } else if (addedCount > 0 && _prevTotalMessages >= _pageSize) {
+        newTailCount = addedCount;
+      }
+    }
 
     if (!_hasRecordedInitialIds) {
       _initialMessageIds.addAll(newMessages.map((m) => m.messageId));
@@ -134,34 +180,55 @@ class _OneToOneChatListWidgetState extends ConsumerState<OneToOneChatListWidget>
     }
 
     setState(() {
-      if (addedCount > 0 && _prevTotalMessages > 0) {
-        _visibleCount += addedCount;
-      } else if (_visibleCount == _pageSize ||
-          _visibleCount > newMessages.length) {
-        _visibleCount = _pageSize.clamp(0, newMessages.length);
+      if (newTailCount > 0 && _prevTotalMessages > 0) {
+        _visibleCount = math.max(_pageSize, _visibleCount + newTailCount);
+      } else if (_visibleCount < _pageSize) {
+        _visibleCount = _pageSize;
       }
       _prevTotalMessages = newMessages.length;
       _lastMessageId = newLastMessageId;
       _displayMessages = newMessages;
       _isInitialLoad = false;
     });
+    _pushPowerUpMessages();
 
     if (_isAtBottom && hasNewMessage) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (mounted) _scrollToBottom();
       });
+    } else if (!_isAtBottom && hasNewMessage) {
+      _scrollBottomController.notifyIncomingMessages(
+        newTailCount > 0 ? newTailCount : 1,
+      );
     }
   }
 
   @override
   void didUpdateWidget(covariant OneToOneChatListWidget oldWidget) {
     super.didUpdateWidget(oldWidget);
+    if (oldWidget.powerUpController != widget.powerUpController) {
+      oldWidget.powerUpController
+          ?.detachJumpHandler(_scrollToAndHighlightMessage);
+      widget.powerUpController?.attachJumpHandler(_scrollToAndHighlightMessage);
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) _pushPowerUpMessages();
+      });
+    }
     if (oldWidget.receiverUserId != widget.receiverUserId) {
+      _jumpGeneration++;
+      _highlightTimer?.cancel();
+      _highlightedMessageId = null;
       _displayMessages = [];
       _isInitialLoad = true;
+      _visibleCount = _pageSize;
+      _prevTotalMessages = 0;
+      _lastMessageId = null;
+      _isLoadingMore = false;
       _hasRecordedInitialIds = false;
       _initialMessageIds.clear();
       _newlyArrivedIds.clear();
+      _messageKeys.clear();
+      _scrollBottomController.reset();
       _loadInitialCachedMessages();
       _subscribeToStream();
     }
@@ -177,14 +244,24 @@ class _OneToOneChatListWidgetState extends ConsumerState<OneToOneChatListWidget>
         final cachedData = box.get(localKey, defaultValue: []);
         if (cachedData is List && cachedData.isNotEmpty) {
           final List<OneToOneMessageModel> parsed = [];
+          bool hasUnseenIncoming = false;
           for (final item in cachedData) {
+            OneToOneMessageModel? m;
             if (item is OneToOneMessageModel) {
-              parsed.add(item);
+              m = item;
             } else if (item is Map) {
               try {
-                parsed.add(OneToOneMessageModel.fromMap(
-                    Map<String, dynamic>.from(item)));
+                m = OneToOneMessageModel.fromMap(
+                    Map<String, dynamic>.from(item));
               } catch (_) {}
+            }
+            if (m != null) {
+              // Optimistically mark incoming unseen messages as seen immediately on chat open
+              if (m.receiverId == currentUserId && (!m.isSeen || !m.isDelivered)) {
+                hasUnseenIncoming = true;
+                m = m.copyWith(isSeen: true, isDelivered: true);
+              }
+              parsed.add(m);
             }
           }
           if (parsed.isNotEmpty) {
@@ -195,9 +272,50 @@ class _OneToOneChatListWidgetState extends ConsumerState<OneToOneChatListWidget>
             _hasRecordedInitialIds = true;
             _isInitialLoad = false;
             log('⚡ Pre-seeded ${_displayMessages.length} messages from Hive in initState');
+            WidgetsBinding.instance.addPostFrameCallback((_) {
+              if (mounted) _pushPowerUpMessages();
+            });
+
+            if (hasUnseenIncoming) {
+              box.put(localKey, parsed).catchError((e) {
+                log('Note: Error saving optimistically seen messages to Hive: $e');
+              });
+            }
           }
         }
       }
+
+      // Merge any pending background notification replies from SharedPreferences
+      SharedPreferences.getInstance().then((prefs) {
+        final pending =
+            FirebaseNotificationService.getPendingBackgroundRepliesForChat<
+                OneToOneMessageModel>(
+          chatId: localKey,
+          isGroup: false,
+          prefs: prefs,
+        );
+        if (pending.isNotEmpty && mounted) {
+          bool anyAdded = false;
+          for (final m in pending) {
+            if (!_displayMessages.any((x) => x.messageId == m.messageId)) {
+              _displayMessages.add(m);
+              anyAdded = true;
+            }
+          }
+          if (anyAdded) {
+            _displayMessages.sort((a, b) => a.timeSent.compareTo(b.timeSent));
+            _lastMessageId = _displayMessages.last.messageId;
+            _prevTotalMessages = _displayMessages.length;
+            _initialMessageIds.addAll(_displayMessages.map((m) => m.messageId));
+            setState(() {
+              _isInitialLoad = false;
+            });
+            _pushPowerUpMessages();
+            FirebaseNotificationService.syncPendingBackgroundRepliesToHive(
+                specificChatId: localKey);
+          }
+        }
+      });
     } catch (e) {
       log('Error pre-seeding cached messages: $e');
     }
@@ -221,10 +339,10 @@ class _OneToOneChatListWidgetState extends ConsumerState<OneToOneChatListWidget>
       if (atBottom != _isAtBottom) {
         _isAtBottom = atBottom; // not used in build() — no setState needed
       }
+      _scrollBottomController.handleScroll(position);
 
       // Check if user is scrolling up towards older messages (near top in reverse list)
       if (position.pixels >= position.maxScrollExtent - 250 &&
-          !_isLoadingMore &&
           _visibleCount < _displayMessages.length) {
         _loadMoreMessages();
       }
@@ -233,23 +351,21 @@ class _OneToOneChatListWidgetState extends ConsumerState<OneToOneChatListWidget>
 
   void _loadMoreMessages() {
     if (_isLoadingMore || _visibleCount >= _displayMessages.length) return;
+    _isLoadingMore = true;
     setState(() {
-      _isLoadingMore = true;
+      _visibleCount =
+          (_visibleCount + _pageSize).clamp(0, _displayMessages.length);
     });
-
-    Future.delayed(const Duration(milliseconds: 150), () {
-      if (mounted) {
-        setState(() {
-          _visibleCount =
-              (_visibleCount + _pageSize).clamp(0, _displayMessages.length);
-          _isLoadingMore = false;
-        });
-      }
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _isLoadingMore = false;
     });
   }
 
   @override
   void dispose() {
+    _jumpGeneration++;
+    widget.powerUpController?.detachJumpHandler(_scrollToAndHighlightMessage);
+    _scrollBottomController.dispose();
     _highlightTimer?.cancel();
     _chatSubscription?.cancel();
     messageController.dispose();
@@ -279,6 +395,26 @@ class _OneToOneChatListWidgetState extends ConsumerState<OneToOneChatListWidget>
     final repliedText = sourceMessage.repliedMessage.trim();
     final repliedType = sourceMessage.repliedMessageType;
     if (repliedText.isEmpty && repliedType.isEmpty) return;
+
+    if (repliedType == 'story') {
+      ScaffoldMessenger.of(context).hideCurrentSnackBar();
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: const Row(
+            children: [
+              Icon(Icons.history_toggle_off, color: Colors.white, size: 18),
+              SizedBox(width: 8),
+              Text('Story reply • Status updates expire after 24 hours'),
+            ],
+          ),
+          backgroundColor: const Color(0xFF1E1D2A),
+          behavior: SnackBarBehavior.floating,
+          duration: const Duration(seconds: 2),
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+        ),
+      );
+      return;
+    }
 
     final sourceIdx = _displayMessages.indexWhere(
       (m) => m.messageId == sourceMessage.messageId,
@@ -329,9 +465,10 @@ class _OneToOneChatListWidgetState extends ConsumerState<OneToOneChatListWidget>
         totalCount > effectiveCount ? totalCount - effectiveCount : 0;
 
     if (targetIdx < startIndex) {
-      final neededCount = totalCount - targetIdx + 10;
+      final neededCount =
+          (totalCount - targetIdx + 15).clamp(_pageSize, totalCount);
       setState(() {
-        _visibleCount = neededCount;
+        _visibleCount = math.max(_visibleCount, neededCount);
       });
     }
 
@@ -341,58 +478,68 @@ class _OneToOneChatListWidgetState extends ConsumerState<OneToOneChatListWidget>
   }
 
   void _scrollToAndHighlightMessage(String targetMessageId) {
-    if (!mounted) return;
+    _runConvergentJump(targetMessageId, ++_jumpGeneration);
+  }
 
-    final key = _messageKeys[targetMessageId];
-    final context = key?.currentContext;
+  void _runConvergentJump(String targetMessageId, int generation) {
+    if (!mounted || generation != _jumpGeneration) return;
 
-    if (context != null) {
-      Scrollable.ensureVisible(
-        context,
-        duration: const Duration(milliseconds: 350),
-        curve: Curves.easeInOutCubic,
-        alignment: 0.5,
-      ).then((_) {
-        _triggerMessageHighlight(targetMessageId);
+    final totalCount = _displayMessages.length;
+    final targetIdx =
+        _displayMessages.indexWhere((m) => m.messageId == targetMessageId);
+    if (targetIdx < 0) return;
+
+    final currentStart =
+        totalCount > _visibleCount ? totalCount - _visibleCount : 0;
+    if (targetIdx < currentStart) {
+      final neededCount =
+          (totalCount - targetIdx + 15).clamp(_pageSize, totalCount);
+      setState(() {
+        _visibleCount = math.max(_visibleCount, neededCount);
       });
-    } else {
-      final totalCount = _displayMessages.length;
-      final effectiveCount = _visibleCount.clamp(0, totalCount);
-      final startIndex =
-          totalCount > effectiveCount ? totalCount - effectiveCount : 0;
-      final targetIdx =
-          _displayMessages.indexWhere((m) => m.messageId == targetMessageId);
-
-      if (targetIdx >= 0 && messageController.hasClients) {
-        final visibleIdx = targetIdx - startIndex;
-        final itemIndex =
-            (effectiveCount - 1 - visibleIdx).clamp(0, effectiveCount - 1);
-        final maxExtent = messageController.position.maxScrollExtent;
-        final estimatedOffset =
-            ((itemIndex / (effectiveCount > 0 ? effectiveCount : 1)) *
-                    maxExtent)
-                .clamp(0.0, maxExtent);
-
-        messageController.jumpTo(estimatedOffset);
-
-        WidgetsBinding.instance.addPostFrameCallback((_) {
-          if (!mounted) return;
-          final retryCtx = _messageKeys[targetMessageId]?.currentContext;
-          if (retryCtx != null) {
-            Scrollable.ensureVisible(
-              retryCtx,
-              duration: const Duration(milliseconds: 350),
-              curve: Curves.easeInOutCubic,
-              alignment: 0.5,
-            ).then((_) {
-              _triggerMessageHighlight(targetMessageId);
-            });
-          } else {
-            _triggerMessageHighlight(targetMessageId);
-          }
-        });
-      }
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        _runConvergentJump(targetMessageId, generation);
+      });
+      return;
     }
+
+    List<_ChatRow> computeVisibleRows() {
+      final total = _displayMessages.length;
+      final eff = _visibleCount.clamp(0, total);
+      final start = total > eff ? total - eff : 0;
+      final visible = _displayMessages.sublist(start);
+      final uid = FirebaseAuth.instance.currentUser?.uid;
+      return _buildRows(visible, _displayMessages, start, uid);
+    }
+
+    ChatListJumpHelper.convergeToMessage(
+      generation: generation,
+      currentGeneration: () => _jumpGeneration,
+      isMounted: () => mounted,
+      scrollController: messageController,
+      targetMessageId: targetMessageId,
+      keyForPrimaryId: _getMessageKey,
+      onHighlight: _triggerMessageHighlight,
+      lookupTargetRow: () {
+        final rows = computeVisibleRows();
+        for (int i = 0; i < rows.length; i++) {
+          if (rows[i].messages.any((m) => m.messageId == targetMessageId)) {
+            return ChatRowLookup(
+              rowCount: rows.length,
+              targetRowIndex: i,
+              primaryMessageId: rows[i].messages.first.messageId,
+            );
+          }
+        }
+        return null;
+      },
+      orderedPrimaryIds: () {
+        final rows = computeVisibleRows();
+        return rows
+            .map((r) => r.messages.first.messageId)
+            .toList(growable: false);
+      },
+    );
   }
 
   void _triggerMessageHighlight(String targetMessageId) {
@@ -492,15 +639,23 @@ class _OneToOneChatListWidgetState extends ConsumerState<OneToOneChatListWidget>
   bool _hasDeliveryOrSeenStatusChanged(List<OneToOneMessageModel> newMessages) {
     if (_displayMessages.length != newMessages.length) return true;
     for (int i = 0; i < newMessages.length; i++) {
-      if (_displayMessages[i].messageId != newMessages[i].messageId ||
-          _displayMessages[i].isSeen != newMessages[i].isSeen ||
-          _displayMessages[i].isDelivered != newMessages[i].isDelivered ||
-          _displayMessages[i].isSending != newMessages[i].isSending ||
-          _displayMessages[i].text != newMessages[i].text ||
-          _displayMessages[i].fileMessageData != newMessages[i].fileMessageData ||
-          _displayMessages[i].isEdited != newMessages[i].isEdited ||
-          _displayMessages[i].isDeleted != newMessages[i].isDeleted ||
-          !mapEquals(_displayMessages[i].reactions, newMessages[i].reactions)) {
+      final oldMsg = _displayMessages[i];
+      final newMsg = newMessages[i];
+      if (oldMsg.messageId != newMsg.messageId ||
+          oldMsg.messageType != newMsg.messageType ||
+          oldMsg.text != newMsg.text ||
+          oldMsg.fileMessageData != newMsg.fileMessageData ||
+          oldMsg.isEdited != newMsg.isEdited ||
+          oldMsg.isDeleted != newMsg.isDeleted ||
+          oldMsg.isPinned != newMsg.isPinned ||
+          oldMsg.pinnedAt != newMsg.pinnedAt ||
+          oldMsg.pinnedBy != newMsg.pinnedBy ||
+          !mapEquals(oldMsg.reactions, newMsg.reactions)) {
+        return true;
+      }
+      if (oldMsg.isSeen != newMsg.isSeen ||
+          oldMsg.isDelivered != newMsg.isDelivered ||
+          oldMsg.isSending != newMsg.isSending) {
         return true;
       }
     }
@@ -633,87 +788,77 @@ class _OneToOneChatListWidgetState extends ConsumerState<OneToOneChatListWidget>
       currentUserId,
     );
 
-    return NotificationListener<OverscrollIndicatorNotification>(
-      onNotification: (notification) {
-        notification.disallowIndicator();
-        return true;
+    ChatPaginationHelper.scheduleUnderfilledCheck(
+      scrollController: messageController,
+      hasMore: hasMore,
+      isLoadingMore: _isLoadingMore,
+      onLoadMore: () {
+        if (mounted) _loadMoreMessages();
       },
-      child: ListView.builder(
-        controller: messageController,
-        reverse: true,
-        physics: const AlwaysScrollableScrollPhysics(),
-        itemCount: rows.length + (hasMore ? 1 : 0),
-        itemBuilder: (context, index) {
-          if (index == rows.length) {
-            return Padding(
-              padding: const EdgeInsets.symmetric(vertical: 14),
-              child: Center(
-                child: SizedBox(
-                  width: 20,
-                  height: 20,
-                  child: CircularProgressIndicator(
-                    strokeWidth: 2,
-                    color: tabColor,
+    );
+
+    return Stack(
+      children: [
+        NotificationListener<OverscrollIndicatorNotification>(
+          onNotification: (notification) {
+            notification.disallowIndicator();
+            return true;
+          },
+          child: ListView.builder(
+            controller: messageController,
+            reverse: true,
+            physics: const AlwaysScrollableScrollPhysics(),
+            itemCount: rows.length + (hasMore ? 1 : 0),
+            itemBuilder: (context, index) {
+              if (index == rows.length) {
+                return Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 14),
+                  child: Center(
+                    child: SizedBox(
+                      width: 20,
+                      height: 20,
+                      child: CircularProgressIndicator(
+                        strokeWidth: 2,
+                        color: tabColor,
+                      ),
+                    ),
                   ),
-                ),
-              ),
-            );
-          }
+                );
+              }
 
-          final reversedIndex = rows.length - 1 - index;
-          final row = rows[reversedIndex];
+              final reversedIndex = rows.length - 1 - index;
+              final row = rows[reversedIndex];
 
-          for (final m in row.messages) {
-            _markMessageAsSeen(m);
-          }
+              for (final m in row.messages) {
+                _markMessageAsSeen(m);
+              }
 
-          final rowReactionsKey = row.messages
-              .map((m) => m.reactions.entries
-                  .map((e) => '${e.key}:${e.value}')
-                  .join(','))
-              .join(';');
+              final rowReactionsKey = row.messages
+                  .map((m) =>
+                      '${m.isPinned}:${m.reactions.entries.map((e) => '${e.key}:${e.value}').join(',')}')
+                  .join(';');
 
-          // RepaintBoundary isolates each row's raster cache so that when
-          // a new message arrives, only the new/changed rows repaint —
-          // image and video rows are NOT repainted at all.
-          final isNewlyArrived = _newlyArrivedIds.contains(row.messages.last.messageId) ||
-              ((index < 3) &&
-                  (DateTime.now()
-                          .difference(row.messages.last.timeSent)
-                          .inSeconds
-                          .abs() <
-                      25));
+              // RepaintBoundary isolates each row's raster cache so that when
+              // a new message arrives, only the new/changed rows repaint —
+              // image and video rows are NOT repainted at all.
+              final isNewlyArrived =
+                  _newlyArrivedIds.contains(row.messages.last.messageId) ||
+                      ((index < 3) &&
+                          (DateTime.now()
+                                  .difference(row.messages.last.timeSent)
+                                  .inSeconds
+                                  .abs() <
+                              25));
 
-          final primaryMsgId = row.messages.first.messageId;
-          for (final m in row.messages) {
-            _messageKeys[m.messageId] = _getMessageKey(primaryMsgId);
-          }
+              final primaryMsgId = row.messages.first.messageId;
+              for (final m in row.messages) {
+                _messageKeys[m.messageId] = _getMessageKey(primaryMsgId);
+              }
 
-          final isRowHighlighted = _highlightedMessageId != null &&
-              row.messages.any((m) => m.messageId == _highlightedMessageId);
+              final isRowHighlighted = _highlightedMessageId != null &&
+                  row.messages.any((m) => m.messageId == _highlightedMessageId);
 
-          return KeyedSubtree(
-            key: _getMessageKey(primaryMsgId),
-            child: AnimatedContainer(
-              duration: const Duration(milliseconds: 300),
-              curve: Curves.easeOut,
-              decoration: BoxDecoration(
-                borderRadius: BorderRadius.circular(20),
-                color: isRowHighlighted
-                    ? const Color(0xFFFFD700).withValues(alpha: 0.25)
-                    : Colors.transparent,
-                boxShadow: isRowHighlighted
-                    ? [
-                        BoxShadow(
-                          color:
-                              const Color(0xFFFFD700).withValues(alpha: 0.40),
-                          blurRadius: 18,
-                          spreadRadius: 3,
-                        ),
-                      ]
-                    : null,
-              ),
-              child: RepaintBoundary(
+              final rowWidget = RepaintBoundary(
                 child: _ChatRowWidget(
                   key: ValueKey('${row.key}_$rowReactionsKey'),
                   row: row,
@@ -727,11 +872,43 @@ class _OneToOneChatListWidgetState extends ConsumerState<OneToOneChatListWidget>
                   onReactionToggle: _optimisticToggleReaction,
                   onReplyTap: _navigateToRepliedMessage,
                 ),
-              ),
-            ),
-          );
-        },
-      ),
+              );
+
+              if (isRowHighlighted) {
+                return KeyedSubtree(
+                  key: _getMessageKey(primaryMsgId),
+                  child: AnimatedContainer(
+                    duration: const Duration(milliseconds: 300),
+                    curve: Curves.easeOut,
+                    decoration: BoxDecoration(
+                      borderRadius: BorderRadius.circular(20),
+                      color: const Color(0xFFFFD700).withValues(alpha: 0.25),
+                      boxShadow: [
+                        BoxShadow(
+                          color: const Color(0xFFFFD700).withValues(alpha: 0.40),
+                          blurRadius: 18,
+                          spreadRadius: 3,
+                        ),
+                      ],
+                    ),
+                    child: rowWidget,
+                  ),
+                );
+              }
+
+              return KeyedSubtree(
+                key: _getMessageKey(primaryMsgId),
+                child: rowWidget,
+              );
+            },
+          ),
+        ),
+        ChatScrollToBottomButton(
+          controller: _scrollBottomController,
+          scrollController: messageController,
+          accentColor: tabColor,
+        ),
+      ],
     );
   }
 
@@ -952,7 +1129,9 @@ class _ChatRowWidget extends ConsumerWidget {
                 children: [
                   Flexible(
                     child: MyMessageCard(
-                      key: ValueKey('my_${messageData.messageId}_$reactionsKey'),
+                      key: ValueKey(
+                        'my_${messageData.messageId}_${messageData.isSending}_${messageData.isDelivered}_${messageData.isSeen}_${messageData.isPinned}_$reactionsKey',
+                      ),
                       message: messageData.text,
                       date: timeSent,
                       messageType: messageData.messageType,
@@ -976,6 +1155,14 @@ class _ChatRowWidget extends ConsumerWidget {
                       reactions: messageData.reactions,
                       isEdited: messageData.isEdited,
                       isDeleted: messageData.isDeleted,
+                      isPinned: messageData.isPinned,
+                      onPin: () {
+                        ref.read(chatControllerProvider).togglePinMessage(
+                              messageId: messageData.messageId,
+                              receiverUserId: receiverUserId,
+                              pin: !messageData.isPinned,
+                            );
+                      },
                       onEdit: (messageData.isDeleted || messageData.messageType != 'text')
                           ? null
                           : () {
@@ -1040,7 +1227,9 @@ class _ChatRowWidget extends ConsumerWidget {
                   _buildProfileAvatar(receiverProfilePic, false),
                   Flexible(
                     child: SenderMessageCard(
-                      key: ValueKey('sender_${messageData.messageId}_$reactionsKey'),
+                      key: ValueKey(
+                        'sender_${messageData.messageId}_${messageData.isPinned}_$reactionsKey',
+                      ),
                       message: messageData.text,
                       date: timeSent,
                       messageType: messageData.messageType,
@@ -1062,6 +1251,14 @@ class _ChatRowWidget extends ConsumerWidget {
                       reactions: messageData.reactions,
                       isEdited: messageData.isEdited,
                       isDeleted: messageData.isDeleted,
+                      isPinned: messageData.isPinned,
+                      onPin: () {
+                        ref.read(chatControllerProvider).togglePinMessage(
+                              messageId: messageData.messageId,
+                              receiverUserId: receiverUserId,
+                              pin: !messageData.isPinned,
+                            );
+                      },
                       onDelete: () {
                         DeleteMessageDialog.show(
                           context: context,

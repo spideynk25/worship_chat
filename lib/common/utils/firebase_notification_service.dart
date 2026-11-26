@@ -1,11 +1,11 @@
 import 'dart:convert';
 import 'dart:developer';
-import 'dart:typed_data';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:dio/dio.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -27,6 +27,7 @@ import 'package:worship_chat/models/group_chat_message_model.dart';
 import 'package:worship_chat/models/group_gallery_image.dart';
 import 'package:worship_chat/models/one_to_one_message_model.dart';
 import 'package:worship_chat/models/user_model.dart';
+import 'package:worship_chat/firebase_options.dart';
 
 // ─── Background Notification Action Handler (top-level, required by Android) ─
 @pragma('vm:entry-point')
@@ -35,9 +36,12 @@ void notificationActionBackgroundHandler(NotificationResponse response) async {
   await AppCapabilities.initialize(background: true);
   if (!AppCapabilities.current.notificationsEnabled) return;
   try {
-    await Firebase.initializeApp();
+    await Firebase.initializeApp(
+      options: DefaultFirebaseOptions.currentPlatform,
+    );
   } catch (_) {}
   await FirebaseNotificationService.ensureStaticInitialized();
+  await FirebaseNotificationService.ensureHiveInitialized();
   log('Background notification action: ${response.actionId}, payload: ${response.payload}');
   if (response.actionId == 'action_mark_read') {
     await FirebaseNotificationService.handleMarkAsReadAction(response);
@@ -91,6 +95,17 @@ const AndroidNotificationChannel _legacyChannel = AndroidNotificationChannel(
   importance: Importance.max,
   playSound: true,
   enableVibration: true,
+);
+
+const AndroidNotificationChannel _appUpdatesChannel = AndroidNotificationChannel(
+  'app_updates_channel',
+  'App Updates',
+  description: 'Notifications when a new Worship Chat APK update is available.',
+  importance: Importance.high,
+  playSound: true,
+  enableVibration: true,
+  enableLights: true,
+  ledColor: Color(0xFF00E676),
 );
 
 /// Creates and registers notification channels with Android system NotificationManager early at boot
@@ -171,6 +186,12 @@ class FirebaseNotificationService {
           final data = Map<String, dynamic>.from(
             jsonDecode(response.payload!) as Map,
           );
+          if (data['type'] == 'app_update') {
+            pendingUpdateNotificationNotifier.value = data;
+            _pendingNotificationData = null;
+            _initialNotificationHandled = true;
+            return null;
+          }
           _pendingNotificationData = data;
           return data;
         }
@@ -183,6 +204,13 @@ class FirebaseNotificationService {
       final initialMessage =
           await FirebaseMessaging.instance.getInitialMessage();
       if (initialMessage != null && initialMessage.data.isNotEmpty) {
+        if (initialMessage.data['type'] == 'app_update') {
+          pendingUpdateNotificationNotifier.value =
+              Map<String, dynamic>.from(initialMessage.data);
+          _pendingNotificationData = null;
+          _initialNotificationHandled = true;
+          return null;
+        }
         _pendingNotificationData = initialMessage.data;
         return initialMessage.data;
       }
@@ -375,6 +403,7 @@ class FirebaseNotificationService {
       await androidPlugin?.createNotificationChannel(_legacyChannel);
       await androidPlugin?.createNotificationChannel(_wishNotificationChannel);
       await androidPlugin?.createNotificationChannel(backgroundTransfersChannel);
+      await androidPlugin?.createNotificationChannel(_appUpdatesChannel);
 
       _isStaticInitialized = true;
       log('✅ FlutterLocalNotificationsPlugin statically initialized with channels');
@@ -385,6 +414,131 @@ class FirebaseNotificationService {
 
   static FlutterLocalNotificationsPlugin get localNotifications =>
       _staticLocalNotifications;
+
+  static const int appUpdateNotificationId = 900100;
+
+  /// Notifies the active UI whenever the user taps an app update notification.
+  static final ValueNotifier<Map<String, dynamic>?>
+      pendingUpdateNotificationNotifier =
+      ValueNotifier<Map<String, dynamic>?>(null);
+
+  /// Shows a system push notification when a newer Worship Chat APK is available.
+  static Future<void> showAppUpdateNotification({
+    required String versionName,
+    required int versionCode,
+    String? releaseNotes,
+    bool forceUpdate = false,
+  }) async {
+    if (!AppCapabilities.current.notificationsEnabled) return;
+    await ensureStaticInitialized();
+
+    final cleanVersion =
+        versionName.trim().replaceFirst(RegExp(r'^v', caseSensitive: false), '');
+    final title = forceUpdate
+        ? '⚡ Required Update: Worship Chat v$cleanVersion'
+        : '✨ Worship Chat v$cleanVersion Available';
+
+    String body = 'Tap to download and install Build $versionCode.';
+    if (releaseNotes != null && releaseNotes.trim().isNotEmpty) {
+      final condensed = releaseNotes
+          .split('\n')
+          .map((l) => l.trim())
+          .where((l) => l.isNotEmpty)
+          .take(2)
+          .join(' • ');
+      if (condensed.isNotEmpty) {
+        body = condensed.length > 140
+            ? '${condensed.substring(0, 137)}...'
+            : condensed;
+      }
+    }
+
+    final androidDetails = AndroidNotificationDetails(
+      _appUpdatesChannel.id,
+      _appUpdatesChannel.name,
+      channelDescription: _appUpdatesChannel.description,
+      importance: Importance.high,
+      priority: Priority.high,
+      playSound: true,
+      enableVibration: true,
+      enableLights: true,
+      ledColor: const Color(0xFF00E676),
+      color: const Color(0xFFD4AF37),
+      icon: '@mipmap/launcher_icon',
+      tag: 'app_update',
+      styleInformation: BigTextStyleInformation(body, contentTitle: title),
+    );
+
+    const darwinDetails = DarwinNotificationDetails(
+      presentSound: true,
+      presentBadge: true,
+      presentAlert: true,
+    );
+
+    final details = NotificationDetails(
+      android: androidDetails,
+      iOS: darwinDetails,
+    );
+
+    final payload = jsonEncode({
+      'type': 'app_update',
+      'versionName': cleanVersion,
+      'versionCode': versionCode.toString(),
+      'forceUpdate': forceUpdate.toString(),
+      if (releaseNotes != null && releaseNotes.trim().isNotEmpty)
+        'releaseNotes': releaseNotes.trim(),
+    });
+
+    try {
+      if (defaultTargetPlatform == TargetPlatform.android) {
+        final androidPlugin = _staticLocalNotifications
+            .resolvePlatformSpecificImplementation<
+                AndroidFlutterLocalNotificationsPlugin>();
+        if (androidPlugin != null) {
+          await androidPlugin.show(
+            appUpdateNotificationId,
+            title,
+            body,
+            notificationDetails: androidDetails,
+            payload: payload,
+          );
+          log('✨ Posted app update notification for v$cleanVersion+$versionCode');
+          return;
+        }
+      }
+      await _staticLocalNotifications.show(
+        appUpdateNotificationId,
+        title,
+        body,
+        details,
+        payload: payload,
+      );
+      log('✨ Posted app update notification for v$cleanVersion+$versionCode');
+    } catch (e) {
+      log('❌ Error posting app update notification: $e');
+    }
+  }
+
+  /// Dismisses any visible app update notification (e.g. after updating or opening dialog).
+  static Future<void> cancelAppUpdateNotification() async {
+    if (!AppCapabilities.current.notificationsEnabled) return;
+    try {
+      await ensureStaticInitialized();
+      if (defaultTargetPlatform == TargetPlatform.android) {
+        final androidPlugin = _staticLocalNotifications
+            .resolvePlatformSpecificImplementation<
+                AndroidFlutterLocalNotificationsPlugin>();
+        if (androidPlugin != null) {
+          await androidPlugin.cancel(appUpdateNotificationId, tag: 'app_update');
+          await androidPlugin.cancel(appUpdateNotificationId);
+          return;
+        }
+      }
+      await _staticLocalNotifications.cancel(appUpdateNotificationId);
+    } catch (e) {
+      log('⚠️ Error canceling app update notification: $e');
+    }
+  }
 
   /// Displays an alert notification specifically for wish reminders.
   /// Uses royal_wishes_celebration_channel with golden led and high importance.
@@ -623,6 +777,26 @@ class FirebaseNotificationService {
         log('⚡ [Hive Ingest] Stored new 1-to-1 message $rawMessageId in Hive key $localKey');
 
         ChatRepository.notifyChatListeners(localKey, messages);
+
+        // Acknowledge delivery to Firestore immediately so sender sees double grey ticks
+        try {
+          FirebaseFirestore.instance
+              .collection('users')
+              .doc(senderUid)
+              .collection('chats')
+              .doc(currentUserId)
+              .collection('messages')
+              .doc(rawMessageId)
+              .update({'isDelivered': true}).catchError((_) {});
+          FirebaseFirestore.instance
+              .collection('users')
+              .doc(currentUserId)
+              .collection('chats')
+              .doc(senderUid)
+              .collection('messages')
+              .doc(rawMessageId)
+              .update({'isDelivered': true}).catchError((_) {});
+        } catch (_) {}
       } else if (type == 'group' && groupId != null && groupId.isNotEmpty) {
         final localKey = groupId;
         final cachedData = messagesBox.get(localKey, defaultValue: []);
@@ -972,9 +1146,47 @@ class FirebaseNotificationService {
     try {
       await ensureStaticInitialized();
       log('Processing remote notification message: ${message.messageId}, data: ${message.data}');
-      await ingestNotificationMessageIntoHive(message);
 
       final msgType = message.data['type']?.toString().trim();
+      if (msgType == 'app_update') {
+        final rawCode = int.tryParse(
+              (message.data['versionCode'] ?? message.data['buildNumber'] ?? '0')
+                  .toString()
+                  .trim(),
+            ) ??
+            0;
+        final rawName = (message.data['versionName'] ??
+                message.data['version'] ??
+                message.notification?.title ??
+                '')
+            .toString()
+            .trim();
+        final releaseNotes =
+            (message.data['releaseNotes'] ?? message.notification?.body ?? '')
+                .toString()
+                .trim();
+        final forceUpdate = message.data['forceUpdate'] == 'true' ||
+            message.data['forceUpdate'] == true;
+        final effectiveName = rawName.isNotEmpty
+            ? rawName
+            : (rawCode > 0 ? 'b$rawCode' : 'Latest');
+        await showAppUpdateNotification(
+          versionName: effectiveName,
+          versionCode: rawCode,
+          releaseNotes: releaseNotes,
+          forceUpdate: forceUpdate,
+        );
+        try {
+          if (rawCode > 0) {
+            final prefs = await SharedPreferences.getInstance();
+            await prefs.setInt('notified_update_version_code', rawCode);
+            await prefs.setString('notified_update_version_name', effectiveName);
+          }
+        } catch (_) {}
+        return;
+      }
+
+      await ingestNotificationMessageIntoHive(message);
       final senderUid = (message.data['senderUid'] ??
               message.data['uid'] ??
               message.data['senderId'])
@@ -1408,6 +1620,275 @@ class FirebaseNotificationService {
     }
   }
 
+  // ── Background Notification Reply Local Storage ────────────────────────────
+
+  /// Persists a notification reply sent in background immediately to local storage
+  /// (both SharedPreferences persistent buffer and Hive 'messages' box).
+  /// Guarantees that the reply is never lost regardless of isolate file locking or network delays.
+  static Future<void> recordBackgroundReply({
+    required String chatId,
+    required bool isGroup,
+    required Map<String, dynamic> messageMap,
+    required String replyText,
+    required DateTime timeSent,
+    String? receiverName,
+    String? receiverProfilePic,
+    String? currentUserId,
+  }) async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+
+      // 1. Immediately store in persistent SharedPreferences buffer (cross-isolate safe)
+      final rawList =
+          prefs.getStringList('pending_bg_replies_$chatId') ?? <String>[];
+      final messageId = messageMap['messageId']?.toString() ?? '';
+      final encodedMessage = jsonEncode(messageMap);
+
+      if (!rawList.any((s) => s.contains('"messageId":"$messageId"'))) {
+        rawList.add(encodedMessage);
+        await prefs.setStringList('pending_bg_replies_$chatId', rawList);
+      }
+
+      final chatIds =
+          prefs.getStringList('pending_bg_reply_chat_ids') ?? <String>[];
+      if (!chatIds.contains(chatId)) {
+        chatIds.add(chatId);
+        await prefs.setStringList('pending_bg_reply_chat_ids', chatIds);
+      }
+
+      await prefs.setBool('bg_is_group_$chatId', isGroup);
+      await prefs.setString('bg_last_message_$chatId', replyText);
+      await prefs.setInt(
+          'bg_last_time_$chatId', timeSent.millisecondsSinceEpoch);
+
+      log('💾 [Background Reply] Buffered reply for $chatId (${isGroup ? 'group' : 'chat'}) in SharedPreferences');
+
+      // 2. Direct attempt to write into Hive box 'messages' in current isolate
+      try {
+        await ensureHiveInitialized();
+        final box = await _safeOpenBox('messages');
+        if (box != null) {
+          final cachedData = box.get(chatId, defaultValue: []);
+          if (isGroup) {
+            final List<GroupChatMessageModel> msgs = [];
+            if (cachedData is List) {
+              for (final item in cachedData) {
+                if (item is GroupChatMessageModel) {
+                  msgs.add(item);
+                } else if (item is Map) {
+                  try {
+                    msgs.add(GroupChatMessageModel.fromMap(
+                        Map<String, dynamic>.from(item)));
+                  } catch (_) {}
+                }
+              }
+            }
+            if (!msgs.any((m) => m.messageId == messageId)) {
+              msgs.add(GroupChatMessageModel.fromMap(messageMap));
+              msgs.sort((a, b) => a.timeSent.compareTo(b.timeSent));
+              await box.put(chatId, msgs);
+              GroupRepository.notifyGroupChatListeners(chatId, msgs);
+              log('💾 [Background Reply] Saved directly into Hive group messages: $chatId');
+            }
+          } else {
+            final List<OneToOneMessageModel> msgs = [];
+            if (cachedData is List) {
+              for (final item in cachedData) {
+                if (item is OneToOneMessageModel) {
+                  msgs.add(item);
+                } else if (item is Map) {
+                  try {
+                    msgs.add(OneToOneMessageModel.fromMap(
+                        Map<String, dynamic>.from(item)));
+                  } catch (_) {}
+                }
+              }
+            }
+            if (!msgs.any((m) => m.messageId == messageId)) {
+              msgs.add(OneToOneMessageModel.fromMap(messageMap));
+              msgs.sort((a, b) => a.timeSent.compareTo(b.timeSent));
+              await box.put(chatId, msgs);
+              ChatRepository.notifyChatListeners(chatId, msgs);
+              log('💾 [Background Reply] Saved directly into Hive 1-to-1 messages: $chatId');
+            }
+          }
+        }
+      } catch (hiveErr) {
+        log('Note: Direct Hive save in background isolate: $hiveErr (buffered in SharedPreferences)');
+      }
+
+      // 3. Update contacts_cache if 1-to-1
+      if (!isGroup && currentUserId != null && currentUserId.isNotEmpty) {
+        final senderUid = messageMap['receiverId']?.toString() ?? '';
+        if (senderUid.isNotEmpty) {
+          try {
+            await _updateContactsCacheForOneToOne(
+              currentUserId: currentUserId,
+              senderUid: senderUid,
+              name: receiverName ?? 'User',
+              profilePic: receiverProfilePic,
+              lastMessage: replyText,
+              timeSent: timeSent,
+            );
+          } catch (_) {}
+        }
+      }
+    } catch (e) {
+      log('❌ Error in recordBackgroundReply: $e');
+    }
+  }
+
+  /// Synchronizes all pending background notification replies from SharedPreferences into Hive.
+  /// Designed to run in the main isolate on app resume or chat open without lock contention.
+  static Future<void> syncPendingBackgroundRepliesToHive({
+    String? specificChatId,
+  }) async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final allPendingChatIds =
+          prefs.getStringList('pending_bg_reply_chat_ids') ?? <String>[];
+      if (allPendingChatIds.isEmpty) return;
+
+      final targetIds = specificChatId != null
+          ? (allPendingChatIds.contains(specificChatId)
+              ? [specificChatId]
+              : <String>[])
+          : List<String>.from(allPendingChatIds);
+
+      if (targetIds.isEmpty) return;
+
+      await ensureHiveInitialized();
+      final box = await _safeOpenBox('messages');
+      if (box == null) return;
+
+      final List<String> successfullySynced = [];
+
+      for (final chatId in targetIds) {
+        final rawList =
+            prefs.getStringList('pending_bg_replies_$chatId') ?? <String>[];
+        if (rawList.isEmpty) {
+          successfullySynced.add(chatId);
+          continue;
+        }
+
+        final isGroup = prefs.getBool('bg_is_group_$chatId') ?? false;
+        final cachedData = box.get(chatId, defaultValue: []);
+
+        if (isGroup) {
+          final List<GroupChatMessageModel> msgs = [];
+          if (cachedData is List) {
+            for (final item in cachedData) {
+              if (item is GroupChatMessageModel) {
+                msgs.add(item);
+              } else if (item is Map) {
+                try {
+                  msgs.add(GroupChatMessageModel.fromMap(
+                      Map<String, dynamic>.from(item)));
+                } catch (_) {}
+              }
+            }
+          }
+
+          bool addedAny = false;
+          for (final raw in rawList) {
+            try {
+              final map = jsonDecode(raw) as Map<String, dynamic>;
+              final m = GroupChatMessageModel.fromMap(map);
+              if (!msgs.any((existing) => existing.messageId == m.messageId)) {
+                msgs.add(m);
+                addedAny = true;
+              }
+            } catch (parseErr) {
+              log('Error parsing pending group message: $parseErr');
+            }
+          }
+
+          if (addedAny) {
+            msgs.sort((a, b) => a.timeSent.compareTo(b.timeSent));
+            await box.put(chatId, msgs);
+            GroupRepository.notifyGroupChatListeners(chatId, msgs);
+          }
+        } else {
+          final List<OneToOneMessageModel> msgs = [];
+          if (cachedData is List) {
+            for (final item in cachedData) {
+              if (item is OneToOneMessageModel) {
+                msgs.add(item);
+              } else if (item is Map) {
+                try {
+                  msgs.add(OneToOneMessageModel.fromMap(
+                      Map<String, dynamic>.from(item)));
+                } catch (_) {}
+              }
+            }
+          }
+
+          bool addedAny = false;
+          for (final raw in rawList) {
+            try {
+              final map = jsonDecode(raw) as Map<String, dynamic>;
+              final m = OneToOneMessageModel.fromMap(map);
+              if (!msgs.any((existing) => existing.messageId == m.messageId)) {
+                msgs.add(m);
+                addedAny = true;
+              }
+            } catch (parseErr) {
+              log('Error parsing pending 1-to-1 message: $parseErr');
+            }
+          }
+
+          if (addedAny) {
+            msgs.sort((a, b) => a.timeSent.compareTo(b.timeSent));
+            await box.put(chatId, msgs);
+            ChatRepository.notifyChatListeners(chatId, msgs);
+          }
+        }
+
+        await prefs.remove('pending_bg_replies_$chatId');
+        await prefs.remove('bg_is_group_$chatId');
+        await prefs.remove('bg_last_message_$chatId');
+        await prefs.remove('bg_last_time_$chatId');
+        successfullySynced.add(chatId);
+        log('✅ [Background Sync] Merged ${rawList.length} background replies into Hive for $chatId');
+      }
+
+      final remainingChatIds = allPendingChatIds
+          .where((id) => !successfullySynced.contains(id))
+          .toList();
+      await prefs.setStringList('pending_bg_reply_chat_ids', remainingChatIds);
+    } catch (e) {
+      log('❌ Error in syncPendingBackgroundRepliesToHive: $e');
+    }
+  }
+
+  /// Returns any pending background notification replies cached in SharedPreferences for a given chat.
+  static List<T> getPendingBackgroundRepliesForChat<T>({
+    required String chatId,
+    required bool isGroup,
+    required SharedPreferences prefs,
+  }) {
+    try {
+      final rawList =
+          prefs.getStringList('pending_bg_replies_$chatId') ?? <String>[];
+      if (rawList.isEmpty) return <T>[];
+
+      final List<T> result = [];
+      for (final raw in rawList) {
+        try {
+          final map = jsonDecode(raw) as Map<String, dynamic>;
+          if (isGroup) {
+            result.add(GroupChatMessageModel.fromMap(map) as T);
+          } else {
+            result.add(OneToOneMessageModel.fromMap(map) as T);
+          }
+        } catch (_) {}
+      }
+      return result;
+    } catch (_) {
+      return <T>[];
+    }
+  }
+
   // ── Notification Action: Reply ─────────────────────────────────────────────
   static Future<void> handleReplyAction(
     NotificationResponse response,
@@ -1428,20 +1909,6 @@ class FirebaseNotificationService {
       log('Reply submitted from notification: "$replyText", data: $data');
 
       final prefs = await SharedPreferences.getInstance();
-      var currentUserId = FirebaseAuth.instance.currentUser?.uid ??
-          prefs.getString('cached_current_user_id');
-      if (currentUserId == null) {
-        for (int i = 0; i < 15; i++) {
-          await Future.delayed(const Duration(milliseconds: 100));
-          currentUserId = FirebaseAuth.instance.currentUser?.uid ??
-              prefs.getString('cached_current_user_id');
-          if (currentUserId != null) break;
-        }
-      }
-      if (currentUserId == null) {
-        log('⚠️ User not authenticated, cannot send reply from notification');
-        return;
-      }
 
       String? type = data['type'] as String?;
       final senderUid = (data['senderUid'] ??
@@ -1459,49 +1926,77 @@ class FirebaseNotificationService {
         }
       }
 
+      // Robust current user resolution across isolates
+      var currentUserId = FirebaseAuth.instance.currentUser?.uid ??
+          prefs.getString('cached_current_user_id');
+      if (currentUserId == null || currentUserId.isEmpty) {
+        if (Hive.isBoxOpen('userBox')) {
+          currentUserId =
+              Hive.box<UserModel>('userBox').get('currentUser')?.uid;
+        } else {
+          try {
+            await ensureHiveInitialized();
+            final uBox = await _safeOpenBox('userBox');
+            final u = uBox?.get('currentUser');
+            if (u is UserModel) currentUserId = u.uid;
+          } catch (_) {}
+        }
+      }
+      currentUserId ??=
+          (type == 'chat' ? data['receiverId']?.toString().trim() : null);
+
+      if (currentUserId == null || currentUserId.isEmpty) {
+        log('⚠️ User not authenticated, cannot send reply from notification');
+        return;
+      }
+      await prefs.setString('cached_current_user_id', currentUserId);
+
       final chatId = (groupId ?? senderUid) ?? '';
       if (chatId.isNotEmpty) {
         await cancelNotificationsForChat(chatId);
       }
 
-      // Fetch current user details
-      UserModel? currentUser;
-      try {
-        final userDoc = await FirebaseFirestore.instance
-            .collection('users')
-            .doc(currentUserId)
-            .get();
-        if (userDoc.exists && userDoc.data() != null) {
-          currentUser = UserModel.fromMap(userDoc.data()!);
+      // Resolve sender name and profile pic (prefer local cache for instant speed)
+      String senderName = prefs.getString('cached_current_user_name') ?? '';
+      String senderProfilePic = prefs.getString('cached_current_user_pic') ?? '';
+      if (senderName.isEmpty) {
+        if (Hive.isBoxOpen('userBox')) {
+          final u = Hive.box<UserModel>('userBox').get('currentUser');
+          if (u != null) {
+            senderName = u.name ?? u.userName ?? '';
+            senderProfilePic = u.profilePic ?? '';
+          }
         }
-      } catch (e) {
-        log('Warning: could not fetch current user for reply: $e');
       }
 
-      final cachedName = prefs.getString('cached_current_user_name');
-      final cachedPic = prefs.getString('cached_current_user_pic');
+      // Fallback to Firestore if local cache didn't have the name
+      if (senderName.isEmpty) {
+        try {
+          final userDoc = await FirebaseFirestore.instance
+              .collection('users')
+              .doc(currentUserId)
+              .get();
+          if (userDoc.exists && userDoc.data() != null) {
+            final u = UserModel.fromMap(userDoc.data()!);
+            senderName = u.name ?? u.userName ?? 'User';
+            senderProfilePic = u.profilePic ?? '';
+            await prefs.setString('cached_current_user_name', senderName);
+            if (senderProfilePic.isNotEmpty) {
+              await prefs.setString('cached_current_user_pic', senderProfilePic);
+            }
+          }
+        } catch (e) {
+          log('Warning: could not fetch current user for reply: $e');
+        }
+      }
+      if (senderName.isEmpty) senderName = 'User';
 
-      final senderName = currentUser?.name ?? currentUser?.userName ?? cachedName ?? 'User';
-      final senderProfilePic = currentUser?.profilePic ?? cachedPic ?? '';
       final timeSent = DateTime.now();
       final messageId = const Uuid().v1();
 
       if (type == 'chat' && senderUid != null && senderUid.isNotEmpty) {
-        // Fetch recipient's data for latest token and name
-        UserModel? receiverUser;
-        try {
-          final rDoc = await FirebaseFirestore.instance
-              .collection('users')
-              .doc(senderUid)
-              .get();
-          if (rDoc.exists && rDoc.data() != null) {
-            receiverUser = UserModel.fromMap(rDoc.data()!);
-          }
-        } catch (_) {}
-
-        final receiverName =
-            receiverUser?.name ?? (data['name'] as String?) ?? 'User';
-        final receiverToken = receiverUser?.fcmToken ?? '';
+        final localKey = '${currentUserId}_$senderUid';
+        final receiverName = (data['name'] as String?) ?? 'User';
 
         final message = OneToOneMessageModel(
           senderId: currentUserId,
@@ -1518,6 +2013,32 @@ class FirebaseNotificationService {
           repliedTo: '',
           repliedMessageType: 'text',
         );
+
+        // 1. RECORD LOCALLY FIRST (Immediate 0ms local storage)
+        await recordBackgroundReply(
+          chatId: localKey,
+          isGroup: false,
+          messageMap: message.toMap(),
+          replyText: replyText,
+          timeSent: timeSent,
+          receiverName: receiverName,
+          currentUserId: currentUserId,
+        );
+
+        // 2. Fetch recipient data and sync to Firestore
+        UserModel? receiverUser;
+        try {
+          final rDoc = await FirebaseFirestore.instance
+              .collection('users')
+              .doc(senderUid)
+              .get();
+          if (rDoc.exists && rDoc.data() != null) {
+            receiverUser = UserModel.fromMap(rDoc.data()!);
+          }
+        } catch (_) {}
+
+        final resolvedReceiverName = receiverUser?.name ?? receiverName;
+        final receiverToken = receiverUser?.fcmToken ?? '';
 
         // Atomic message write to both users
         final batch = FirebaseFirestore.instance.batch();
@@ -1540,38 +2061,7 @@ class FirebaseNotificationService {
         batch.set(senderMessageRef, message.toMap());
         await batch.commit();
 
-        // Save local reply directly into Hive
-        try {
-          await ensureHiveInitialized();
-          final localKey = '${currentUserId}_$senderUid';
-          final box = await _safeOpenBox('messages');
-          if (box != null) {
-            final cachedData = box.get(localKey, defaultValue: []);
-            final List<OneToOneMessageModel> msgs = [];
-            if (cachedData is List) {
-              for (final item in cachedData) {
-                if (item is OneToOneMessageModel) {
-                  msgs.add(item);
-                } else if (item is Map) {
-                  try {
-                    msgs.add(OneToOneMessageModel.fromMap(
-                        Map<String, dynamic>.from(item)));
-                  } catch (_) {}
-                }
-              }
-            }
-            if (!msgs.any((m) => m.messageId == messageId)) {
-              msgs.add(message);
-              msgs.sort((a, b) => a.timeSent.compareTo(b.timeSent));
-              await box.put(localKey, msgs);
-              ChatRepository.notifyChatListeners(localKey, msgs);
-            }
-          }
-        } catch (hiveErr) {
-          log('Note: Error saving notification reply to Hive: $hiveErr');
-        }
-
-        // Update contacts
+        // Update contacts in Firestore
         String myToken = '';
         try {
           myToken = await FirebaseMessaging.instance.getToken() ?? '';
@@ -1594,7 +2084,7 @@ class FirebaseNotificationService {
             .set(receiverContact.toMap(), SetOptions(merge: true));
 
         final senderContact = ChatContact(
-          name: receiverName,
+          name: resolvedReceiverName,
           profilePic: receiverUser?.profilePic,
           uid: senderUid,
           timeSent: timeSent,
@@ -1632,115 +2122,107 @@ class FirebaseNotificationService {
         }
         log('✅ Direct notification reply sent for 1-to-1 chat');
       } else if (type == 'group' && groupId != null && groupId.isNotEmpty) {
-        final groupDoc = await FirebaseFirestore.instance
+        final groupName = (data['groupName'] ?? 'Group Chat') as String;
+        final receiverIdsStr = (data['receiverIds'] as String?) ?? '';
+        final fallbackReceiverIds = receiverIdsStr.isNotEmpty
+            ? receiverIdsStr.split(',').where((id) => id != currentUserId).toList()
+            : <String>[];
+
+        final groupMessage = GroupChatMessageModel(
+          senderId: currentUserId,
+          receiverIds: fallbackReceiverIds,
+          groupId: groupId,
+          text: replyText,
+          messageType: 'text',
+          timeSent: timeSent,
+          messageId: messageId,
+          isSeen: false,
+          isDelivered: false,
+          isSending: false,
+          fileMessageData: null,
+          repliedMessage: '',
+          repliedTo: '',
+          repliedMessageType: 'text',
+        );
+
+        // 1. RECORD LOCALLY FIRST (Immediate 0ms local storage)
+        await recordBackgroundReply(
+          chatId: groupId,
+          isGroup: true,
+          messageMap: groupMessage.toMap(),
+          replyText: replyText,
+          timeSent: timeSent,
+          currentUserId: currentUserId,
+        );
+
+        // 2. Fetch latest group metadata and sync to Firestore
+        List<String> memberUids = [];
+        try {
+          final groupDoc = await FirebaseFirestore.instance
+              .collection('groups')
+              .doc(groupId)
+              .get();
+          if (groupDoc.exists && groupDoc.data() != null) {
+            final gData = groupDoc.data()!;
+            memberUids = List<String>.from(gData['membersUid'] ?? []);
+          }
+        } catch (_) {}
+
+        final actualReceiverIds = memberUids.isNotEmpty
+            ? memberUids.where((m) => m != currentUserId).toList()
+            : fallbackReceiverIds;
+
+        final finalGroupMessage = actualReceiverIds != fallbackReceiverIds
+            ? groupMessage.copyWith(receiverIds: actualReceiverIds)
+            : groupMessage;
+
+        await FirebaseFirestore.instance
             .collection('groups')
             .doc(groupId)
-            .get();
+            .collection('chats')
+            .doc(messageId)
+            .set(finalGroupMessage.toMap());
 
-        if (groupDoc.exists && groupDoc.data() != null) {
-          final gData = groupDoc.data()!;
-          final groupName = (gData['name'] ??
-              data['groupName'] ??
-              'Group Chat') as String;
-          final membersUid = List<String>.from(gData['membersUid'] ?? []);
-          final receiverIds =
-              membersUid.where((m) => m != currentUserId).toList();
-
-          final groupMessage = GroupChatMessageModel(
-            senderId: currentUserId,
-            receiverIds: receiverIds,
-            groupId: groupId,
-            text: replyText,
-            messageType: 'text',
-            timeSent: timeSent,
-            messageId: messageId,
-            isSeen: false,
-            isDelivered: false,
-            isSending: false,
-            fileMessageData: null,
-            repliedMessage: '',
-            repliedTo: '',
-            repliedMessageType: 'text',
-          );
-
-          await FirebaseFirestore.instance
-              .collection('groups')
-              .doc(groupId)
-              .collection('chats')
-              .doc(messageId)
-              .set(groupMessage.toMap());
-
-          // Save group reply directly into Hive
-          try {
-            await ensureHiveInitialized();
-            final box = await _safeOpenBox('messages');
-            if (box != null) {
-              final cachedData = box.get(groupId, defaultValue: []);
-              final List<GroupChatMessageModel> msgs = [];
-              if (cachedData is List) {
-                for (final item in cachedData) {
-                  if (item is GroupChatMessageModel) {
-                    msgs.add(item);
-                  } else if (item is Map) {
-                    try {
-                      msgs.add(GroupChatMessageModel.fromMap(
-                          Map<String, dynamic>.from(item)));
-                    } catch (_) {}
-                  }
-                }
-              }
-              if (!msgs.any((m) => m.messageId == messageId)) {
-                msgs.add(groupMessage);
-                msgs.sort((a, b) => a.timeSent.compareTo(b.timeSent));
-                await box.put(groupId, msgs);
-                GroupRepository.notifyGroupChatListeners(groupId, msgs);
-              }
-            }
-          } catch (hiveErr) {
-            log('Note: Error saving group notification reply to Hive: $hiveErr');
-          }
-
-          Map<String, bool> unseenMessages = {};
-          for (var uid in membersUid) {
-            unseenMessages[uid] = (uid != currentUserId);
-          }
-
-          await FirebaseFirestore.instance
-              .collection('groups')
-              .doc(groupId)
-              .update({
-            'senderId': currentUserId,
-            'lastMessage': replyText,
-            'timeSent': DateTime.now().millisecondsSinceEpoch,
-            'unseenMessages': unseenMessages,
-          });
-
-          final freshTokens =
-              await FCMTokenManager.getGroupMemberTokens(groupId);
-          if (freshTokens.isNotEmpty) {
-            await sendMultipleNotification(
-              freshTokens,
-              groupName,
-              '$senderName: $replyText',
-              data: {
-                'type': 'group',
-                'groupId': groupId,
-                'groupName': groupName,
-                'tag': groupId,
-                'name': senderName,
-                'senderId': currentUserId,
-                'senderUid': currentUserId,
-                'messageId': messageId,
-                'messageType': 'text',
-                'text': replyText,
-                'timeSent': timeSent.toIso8601String(),
-                if (receiverIds.isNotEmpty)
-                  'receiverIds': receiverIds.join(','),
-              },
-            );
-          }
-          log('✅ Direct notification reply sent for group chat');
+        Map<String, bool> unseenMessages = {};
+        for (var uid in memberUids) {
+          unseenMessages[uid] = (uid != currentUserId);
         }
+
+        await FirebaseFirestore.instance
+            .collection('groups')
+            .doc(groupId)
+            .update({
+          'senderId': currentUserId,
+          'lastMessage': replyText,
+          'timeSent': DateTime.now().millisecondsSinceEpoch,
+          if (unseenMessages.isNotEmpty) 'unseenMessages': unseenMessages,
+        });
+
+        final freshTokens =
+            await FCMTokenManager.getGroupMemberTokens(groupId);
+        if (freshTokens.isNotEmpty) {
+          await sendMultipleNotification(
+            freshTokens,
+            groupName,
+            '$senderName: $replyText',
+            data: {
+              'type': 'group',
+              'groupId': groupId,
+              'groupName': groupName,
+              'tag': groupId,
+              'name': senderName,
+              'senderId': currentUserId,
+              'senderUid': currentUserId,
+              'messageId': messageId,
+              'messageType': 'text',
+              'text': replyText,
+              'timeSent': timeSent.toIso8601String(),
+              if (actualReceiverIds.isNotEmpty)
+                'receiverIds': actualReceiverIds.join(','),
+            },
+          );
+        }
+        log('✅ Direct notification reply sent for group chat');
       }
     } catch (e) {
       log('❌ Error in handleReplyAction: $e');
@@ -1801,10 +2283,16 @@ class FirebaseNotificationService {
       return;
     }
 
+    String? type = data['type'] as String?;
+    if (type == 'app_update') {
+      pendingUpdateNotificationNotifier.value =
+          Map<String, dynamic>.from(data);
+      return;
+    }
+
     // Ensure notification payload message is stored in Hive before opening chat
     await ingestNotificationDataIntoHive(data);
 
-    String? type = data['type'] as String?;
     if (type == null || type.isEmpty) {
       if (data.containsKey('groupId') || data.containsKey('groupName')) {
         type = 'group';

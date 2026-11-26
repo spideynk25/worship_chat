@@ -25,11 +25,11 @@ class CreateGroupScreen extends ConsumerStatefulWidget {
 
 class _CreateGroupScreenState extends ConsumerState<CreateGroupScreen> {
   // Dropdown values
-  String selectedQueendom = 'None';
+  String selectedQueendom = 'Queen Pooja';
   String selectedFamily = 'None';
   String selectedPosition = 'None';
 
-  final List<String> queendom = ['None', 'Queen Rashmika', 'Queen Pooja'];
+  final List<String> queendom = ['Queen Pooja', 'Queen Rashmika'];
   List<String> get families => ref.watch(queendomCustomizationProvider).allFamilies;
   List<String> get positions => ref.watch(queendomCustomizationProvider).allPositions;
 
@@ -81,7 +81,7 @@ class _CreateGroupScreenState extends ConsumerState<CreateGroupScreen> {
   }
 
   Future<void> _fetchTakenPriorities() async {
-    if (selectedQueendom == 'None' || selectedPosition == 'None') {
+    if (selectedPosition == 'None') {
       if (mounted) setState(() => _takenPriorities = []);
       return;
     }
@@ -314,14 +314,12 @@ class _CreateGroupScreenState extends ConsumerState<CreateGroupScreen> {
                       ),
                     )
                     .toList(),
-                onChanged: selectedQueendom == 'None'
-                    ? null
-                    : (value) {
-                        setState(() {
-                          selectedPosition = value ?? "None";
-                          _onCategoryOrQueendomChanged();
-                        });
-                      },
+                onChanged: (value) {
+                  setState(() {
+                    selectedPosition = value ?? "None";
+                    _onCategoryOrQueendomChanged();
+                  });
+                },
               ),
             ),
 
@@ -430,7 +428,6 @@ class _CreateGroupScreenState extends ConsumerState<CreateGroupScreen> {
                     onPressed: _autoFillTemplates,
                   ),
                 ),
-                enabled: selectedQueendom != 'None',
               ),
             ),
 

@@ -66,6 +66,16 @@ class GroupChatMessageModel {
   final List<String>? _deletedFor;
   List<String> get deletedFor => _deletedFor ?? const [];
 
+  @HiveField(17)
+  final bool? _isPinned;
+  bool get isPinned => _isPinned ?? false;
+
+  @HiveField(18)
+  final DateTime? pinnedAt;
+
+  @HiveField(19)
+  final String? pinnedBy;
+
   GroupChatMessageModel({
     required this.senderId,
     required this.receiverIds,
@@ -85,13 +95,17 @@ class GroupChatMessageModel {
     bool? isEdited,
     bool? isDeleted,
     List<String>? deletedFor,
+    bool? isPinned,
+    this.pinnedAt,
+    this.pinnedBy,
   })  : _isSeen = isSeen ?? false,
         _isDelivered = isDelivered ?? false,
         _isSending = isSending ?? false,
         reactions = reactions ?? const {},
         _isEdited = isEdited ?? false,
         _isDeleted = isDeleted ?? false,
-        _deletedFor = deletedFor ?? const [];
+        _deletedFor = deletedFor ?? const [],
+        _isPinned = isPinned ?? false;
 
   Map<String, dynamic> toMap() {
     return <String, dynamic>{
@@ -112,26 +126,27 @@ class GroupChatMessageModel {
       'isEdited': isEdited,
       'isDeleted': isDeleted,
       'deletedFor': deletedFor,
+      'isPinned': isPinned,
+      'pinnedAt': pinnedAt?.millisecondsSinceEpoch,
+      'pinnedBy': pinnedBy,
     };
   }
 
-  factory GroupChatMessageModel.fromMap(Map<String, dynamic> map) {
-    DateTime parsedTime;
-    final rawTime = map['timeSent'];
-    if (rawTime is int) {
-      parsedTime = DateTime.fromMillisecondsSinceEpoch(rawTime);
-    } else if (rawTime is Timestamp) {
-      parsedTime = rawTime.toDate();
-    } else if (rawTime is String) {
+  static DateTime? _parseOptionalTime(dynamic rawTime) {
+    if (rawTime == null) return null;
+    if (rawTime is int) return DateTime.fromMillisecondsSinceEpoch(rawTime);
+    if (rawTime is Timestamp) return rawTime.toDate();
+    if (rawTime is String) {
       final asInt = int.tryParse(rawTime);
-      if (asInt != null) {
-        parsedTime = DateTime.fromMillisecondsSinceEpoch(asInt);
-      } else {
-        parsedTime = DateTime.tryParse(rawTime) ?? DateTime.now();
-      }
-    } else {
-      parsedTime = DateTime.now();
+      return asInt != null
+          ? DateTime.fromMillisecondsSinceEpoch(asInt)
+          : DateTime.tryParse(rawTime);
     }
+    return null;
+  }
+
+  factory GroupChatMessageModel.fromMap(Map<String, dynamic> map) {
+    final parsedTime = _parseOptionalTime(map['timeSent']) ?? DateTime.now();
 
     Map<String, String> parsedReactions = {};
     if (map['reactions'] is Map) {
@@ -167,6 +182,9 @@ class GroupChatMessageModel {
               ?.map((e) => e.toString())
               .toList() ??
           const [],
+      isPinned: map['isPinned'] as bool? ?? false,
+      pinnedAt: _parseOptionalTime(map['pinnedAt']),
+      pinnedBy: map['pinnedBy']?.toString(),
     );
   }
 
@@ -190,6 +208,10 @@ class GroupChatMessageModel {
     bool? isEdited,
     bool? isDeleted,
     List<String>? deletedFor,
+    bool? isPinned,
+    DateTime? pinnedAt,
+    String? pinnedBy,
+    bool clearPin = false,
   }) {
     return GroupChatMessageModel(
       senderId: senderId ?? this.senderId,
@@ -210,6 +232,9 @@ class GroupChatMessageModel {
       isEdited: isEdited ?? this.isEdited,
       isDeleted: isDeleted ?? this.isDeleted,
       deletedFor: deletedFor ?? this.deletedFor,
+      isPinned: clearPin ? false : (isPinned ?? this.isPinned),
+      pinnedAt: clearPin ? null : (pinnedAt ?? this.pinnedAt),
+      pinnedBy: clearPin ? null : (pinnedBy ?? this.pinnedBy),
     );
   }
 }

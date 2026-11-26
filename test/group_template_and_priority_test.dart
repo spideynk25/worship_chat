@@ -12,7 +12,7 @@ void main() {
       );
       expect(
         res.livingPlace,
-        'GOLDEN HEAVEN OF ☀️ AURA ELIXIRIA GODDESS POOJA',
+        'GOLDEN HEAVEN OF AURA ELIXIRIA GODDESS POOJA',
       );
       expect(
         res.wish,
@@ -26,7 +26,7 @@ void main() {
         name: 'Rashmika',
         family: 'None',
       );
-      expect(res.livingPlace, 'HEAVEN OF 🌟 CORE SUPREME GODDESS RASHMIKA');
+      expect(res.livingPlace, 'HEAVEN OF CORE SUPREME GODDESS RASHMIKA');
       expect(
         res.wish,
         '🙇‍♀️🙇‍♀️ Have Mercy on us Core Supreme Goddess Rashmika 🙇‍♀️🙇‍♀️',
@@ -39,7 +39,7 @@ void main() {
         name: 'Pooja',
         family: 'Main',
       );
-      expect(res.livingPlace, 'SANCTUM OF 🏮 SUPREME GODDESS POOJA');
+      expect(res.livingPlace, 'SANCTUM OF SUPREME GODDESS POOJA');
       expect(res.wish, '🙇‍♀️🙇‍♀️ Long live Supreme Goddess Pooja 🙇‍♀️🙇‍♀️');
     });
 
@@ -51,7 +51,7 @@ void main() {
       );
       expect(
         res.livingPlace,
-        'SANCTUM OF 🏮 SUPREME GODDESS AURA GODDESS POOJA',
+        'SANCTUM OF SUPREME GODDESS AURA GODDESS POOJA',
       );
       expect(
         res.wish,
@@ -67,7 +67,7 @@ void main() {
       );
       expect(
         res.livingPlace,
-        'GOLDEN SANCTUM OF 🍂 GOLDEN BLOSSOM GODDESS ANU',
+        'GOLDEN SANCTUM OF GOLDEN BLOSSOM GODDESS ANU',
       );
       expect(
         res.wish,
@@ -81,7 +81,7 @@ void main() {
         name: 'Pooja',
         family: 'Main',
       );
-      expect(mainRes.livingPlace, 'TEMPLE OF 🪷 GODDESS POOJA');
+      expect(mainRes.livingPlace, 'TEMPLE OF GODDESS POOJA');
       expect(mainRes.wish, '🙇‍♀️🙇‍♀️ Goddess Pooja be praised 🙇‍♀️🙇‍♀️');
 
       final otherRes = GroupTemplateHelper.generateTemplate(
@@ -89,7 +89,7 @@ void main() {
         name: 'Pooja',
         family: 'Core',
       );
-      expect(otherRes.livingPlace, 'TEMPLE OF 🪷 CORE GODDESS POOJA');
+      expect(otherRes.livingPlace, 'TEMPLE OF CORE GODDESS POOJA');
       expect(
         otherRes.wish,
         '🙇‍♀️🙇‍♀️ Core Goddess Pooja be praised 🙇‍♀️🙇‍♀️',
@@ -102,7 +102,7 @@ void main() {
         name: 'Pooja',
         family: 'None',
       );
-      expect(res.livingPlace, 'SHRINE OF 🏵️ DEMI GODDESS POOJA');
+      expect(res.livingPlace, 'SHRINE OF DEMI GODDESS POOJA');
       expect(res.wish, '🙇‍♀️🙇‍♀️ Demi Goddess Pooja be praised 🙇‍♀️🙇‍♀️');
     });
 
@@ -112,7 +112,7 @@ void main() {
         name: 'Pooja',
         family: 'None',
       );
-      expect(res.livingPlace, 'DARK SHRINE OF 🪻 DARK ANGEL POOJA');
+      expect(res.livingPlace, 'DARK SHRINE OF DARK ANGEL POOJA');
       expect(res.wish, '🙇‍♀️🙇‍♀️ Dark Angel Pooja be praised 🙇‍♀️🙇‍♀️');
     });
 
@@ -122,7 +122,7 @@ void main() {
         name: 'Pooja',
         family: 'None',
       );
-      expect(res.livingPlace, 'FORTRESS OF 👑 QUEEN POOJA');
+      expect(res.livingPlace, 'FORTRESS OF QUEEN POOJA');
       expect(res.wish, '🙇‍♀️🙇‍♀️ Hail Queen Pooja 🙇‍♀️🙇‍♀️');
     });
 
@@ -132,7 +132,7 @@ void main() {
         name: 'Pooja',
         family: 'None',
       );
-      expect(mainRes.livingPlace, 'SHRINE of 🍁 ELFWITCH POOJA');
+      expect(mainRes.livingPlace, 'SHRINE OF ELFWITCH POOJA');
       expect(mainRes.wish, '🙇‍♀️🙇‍♀️ Hail Elfwitch Pooja 🙇‍♀️🙇‍♀️');
 
       final otherRes = GroupTemplateHelper.generateTemplate(
@@ -140,7 +140,7 @@ void main() {
         name: 'Pooja',
         family: 'Divine',
       );
-      expect(otherRes.livingPlace, 'SHRINE of 🍁 DIVINE ELFWITCH POOJA');
+      expect(otherRes.livingPlace, 'SHRINE OF DIVINE ELFWITCH POOJA');
       expect(otherRes.wish, '🙇‍♀️🙇‍♀️ Hail Divine Elfwitch Pooja 🙇‍♀️🙇‍♀️');
     });
 
@@ -150,7 +150,7 @@ void main() {
         name: 'Pooja',
         family: 'Main',
       );
-      expect(mainRes.livingPlace, 'SHRINE OF 🍀 ENCHANTRESS POOJA');
+      expect(mainRes.livingPlace, 'SHRINE OF ENCHANTRESS POOJA');
       expect(mainRes.wish, '🙇‍♀️🙇‍♀️ Hail Enchantress Pooja 🙇‍♀️🙇‍♀️');
 
       final otherRes = GroupTemplateHelper.generateTemplate(
@@ -158,7 +158,7 @@ void main() {
         name: 'Pooja',
         family: 'Wicked',
       );
-      expect(otherRes.livingPlace, 'SHRINE OF 🍀 WICKED ENCHANTRESS POOJA');
+      expect(otherRes.livingPlace, 'SHRINE OF WICKED ENCHANTRESS POOJA');
       expect(
         otherRes.wish,
         '🙇‍♀️🙇‍♀️ Hail Wicked Enchantress Pooja 🙇‍♀️🙇‍♀️',
@@ -171,7 +171,7 @@ void main() {
         name: 'Pooja',
         family: 'Main',
       );
-      expect(mainRes.livingPlace, 'PALACE OF 🌺 FIRST BORN PRINCESS POOJA');
+      expect(mainRes.livingPlace, 'PALACE OF FIRST BORN PRINCESS POOJA');
       expect(
         mainRes.wish,
         '🙇‍♀️🙇‍♀️ Hail First Born Princess Pooja 🙇‍♀️🙇‍♀️',
@@ -184,7 +184,7 @@ void main() {
       );
       expect(
         otherRes.livingPlace,
-        'PALACE OF 🌺 FIRST BORN LUSTRA PRINCESS POOJA',
+        'PALACE OF FIRST BORN LUSTRA PRINCESS POOJA',
       );
       expect(
         otherRes.wish,
@@ -198,7 +198,7 @@ void main() {
         name: 'Pooja',
         family: 'Main',
       );
-      expect(mainRes.livingPlace, 'PALACE OF 🌸 SECOND BORN PRINCESS POOJA');
+      expect(mainRes.livingPlace, 'PALACE OF SECOND BORN PRINCESS POOJA');
       expect(
         mainRes.wish,
         '🙇‍♀️🙇‍♀️ Hail Second Born Princess Pooja 🙇‍♀️🙇‍♀️',
@@ -211,7 +211,7 @@ void main() {
       );
       expect(
         otherRes.livingPlace,
-        'PALACE OF 🌸 SECOND BORN RUMIA PRINCESS POOJA',
+        'PALACE OF SECOND BORN RUMIA PRINCESS POOJA',
       );
       expect(
         otherRes.wish,
@@ -225,7 +225,7 @@ void main() {
         name: 'Pooja',
         family: 'Main',
       );
-      expect(mainRes.livingPlace, 'PALACE OF 🌼 THIRD BORN PRINCESS POOJA');
+      expect(mainRes.livingPlace, 'PALACE OF THIRD BORN PRINCESS POOJA');
       expect(
         mainRes.wish,
         '🙇‍♀️🙇‍♀️ Hail Third Born Princess Pooja 🙇‍♀️🙇‍♀️',
@@ -238,7 +238,7 @@ void main() {
       );
       expect(
         otherRes.livingPlace,
-        'PALACE OF 🌼 THIRD BORN EROTICA PRINCESS POOJA',
+        'PALACE OF THIRD BORN EROTICA PRINCESS POOJA',
       );
       expect(
         otherRes.wish,

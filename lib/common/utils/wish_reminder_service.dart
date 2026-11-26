@@ -256,7 +256,6 @@ class WishReminderService {
           'groups_all_$currentUserId',
           'groups_pooja_$currentUserId',
           'groups_rashmika_$currentUserId',
-          'groups_none_$currentUserId',
         ];
         for (final key in keysToCheck) {
           final cached = box.get(key);

@@ -3,7 +3,7 @@ import 'dart:math' as math;
 import 'dart:ui' as ui;
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:worship_chat/features/group/widgets/royal_3d_crown_widget.dart';
+import 'package:worship_chat/features/group/widgets/cylinder_crown_painter.dart';
 
 void main() {
   test('render live MultiAngleCrownPainter across crowns and angles', () async {
@@ -54,10 +54,9 @@ void main() {
         final recorder = ui.PictureRecorder();
         final canvas = Canvas(recorder, const Rect.fromLTWH(0, 0, 260, 240));
 
-        final painter = MultiAngleCrownPainter(
+        final painter = CylinderCrownPainter(
           frontImage: frontImg,
           rearImage: rearImg,
-          profileImage: profileImg,
           yaw: yaw,
           pitch: -0.15,
           glowColor: color,

@@ -111,9 +111,7 @@ class _MultiGalleryShuffleSheetState
 
   List<GroupModel> get _filteredGroups {
     return _allGroups.where((g) {
-      final general = g.queendom == null || g.queendom == 'None' || g.queendom!.isEmpty;
-      final matchesCategory = _selectedCategory == 'All' ||
-          (_selectedCategory == 'General' ? general : g.queendom == _selectedCategory);
+      final matchesCategory = _selectedCategory == 'All' || g.queendom == _selectedCategory;
       final query = _search.trim().toLowerCase();
       final matchesSearch = query.isEmpty ||
           '${g.name} ${g.effectiveLivingPlace} ${g.queendom ?? ''}'
@@ -383,7 +381,6 @@ class _MultiGalleryShuffleSheetState
                   ('All', Icons.apps_rounded, null),
                   ('Queen Pooja', Icons.star_rounded, const Color(0xFFFFD700)),
                   ('Queen Rashmika', Icons.favorite_rounded, const Color(0xFFFF4081)),
-                  ('General', Icons.groups_rounded, const Color(0xFF00E5FF)),
                 ].map((item) {
                   final label = item.$1;
                   final icon = item.$2;

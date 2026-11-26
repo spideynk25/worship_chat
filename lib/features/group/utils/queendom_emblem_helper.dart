@@ -1,6 +1,5 @@
 import 'package:flutter/material.dart';
 import 'package:worship_chat/features/group/widgets/royal_3d_crown_widget.dart';
-import 'package:worship_chat/features/settings/providers/queendom_customization_provider.dart';
 export 'package:worship_chat/features/group/widgets/royal_3d_crown_widget.dart';
 
 /// Helper and widgets for rendering custom Queendom royal emblems instead of
@@ -9,7 +8,9 @@ class QueendomEmblemHelper {
   static const Map<String, String> _positionToAsset = {
     'Aura Elixiria': 'assets/emojis/aura_elixiria.png',
     'Aura Elixiria Goddess': 'assets/emojis/aura_elixiria.png',
+    'Aura Elixiria Goddesses': 'assets/emojis/aura_elixiria.png',
     'Aura Goddesses': 'assets/emojis/aura_elixiria.png',
+    'Aura Goddess': 'assets/emojis/aura_elixiria.png',
     'Core Supreme': 'assets/emojis/core_supreme.png',
     'Core Supreme Goddess': 'assets/emojis/core_supreme.png',
     'Core Supreme Goddesses': 'assets/emojis/core_supreme.png',
@@ -33,25 +34,11 @@ class QueendomEmblemHelper {
     'Enchantresses': 'assets/emojis/enchantress.png',
     'Enchantress': 'assets/emojis/enchantress.png',
     'First Born Princess': 'assets/emojis/first_born_princess.png',
+    'First Born Princesses': 'assets/emojis/first_born_princess.png',
     'Second Born Princess': 'assets/emojis/second_born_princess.png',
+    'Second Born Princesses': 'assets/emojis/second_born_princess.png',
     'Third Born Princess': 'assets/emojis/third_born_princess.png',
-  };
-
-  static const Map<String, String> _emojiToAsset = {
-    '☀️': 'assets/emojis/aura_elixiria.png',
-    '🌟': 'assets/emojis/core_supreme.png',
-    '🏮': 'assets/emojis/supreme_goddess.png',
-    '🍂': 'assets/emojis/golden_blossom.png',
-    '🪷': 'assets/emojis/goddess.png',
-    '🏵️': 'assets/emojis/demi_goddess.png',
-    '🏵': 'assets/emojis/demi_goddess.png',
-    '🪻': 'assets/emojis/dark_angel.png',
-    '👑': 'assets/emojis/queen.png',
-    '🍁': 'assets/emojis/elfwitch.png',
-    '🍀': 'assets/emojis/enchantress.png',
-    '🌺': 'assets/emojis/first_born_princess.png',
-    '🌸': 'assets/emojis/second_born_princess.png',
-    '🌼': 'assets/emojis/third_born_princess.png',
+    'Third Born Princesses': 'assets/emojis/third_born_princess.png',
   };
 
   /// Checks whether a given position, category, or title represents a Wife or Fuck Toy role.
@@ -118,41 +105,78 @@ class QueendomEmblemHelper {
         lower.contains('wife of ');
   }
 
-  /// Returns the asset path for a position name or emoji, if found.
+  /// Returns the asset path for a position name or title directly using photos without emojis.
   static String? getAsset({String? position, String? emoji}) {
     if (isWifeOrFuckToy(position)) return null;
     if (position != null && _positionToAsset.containsKey(position)) {
       return _positionToAsset[position];
     }
-    if (emoji != null) {
-      final clean = emoji.replaceAll('\uFE0F', '');
-      return _emojiToAsset[emoji] ?? _emojiToAsset[clean];
-    }
     return null;
   }
 
-  /// Extracts the matching emblem asset from a living place string (e.g. 'PALACE OF 🌺 FIRST BORN PRINCESS ...')
+  /// Extracts the matching emblem asset from a living place or title string directly
+  /// using royal position titles without relying on flower emojis.
   static String? getAssetFromLivingPlace(String text) {
     if (isWifeOrFuckToy(text)) return null;
-    final emojiRegex =
-        RegExp(r'[☀️🌟🏮🍂🪷🏵🪻👑🍁🍀🌺🌸🌼]\uFE0F?', unicode: true);
-    final match = emojiRegex.firstMatch(text);
-    if (match != null) {
-      final raw = match.group(0)!;
-      final clean = raw.replaceAll('\uFE0F', '');
-      return _emojiToAsset[raw] ?? _emojiToAsset[clean];
+    final upper = text.toUpperCase();
+
+    if (upper.contains('AURA ELIXIRIA')) {
+      return _positionToAsset['Aura Elixiria'];
+    }
+    if (upper.contains('CORE SUPREME')) {
+      return _positionToAsset['Core Supreme Goddess'];
+    }
+    if (upper.contains('GOLDEN BLOSSOM')) {
+      return _positionToAsset['Golden Blossom Goddess'];
+    }
+    if (upper.contains('FIRST BORN') && upper.contains('PRINCESS')) {
+      return _positionToAsset['First Born Princess'];
+    }
+    if (upper.contains('SECOND BORN') && upper.contains('PRINCESS')) {
+      return _positionToAsset['Second Born Princess'];
+    }
+    if (upper.contains('THIRD BORN') && upper.contains('PRINCESS')) {
+      return _positionToAsset['Third Born Princess'];
+    }
+    if (upper.contains('DEMI GODDESS') || upper.contains('DEMI')) {
+      return _positionToAsset['Demi Goddess'];
+    }
+    if (upper.contains('DARK ANGEL')) {
+      return _positionToAsset['Dark Angel'];
+    }
+    if (upper.contains('SUPREME GODDESS') || upper.contains('SUPREME')) {
+      return _positionToAsset['Supreme Goddess'];
+    }
+    if (upper.contains('ELFWITCH')) {
+      return _positionToAsset['Elfwitch'];
+    }
+    if (upper.contains('ENCHANTRESS')) {
+      return _positionToAsset['Enchantress'];
+    }
+    if (upper.contains('QUEEN')) {
+      return _positionToAsset['Queen'];
+    }
+    if (upper.contains('GODDESS')) {
+      return _positionToAsset['Goddess'];
+    }
+
+    for (final entry in _positionToAsset.entries) {
+      if (upper.contains(entry.key.toUpperCase())) {
+        return entry.value;
+      }
     }
     return null;
   }
 
   /// Extracts the matching emblem asset from a text string by checking living place,
-  /// position names, and emoji codes.
+  /// position names, or direct position titles.
   static String? getAssetFromText(String text) {
     if (isWifeOrFuckToy(text)) return null;
     final fromLivingPlace = getAssetFromLivingPlace(text);
     if (fromLivingPlace != null) return fromLivingPlace;
+    final upper = text.toUpperCase();
     for (final entry in _positionToAsset.entries) {
-      if (text.contains(entry.key)) {
+      if (upper.contains(entry.key.toUpperCase())) {
         return entry.value;
       }
     }
@@ -174,7 +198,8 @@ class QueendomEmblemHelper {
     }
     String? asset = getAsset(position: position, emoji: emoji);
     if (asset == null && livingPlace != null && livingPlace.isNotEmpty) {
-      asset = getAssetFromLivingPlace(livingPlace) ?? getAssetFromText(livingPlace);
+      asset =
+          getAssetFromLivingPlace(livingPlace) ?? getAssetFromText(livingPlace);
     }
     if (asset == null) return null;
 
@@ -214,11 +239,7 @@ class QueendomEmblemHelper {
         clipBehavior: Clip.none,
         children: [
           badgeChild,
-          Positioned(
-            top: -2,
-            right: -2,
-            child: overlayWidget,
-          ),
+          Positioned(top: -2, right: -2, child: overlayWidget),
         ],
       );
     }
@@ -228,19 +249,19 @@ class QueendomEmblemHelper {
 
   /// Strips known queendom emojis from a title or text string.
   static String cleanTitle(String text) {
-    final emojiRegex =
-        RegExp(r'[☀️🌟🏮🍂🪷🏵🪻👑🍁🍀🌺🌸🌼]\uFE0F?', unicode: true);
+    final emojiRegex = RegExp(
+      r'[☀️🌟🏮🍂🪷🏵🪻👑🍁🍀🌺🌸🌼]\uFE0F?',
+      unicode: true,
+    );
     return text
         .replaceAll(emojiRegex, '')
         .replaceAll(RegExp(r'\s+'), ' ')
         .trim();
   }
 
-  /// Builds a rich text widget where known Unicode emojis are seamlessly replaced
-  /// with their corresponding custom glowing emblem image, and optionally prepends
-  /// a leading position emblem or leading widget inline.
-  /// If a [family] or [fallbackFamily] is present, displays the Royal Family Crest
-  /// at the end of the title.
+  /// Builds a rich text widget where position emblems and family crests are seamlessly rendered
+  /// as custom glowing royal images directly without using flower emojis.
+  /// If a [family] or [fallbackFamily] is present, displays the Royal Family Crest at the end of the title.
   static Widget buildRichTitle({
     required String title,
     required TextStyle style,
@@ -258,11 +279,13 @@ class QueendomEmblemHelper {
     final effectiveFamilySize = familyEmblemSize ?? emblemSize;
     final cleanFamily =
         (family != null && family.isNotEmpty && family != 'None')
-            ? family
-            : fallbackFamily;
+        ? family
+        : fallbackFamily;
     final familyAsset = cleanFamily != null
         ? QueendomFamilyEmblemHelper.getAsset(cleanFamily)
         : null;
+
+    final cleanedText = cleanTitle(title);
 
     if (leadingWidget != null) {
       spans.add(
@@ -274,6 +297,7 @@ class QueendomEmblemHelper {
           ),
         ),
       );
+      spans.add(TextSpan(text: cleanedText));
     } else if (leadingPosition != null &&
         leadingPosition.isNotEmpty &&
         leadingPosition != 'None') {
@@ -281,7 +305,7 @@ class QueendomEmblemHelper {
         WidgetSpan(
           alignment: PlaceholderAlignment.middle,
           child: Padding(
-            padding: const EdgeInsets.only(right: 3.0),
+            padding: const EdgeInsets.only(right: 3.5),
             child: QueendomEmblemWidget(
               position: leadingPosition,
               size: emblemSize,
@@ -289,56 +313,64 @@ class QueendomEmblemHelper {
           ),
         ),
       );
-    }
+      spans.add(TextSpan(text: cleanedText));
+    } else {
+      // Check if title has a living place or position emblem to render directly
+      final livingAsset =
+          getAssetFromLivingPlace(title) ??
+          getAssetFromLivingPlace(cleanedText) ??
+          getAssetFromText(title) ??
+          getAssetFromText(cleanedText);
 
-    final emojiRegex =
-        RegExp(r'[☀️🌟🏮🍂🪷🏵🪻👑🍁🍀🌺🌸🌼]\uFE0F?', unicode: true);
-    final matches = emojiRegex.allMatches(title);
-    if (matches.isEmpty && spans.isEmpty && familyAsset == null) {
-      return Text(
-        title,
-        style: style,
-        textAlign: textAlign,
-        maxLines: maxLines,
-        overflow: overflow,
-      );
-    }
-
-    int lastEnd = 0;
-
-    for (final match in matches) {
-      if (match.start > lastEnd) {
-        spans.add(TextSpan(text: title.substring(lastEnd, match.start)));
-      }
-
-      final rawEmoji = match.group(0)!;
-      final cleanEmoji = rawEmoji.replaceAll('\uFE0F', '');
-      final asset = _emojiToAsset[rawEmoji] ?? _emojiToAsset[cleanEmoji];
-
-      if (asset != null) {
-        spans.add(
-          WidgetSpan(
-            alignment: PlaceholderAlignment.middle,
-            child: Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 2.5),
-              child: Image.asset(
-                asset,
-                width: emblemSize,
-                height: emblemSize,
-                fit: BoxFit.contain,
-                errorBuilder: (_, __, ___) => Text(rawEmoji, style: style),
+      if (livingAsset != null) {
+        // Check if title has a living place prefix ending with OF (e.g. "PALACE OF", "TEMPLE OF", "SANCTUM OF")
+        final ofRegex = RegExp(
+          r'^((?:DARK\s+|GOLDEN\s+|ROYAL\s+)?(?:PALACE|TEMPLE|SHRINE|SANCTUM|HEAVEN|FORTRESS)\s+(?:OF|of)\s+)(.*)$',
+          caseSensitive: false,
+        );
+        final match = ofRegex.firstMatch(cleanedText);
+        if (match != null) {
+          final prefix = match.group(1)!;
+          final rest = match.group(2)!;
+          spans.add(TextSpan(text: prefix));
+          spans.add(
+            WidgetSpan(
+              alignment: PlaceholderAlignment.middle,
+              child: Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 3.0),
+                child: Image.asset(
+                  livingAsset,
+                  width: emblemSize,
+                  height: emblemSize,
+                  fit: BoxFit.contain,
+                  errorBuilder: (_, __, ___) => const SizedBox.shrink(),
+                ),
               ),
             ),
-          ),
-        );
+          );
+          spans.add(TextSpan(text: rest));
+        } else {
+          // Prepend emblem directly before text
+          spans.add(
+            WidgetSpan(
+              alignment: PlaceholderAlignment.middle,
+              child: Padding(
+                padding: const EdgeInsets.only(right: 3.5),
+                child: Image.asset(
+                  livingAsset,
+                  width: emblemSize,
+                  height: emblemSize,
+                  fit: BoxFit.contain,
+                  errorBuilder: (_, __, ___) => const SizedBox.shrink(),
+                ),
+              ),
+            ),
+          );
+          spans.add(TextSpan(text: cleanedText));
+        }
       } else {
-        spans.add(TextSpan(text: rawEmoji));
+        spans.add(TextSpan(text: cleanedText));
       }
-      lastEnd = match.end;
-    }
-
-    if (lastEnd < title.length) {
-      spans.add(TextSpan(text: title.substring(lastEnd)));
     }
 
     // Place the family emblem at the end of the title
@@ -360,11 +392,18 @@ class QueendomEmblemHelper {
       );
     }
 
-    return Text.rich(
-      TextSpan(
+    if (spans.length == 1 && spans.first is TextSpan) {
+      return Text(
+        (spans.first as TextSpan).text ?? '',
         style: style,
-        children: spans,
-      ),
+        textAlign: textAlign,
+        maxLines: maxLines,
+        overflow: overflow,
+      );
+    }
+
+    return Text.rich(
+      TextSpan(style: style, children: spans),
       textAlign: textAlign,
       maxLines: maxLines,
       overflow: overflow,
@@ -407,18 +446,9 @@ class QueendomEmblemWidget extends StatelessWidget {
       );
     }
 
-    final pos = position;
-    final effectiveEmoji = emoji ??
-        (pos != null
-            ? QueendomCustomizationService.instance.state.getCategoryByPosition(pos)?.emoji
-            : null);
-
-    final asset = QueendomEmblemHelper.getAsset(position: position, emoji: effectiveEmoji);
+    final asset = QueendomEmblemHelper.getAsset(position: position);
     if (asset == null) {
-      return fallback ??
-          (effectiveEmoji != null
-              ? Text(effectiveEmoji, style: TextStyle(fontSize: size * 0.8))
-              : const SizedBox.shrink());
+      return fallback ?? const SizedBox.shrink();
     }
 
     return Image.asset(
@@ -426,11 +456,7 @@ class QueendomEmblemWidget extends StatelessWidget {
       width: size,
       height: size,
       fit: BoxFit.contain,
-      errorBuilder: (_, __, ___) =>
-          fallback ??
-          (effectiveEmoji != null
-              ? Text(effectiveEmoji, style: TextStyle(fontSize: size * 0.8))
-              : const SizedBox.shrink()),
+      errorBuilder: (_, __, ___) => fallback ?? const SizedBox.shrink(),
     );
   }
 }
@@ -453,7 +479,6 @@ class QueendomFamilyEmblemHelper {
     'Velisse': 'assets/emojis/family_velisse.png',
   };
 
-
   /// Returns the asset path for a family name, case-insensitively.
   static String? getAsset(String? family) {
     if (family == null || family.isEmpty || family == 'None') return null;
@@ -474,8 +499,10 @@ class QueendomFamilyEmblemHelper {
   static String? getAssetFromText(String text) {
     if (text.isEmpty) return null;
     for (final entry in _familyToAsset.entries) {
-      if (RegExp(r'\b' + entry.key + r'\b', caseSensitive: false)
-          .hasMatch(text)) {
+      if (RegExp(
+        r'\b' + entry.key + r'\b',
+        caseSensitive: false,
+      ).hasMatch(text)) {
         return entry.value;
       }
     }
@@ -535,11 +562,7 @@ class QueendomFamilyEmblemHelper {
         clipBehavior: Clip.none,
         children: [
           badgeChild,
-          Positioned(
-            top: -2,
-            right: -2,
-            child: overlayWidget,
-          ),
+          Positioned(top: -2, right: -2, child: overlayWidget),
         ],
       );
     }
@@ -585,4 +608,3 @@ class QueendomFamilyEmblemWidget extends StatelessWidget {
     );
   }
 }
-

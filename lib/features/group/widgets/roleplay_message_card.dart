@@ -1,4 +1,3 @@
-import 'dart:ui';
 import 'dart:io';
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
@@ -25,6 +24,8 @@ class RoleplayMessageCard extends StatefulWidget {
   final VoidCallback onSwipe;
   final VoidCallback? onForward;
   final VoidCallback? onDelete;
+  final VoidCallback? onPin;
+  final bool isPinned;
   final void Function(String emoji)? onReactionSelected;
   final Color? accentColor;
   final String? queendom;
@@ -36,6 +37,8 @@ class RoleplayMessageCard extends StatefulWidget {
     required this.onSwipe,
     this.onForward,
     this.onDelete,
+    this.onPin,
+    this.isPinned = false,
     this.onReactionSelected,
     this.accentColor,
     this.queendom,
@@ -161,6 +164,8 @@ class _RoleplayMessageCardState extends State<RoleplayMessageCard>
           imageUrl: mediaUrl,
         );
       },
+      onPin: widget.messageData.isDeleted ? null : widget.onPin,
+      isPinned: widget.isPinned,
       onDelete: widget.onDelete,
       isMyMessage: false,
     );
@@ -409,9 +414,7 @@ class _RoleplayMessageCardState extends State<RoleplayMessageCard>
                           ),
                           child: ClipRRect(
                             borderRadius: BorderRadius.circular(16),
-                            child: BackdropFilter(
-                              filter: ImageFilter.blur(sigmaX: 13, sigmaY: 13),
-                              child: Consumer(
+                            child: Consumer(
                                 builder: (context, ref, _) {
                                   final bubbleSettings = ref.watch(chatBubbleSettingsProvider);
                                   final roleplayColors = bubbleSettings.getRoleplayGradientColors(accent);
@@ -528,6 +531,8 @@ class _RoleplayMessageCardState extends State<RoleplayMessageCard>
                                         ),
                                       ),
                                       const SizedBox(width: 8),
+                                      if (widget.isPinned)
+                                        const MessagePinBadge(size: 10.5),
                                       Text(
                                         timeStr,
                                         style: TextStyle(
@@ -546,7 +551,6 @@ class _RoleplayMessageCardState extends State<RoleplayMessageCard>
                             },
                           ),
                         ),
-                      ),
                         ),
                       );
                     },

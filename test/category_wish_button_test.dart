@@ -134,11 +134,11 @@ void main() {
       await tester.pump(const Duration(milliseconds: 300));
 
       // Verify category title and mistress count
-      expect(find.text('Aura Goddesses'), findsOneWidget);
+      expect(find.text('Aura Elixiria Goddesses'), findsOneWidget);
       expect(find.text('2 mistresses'), findsOneWidget);
 
       // Verify the wish button (tooltip and devotee emoji)
-      final wishTooltipFinder = find.byTooltip('Wish all Aura Goddesses');
+      final wishTooltipFinder = find.byTooltip('Wish all Aura Elixiria Goddesses');
       expect(wishTooltipFinder, findsOneWidget);
       expect(find.text('🙇🏻‍♂️'), findsOneWidget);
 
@@ -148,9 +148,9 @@ void main() {
       await tester.pump(const Duration(milliseconds: 300));
 
       // Verify confirmation dialog appeared
-      expect(find.text('Wish All Aura Goddesses?'), findsOneWidget);
+      expect(find.text('Wish All Aura Elixiria Goddesses?'), findsOneWidget);
       expect(
-        find.text('Send royal devotion wishes to all 2 mistresses in Aura Goddesses?'),
+        find.text('Send royal devotion wishes to all 2 mistresses in Aura Elixiria Goddesses?'),
         findsOneWidget,
       );
 
@@ -198,12 +198,12 @@ void main() {
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 300));
 
-      final wishTooltipFinder = find.byTooltip('Wish all Aura Goddesses');
+      final wishTooltipFinder = find.byTooltip('Wish all Aura Elixiria Goddesses');
       await tester.tap(wishTooltipFinder);
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 300));
 
-      expect(find.text('Wish All Aura Goddesses?'), findsOneWidget);
+      expect(find.text('Wish All Aura Elixiria Goddesses?'), findsOneWidget);
 
       // Tap Cancel
       await tester.tap(find.text('Cancel'));
@@ -211,7 +211,7 @@ void main() {
       await tester.pump(const Duration(milliseconds: 300));
 
       // Dialog closed and no messages sent
-      expect(find.text('Wish All Aura Goddesses?'), findsNothing);
+      expect(find.text('Wish All Aura Elixiria Goddesses?'), findsNothing);
       expect(fakeController.sentMessages, isEmpty);
     });
 
@@ -234,15 +234,15 @@ void main() {
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 300));
 
-      expect(find.text('Aura Goddesses'), findsOneWidget);
-      final wishTooltipFinder = find.byTooltip('Wish all Aura Goddesses');
+      expect(find.text('Aura Elixiria Goddesses'), findsOneWidget);
+      final wishTooltipFinder = find.byTooltip('Wish all Aura Elixiria Goddesses');
       expect(wishTooltipFinder, findsOneWidget);
 
       await tester.tap(wishTooltipFinder);
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 300));
 
-      expect(find.text('Wish All Aura Goddesses?'), findsOneWidget);
+      expect(find.text('Wish All Aura Elixiria Goddesses?'), findsOneWidget);
       await tester.tap(find.widgetWithText(ElevatedButton, 'Wish All 🙇🏻‍♂️'));
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 500));

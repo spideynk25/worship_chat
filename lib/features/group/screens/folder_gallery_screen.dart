@@ -13,6 +13,7 @@ import 'package:worship_chat/colors.dart';
 import 'package:worship_chat/common/utils/app_capabilities.dart';
 import 'package:worship_chat/common/utils/google_lens_service.dart';
 import 'package:worship_chat/common/utils/utils.dart';
+import 'package:worship_chat/common/widgets/wallpaper_widget_sheet.dart';
 import 'package:worship_chat/features/chat/widgets/forward_message_sheet.dart';
 import 'package:worship_chat/features/group/screens/slide_show_screen.dart';
 import 'package:worship_chat/features/group/services/recent_folders_service.dart';
@@ -2081,6 +2082,24 @@ class _LocalFullscreenViewerState extends State<_LocalFullscreenViewer> {
                                     onPressed: () => GoogleLensService.search(
                                       context: context,
                                       localPath: currentFile.path,
+                                    ),
+                                  ),
+
+                                  // ── Wallpaper & Home Widget ────────────
+                                  IconButton(
+                                    icon: const Icon(
+                                      Icons.wallpaper_rounded,
+                                      color: Colors.white,
+                                    ),
+                                    tooltip: 'Wallpaper & Home Widget',
+                                    onPressed: () =>
+                                        WallpaperAndWidgetSheet.show(
+                                      context,
+                                      photoId:
+                                          'loc_${currentFile.path.hashCode}',
+                                      localPath: currentFile.path,
+                                      title: fileName,
+                                      subtitle: widget.folderName,
                                     ),
                                   ),
 

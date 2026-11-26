@@ -230,7 +230,7 @@ class AppBarStatusSubtitle extends StatelessWidget {
 
   const AppBarStatusSubtitle({
     super.key,
-    required this.isTyping,
+    this.isTyping = false,
     required this.isOnline,
     this.lastSeen,
     this.accentColor = tabColor,
@@ -374,13 +374,13 @@ class AppBarStatusSubtitle extends StatelessWidget {
 /// ─────────────────────────────────────────────────────────────────────────────
 class GroupAppBarStatusSubtitle extends StatelessWidget {
   final Map<String, String> typingUsers;
-  final int memberCount;
+  final int? memberCount;
   final Color accentColor;
 
   const GroupAppBarStatusSubtitle({
     super.key,
     required this.typingUsers,
-    required this.memberCount,
+    this.memberCount,
     this.accentColor = tabColor,
   });
 
@@ -442,31 +442,7 @@ class GroupAppBarStatusSubtitle extends StatelessWidget {
                 ),
               ],
             )
-          : Row(
-              key: const ValueKey('group_members_state'),
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                const Icon(
-                  Icons.people_alt_outlined,
-                  size: 13,
-                  color: Colors.white54,
-                ),
-                const SizedBox(width: 4),
-                Flexible(
-                  child: Text(
-                    '$memberCount members',
-                    style: const TextStyle(
-                      fontSize: 12.0,
-                      fontWeight: FontWeight.normal,
-                      color: Colors.white54,
-                      letterSpacing: 0.1,
-                    ),
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                  ),
-                ),
-              ],
-            ),
+          : const SizedBox.shrink(key: ValueKey('group_typing_idle')),
     );
   }
 }

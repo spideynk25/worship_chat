@@ -97,7 +97,7 @@ class UserModel {
       isOnline: map['isOnline'] ?? false,
       email: map['email'] ?? '',
       groupId: List<String>.from(map['groupId'] ?? []),
-      fcmToken: map['fcmToken'] ?? '',
+      fcmToken: (map['fcmToken'] ?? map['token'] ?? map['pushToken'] ?? '').toString(),
       lastSeen: parsedLastSeen,
     );
   }

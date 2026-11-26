@@ -5,6 +5,7 @@ import 'dart:math' hide log;
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/cupertino.dart';
+import 'package:flutter/foundation.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -19,6 +20,7 @@ import 'package:worship_chat/common/utils/firebase_notification_service.dart';
 import 'package:worship_chat/common/utils/utils.dart';
 import 'package:worship_chat/common/widgets/chat_status_indicator.dart';
 import 'package:worship_chat/features/chat/screens/one_to_one_chat_screen.dart';
+import 'package:worship_chat/features/chat/widgets/chat_power_ups.dart';
 import 'package:worship_chat/features/group/controller/group_controller.dart';
 import 'package:worship_chat/features/group/screens/edit_group_screen.dart';
 import 'package:worship_chat/features/group/screens/group_gallery_screen.dart';
@@ -27,6 +29,9 @@ import 'package:worship_chat/features/group/services/roleplay_service.dart';
 import 'package:worship_chat/features/dashboard/repositories/event_repository.dart';
 import 'package:worship_chat/features/group/widgets/group_bottom_chat_field_widget.dart';
 import 'package:worship_chat/features/group/widgets/group_chat_list_widget.dart';
+import 'package:worship_chat/features/settings/providers/queendom_customization_provider.dart';
+import 'package:worship_chat/features/home/screens/home_screen.dart';
+import 'package:worship_chat/features/settings/models/queendom_customization_model.dart';
 import 'package:worship_chat/models/event.dart';
 import 'package:worship_chat/models/group.dart';
 import 'package:worship_chat/features/group/utils/group_template_helper.dart';
@@ -68,9 +73,11 @@ class _GroupChatScreenState extends ConsumerState<GroupChatScreen>
   late List<String> receiverIds;
   final Set<String> _dismissedBannerEventIds = {};
   late final Stream<GroupModel> _groupStream;
+  late final Stream<Map<String, String>> _groupTypingStream;
   GroupModel? _currentGroup;
   StreamSubscription<GroupModel>? _groupSubscription;
   String? _currentChatBackgroundUrl;
+  final ChatPowerUpController _powerUpController = ChatPowerUpController();
   bool get _isRoleplayMode =>
       RoleplayService.instance.isRoleplayActive(widget.groupId);
   bool get _isManualRoleplay =>
@@ -78,24 +85,6 @@ class _GroupChatScreenState extends ConsumerState<GroupChatScreen>
   int get _roleplayIntervalSeconds =>
       RoleplayService.instance.getInterval(widget.groupId);
   bool _isSendingManualPhoto = false;
-
-  bool get _hasSanctuary {
-    final group = _currentGroup;
-    if (group != null) {
-      final position = group.position;
-      final family = group.family;
-      final wish = group.wish ?? widget.wish;
-      final hasPosition =
-          position != null && position.isNotEmpty && position != 'None';
-      final hasFamily =
-          family != null && family.isNotEmpty && family != 'None';
-      final hasWish = wish != null && wish.isNotEmpty;
-      return hasPosition || hasFamily || hasWish;
-    }
-    final hasWish = widget.wish != null && widget.wish!.isNotEmpty;
-    final isQueendom = widget.queendom != null && widget.queendom!.isNotEmpty;
-    return hasWish || isQueendom;
-  }
 
   void _onRoleplayServiceUpdated() {
     if (mounted) setState(() {});
@@ -568,7 +557,48 @@ class _GroupChatScreenState extends ConsumerState<GroupChatScreen>
     );
   }
 
+  void _handleBack() {
+    if (Navigator.of(context).canPop()) {
+      Navigator.of(context).pop();
+    } else {
+      Navigator.of(context).pushReplacement(
+        MaterialPageRoute(builder: (_) => const HomeScreen()),
+      );
+    }
+  }
+
   Color get _accentColor {
+    if (widget.color != null &&
+        widget.color != const Color(0xFFFFD700) &&
+        widget.color != const Color(0xFFFF4081)) {
+      final hsl = HSLColor.fromColor(widget.color!);
+      if (hsl.lightness < 0.25) {
+        return hsl.withLightness(0.55).withSaturation(0.7).toColor();
+      }
+      return widget.color!;
+    }
+    final pos = _currentGroup?.position;
+    if (pos != null && pos.isNotEmpty && pos != 'None') {
+      try {
+        final categories = ref.read(queendomCustomizationProvider).allCategories;
+        final match = categories.firstWhere(
+          (c) => c.position.toLowerCase() == pos.toLowerCase(),
+          orElse: () => QueendomCategory(
+            title: '',
+            position: '',
+            color: widget.queendom == 'Queen Rashmika'
+                ? const Color(0xFFFF4081)
+                : const Color(0xFFFFD700),
+            emoji: '',
+          ),
+        );
+        final hsl = HSLColor.fromColor(match.color);
+        if (hsl.lightness < 0.25) {
+          return hsl.withLightness(0.55).withSaturation(0.7).toColor();
+        }
+        return match.color;
+      } catch (_) {}
+    }
     if (widget.color != null) {
       final hsl = HSLColor.fromColor(widget.color!);
       if (hsl.lightness < 0.25) {
@@ -587,8 +617,15 @@ class _GroupChatScreenState extends ConsumerState<GroupChatScreen>
   @override
   void initState() {
     super.initState();
+    try {
+      if (Hive.isBoxOpen('groupsBox')) {
+        _currentGroup = Hive.box<GroupModel>('groupsBox').get(widget.groupId);
+      }
+    } catch (_) {}
     _currentChatBackgroundUrl = widget.chatBackgroundUrl;
     _loadCachedBackground();
+    _groupTypingStream =
+        ref.read(groupControllerProvider).getGroupTypingStatus(widget.groupId);
     WidgetsBinding.instance.addObserver(this);
     RoleplayService.instance.addListener(_onRoleplayServiceUpdated);
     _groupStream = FirebaseFirestore.instance
@@ -602,9 +639,18 @@ class _GroupChatScreenState extends ConsumerState<GroupChatScreen>
         .cast<GroupModel>();
     _groupSubscription = _groupStream.listen((group) {
       if (mounted) {
-        setState(() {
-          _currentGroup = group;
-        });
+        if (_currentGroup?.name != group.name ||
+            _currentGroup?.groupPic != group.groupPic ||
+            _currentGroup?.chatBackgroundUrl != group.chatBackgroundUrl ||
+            _currentGroup?.position != group.position ||
+            _currentGroup?.queendom != group.queendom ||
+            _currentGroup?.wish != group.wish ||
+            _currentGroup?.roleplayIntervalSeconds != group.roleplayIntervalSeconds ||
+            !listEquals(_currentGroup?.membersUid, group.membersUid)) {
+          setState(() {
+            _currentGroup = group;
+          });
+        }
       }
     });
     ActiveChatNotifier.instance.enter(widget.groupId, chatName: widget.name);
@@ -633,7 +679,7 @@ class _GroupChatScreenState extends ConsumerState<GroupChatScreen>
       final prefs = await SharedPreferences.getInstance();
       final cachedBg = prefs.getString('group_bg_${widget.groupId}');
       if (cachedBg != null && cachedBg.isNotEmpty && mounted) {
-        if (_currentChatBackgroundUrl == null || _currentChatBackgroundUrl!.isEmpty) {
+        if (_currentChatBackgroundUrl != cachedBg) {
           setState(() {
             _currentChatBackgroundUrl = cachedBg;
           });
@@ -663,6 +709,7 @@ class _GroupChatScreenState extends ConsumerState<GroupChatScreen>
 
   @override
   void dispose() {
+    _powerUpController.dispose();
     _groupSubscription?.cancel();
     RoleplayService.instance.removeListener(_onRoleplayServiceUpdated);
     WidgetsBinding.instance.removeObserver(this);
@@ -685,6 +732,19 @@ class _GroupChatScreenState extends ConsumerState<GroupChatScreen>
           wish: widget.wish,
           queendom: widget.queendom,
           color: widget.color,
+        ),
+      ),
+    );
+  }
+
+  void _openGroupGallery() {
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => GroupGalleryScreen(
+          groupId: widget.groupId,
+          groupName: widget.name,
+          accentColor: _accentColor,
         ),
       ),
     );
@@ -738,10 +798,9 @@ class _GroupChatScreenState extends ConsumerState<GroupChatScreen>
             hideBottomControls:
                 true, // Changed to true to avoid navigation bar overlap
             showCropGrid: true,
-            statusBarColor: appBarColor,
-            dimmedLayerColor: Colors.black.withOpacity(0.8),
+            dimmedLayerColor: Colors.black.withValues(alpha: 0.8),
             cropFrameColor: Colors.white,
-            cropGridColor: Colors.white.withOpacity(0.5),
+            cropGridColor: Colors.white.withValues(alpha: 0.5),
             cropFrameStrokeWidth: 2,
             cropGridRowCount: 3,
             cropGridColumnCount: 3,
@@ -858,27 +917,33 @@ class _GroupChatScreenState extends ConsumerState<GroupChatScreen>
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(
-        titleSpacing: 0,
-        toolbarHeight: 114,
-        backgroundColor: widget.color != null
-            ? widget.color!.withAlpha(90)
-            : appBarColor,
-        elevation: 0,
-        leadingWidth: 0,
-        automaticallyImplyLeading: false,
-        title: Padding(
-          padding: const EdgeInsets.only(left: 4, right: 4, top: 12),
-          child: Row(
-            children: [
-              IconButton(
-                alignment: Alignment.centerLeft,
-                onPressed: () => Navigator.pop(context),
-                icon: const Icon(CupertinoIcons.back),
-                padding: EdgeInsets.zero,
-                constraints: const BoxConstraints(minWidth: 32, minHeight: 36),
-              ),
+    return PopScope(
+      canPop: false,
+      onPopInvokedWithResult: (didPop, result) {
+        if (didPop) return;
+        _handleBack();
+      },
+      child: Scaffold(
+        appBar: AppBar(
+          titleSpacing: 0,
+          toolbarHeight: 76,
+          backgroundColor: _accentColor.withAlpha(90),
+          elevation: 0,
+          scrolledUnderElevation: 0,
+          leadingWidth: 0,
+          automaticallyImplyLeading: false,
+          title: Padding(
+            padding: const EdgeInsets.only(left: 4, right: 4),
+            child: Row(
+              children: [
+                IconButton(
+                  alignment: Alignment.centerLeft,
+                  onPressed: _handleBack,
+                  icon: const Icon(CupertinoIcons.back, size: 24),
+                  padding: const EdgeInsets.only(left: 6, right: 4),
+                  constraints: const BoxConstraints(minWidth: 36, minHeight: 48),
+                  tooltip: 'Back',
+                ),
               Expanded(
                 child: GestureDetector(
                   onTap: _openGroupInfo,
@@ -887,67 +952,124 @@ class _GroupChatScreenState extends ConsumerState<GroupChatScreen>
                     children: [
                       StreamBuilder<GroupModel>(
                         stream: _groupStream,
+                        initialData: _currentGroup,
                         builder: (context, snapshot) {
-                          final group = snapshot.data;
+                          final group = snapshot.data ?? _currentGroup;
                           final pic = (group?.groupPic.isNotEmpty ?? false)
                               ? group!.groupPic
                               : (widget.groupPic ?? '');
-                          return RoyalAvatarDecoration(
-                            avatarRadius: 28,
-                            position: group?.position,
-                            livingPlace:
-                                group?.effectiveLivingPlace ?? widget.name,
-                            accentColor: _accentColor,
-                            badge:
-                                QueendomFamilyEmblemHelper.buildFamilyEmblemBadge(
-                              family: group?.family,
-                              fallbackText:
+                          return GestureDetector(
+                            onTap: _openGroupInfo,
+                            onLongPress: () {
+                              HapticFeedback.mediumImpact();
+                              _openGroupGallery();
+                            },
+                            child: RoyalAvatarDecoration(
+                              avatarRadius: 21,
+                              crownSize: 24,
+                              crownTopOffset: -3.0,
+                              perchOutside: true,
+                              position: group?.position,
+                              livingPlace:
                                   group?.effectiveLivingPlace ?? widget.name,
                               accentColor: _accentColor,
-                              size: 16.0,
-                            ),
-                            badgeBottomOffset: 0,
-                            badgeRightOffset: 0,
-                            child: CircleAvatar(
-                              radius: 28,
-                              backgroundImage:
-                                  pic.isNotEmpty ? NetworkImage(pic) : null,
-                              backgroundColor: Colors.grey[850],
-                              child: pic.isEmpty
-                                  ? const Icon(
-                                      Icons.group,
-                                      color: Colors.white,
-                                      size: 26,
-                                    )
-                                  : null,
+                              badge:
+                                  QueendomFamilyEmblemHelper.buildFamilyEmblemBadge(
+                                family: group?.family,
+                                fallbackText:
+                                    group?.effectiveLivingPlace ?? widget.name,
+                                accentColor: _accentColor,
+                                size: 13.5,
+                              ),
+                              badgeBottomOffset: 0,
+                              badgeRightOffset: 0,
+                              child: CircleAvatar(
+                                radius: 21,
+                                backgroundImage:
+                                    pic.isNotEmpty ? NetworkImage(pic) : null,
+                                backgroundColor: Colors.grey[850],
+                                child: pic.isEmpty
+                                    ? const Icon(
+                                        Icons.group,
+                                        color: Colors.white,
+                                        size: 21,
+                                      )
+                                    : null,
+                              ),
                             ),
                           );
                         },
                       ),
                       const SizedBox(width: 8),
                       Expanded(
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          mainAxisAlignment: MainAxisAlignment.center,
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            StreamBuilder<GroupModel>(
-                              stream: _groupStream,
-                              builder: (context, snapshot) {
-                                final group = snapshot.data;
-                                final title = group?.nameWithPosition ??
-                                    GroupTemplateHelper.getNameWithPosition(
-                                      name: widget.name,
-                                      position: group?.position,
-                                      family: group?.family,
-                                    );
-                                final position = group?.position;
-                                final hasLivingPlaceEmblem =
-                                    QueendomEmblemHelper.getAssetFromLivingPlace(
-                                            title) !=
-                                        null;
+                        child: StreamBuilder<GroupModel>(
+                          stream: _groupStream,
+                          initialData: _currentGroup,
+                          builder: (context, snapshot) {
+                            final group = snapshot.data ?? _currentGroup;
+                            final title = group?.nameWithPosition ??
+                                GroupTemplateHelper.getNameWithPosition(
+                                  name: widget.name,
+                                  position: group?.position,
+                                  family: group?.family,
+                                );
+                            final position = group?.position;
+                            final hasLivingPlaceEmblem =
+                                QueendomEmblemHelper.getAssetFromLivingPlace(
+                                        title) !=
+                                    null;
 
-                                return QueendomEmblemHelper.buildRichTitle(
+                            final family = group?.family;
+                            final hasFamily = family != null &&
+                                family.isNotEmpty &&
+                                family != 'None';
+
+                            // Robustly resolve and clean living place name
+                            String livingPlace = '';
+                            if (group?.livingPlace != null &&
+                                group!.livingPlace!.trim().isNotEmpty) {
+                              livingPlace = GroupTemplateHelper.cleanLivingPlace(
+                                group.livingPlace!.trim(),
+                                position: position,
+                                family: family,
+                              );
+                            } else if (group != null &&
+                                group.effectiveLivingPlace.trim().isNotEmpty &&
+                                group.effectiveLivingPlace.trim().toLowerCase() !=
+                                    group.name.trim().toLowerCase() &&
+                                group.effectiveLivingPlace.trim().toLowerCase() !=
+                                    widget.name.trim().toLowerCase()) {
+                              livingPlace = GroupTemplateHelper.cleanLivingPlace(
+                                group.effectiveLivingPlace.trim(),
+                                position: position,
+                                family: family,
+                              );
+                            } else if (position != null &&
+                                position.isNotEmpty &&
+                                position != 'None') {
+                              final template =
+                                  GroupTemplateHelper.generateTemplate(
+                                position: position,
+                                name: group?.name ?? widget.name,
+                                family: family ?? 'Main',
+                              );
+                              if (template.livingPlace.isNotEmpty) {
+                                livingPlace = template.livingPlace;
+                              }
+                            }
+
+                            final cleanPlace =
+                                GroupTemplateHelper.formatSanctuarySubtitle(
+                              livingPlace: livingPlace,
+                              deityName: group?.name ?? widget.name,
+                            );
+
+                            return Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              mainAxisAlignment: MainAxisAlignment.center,
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                QueendomEmblemHelper.buildRichTitle(
                                   title: title,
                                   family: group?.family,
                                   fallbackFamily: 'Main',
@@ -958,97 +1080,73 @@ class _GroupChatScreenState extends ConsumerState<GroupChatScreen>
                                       ? position
                                       : null,
                                   style: const TextStyle(
-                                    fontSize: 13.5,
+                                    fontSize: 14.0,
                                     fontWeight: FontWeight.w600,
                                     letterSpacing: 0.1,
                                     height: 1.15,
+                                    color: Colors.white,
                                   ),
-                                  emblemSize: 16.5,
-                                  maxLines: 3,
+                                  emblemSize: 15.0,
+                                  maxLines: 1,
                                   overflow: TextOverflow.ellipsis,
-                                );
-                              },
-                            ),
-                            const SizedBox(height: 2),
-                            // Family Crest Badge & Typing/Members indicator
-                            StreamBuilder<GroupModel>(
-                              stream: _groupStream,
-                              builder: (context, groupSnapshot) {
-                                final family = groupSnapshot.data?.family;
-                                final hasFamily = family != null &&
-                                    family.isNotEmpty &&
-                                    family != 'None';
-
-                                return Row(
-                                  children: [
-                                    if (hasFamily) ...[
-                                      Flexible(
-                                        fit: FlexFit.loose,
-                                        child: Container(
-                                          padding: const EdgeInsets.symmetric(
-                                            horizontal: 4.5,
-                                            vertical: 1,
-                                          ),
-                                          margin: const EdgeInsets.only(right: 5),
-                                          decoration: BoxDecoration(
-                                            color: _accentColor
-                                                .withOpacity(0.2),
-                                            borderRadius:
-                                                BorderRadius.circular(4),
-                                            border: Border.all(
-                                              color: _accentColor
-                                                  .withOpacity(0.5),
-                                              width: 0.6,
-                                            ),
-                                          ),
-                                          child: Row(
-                                            mainAxisSize: MainAxisSize.min,
-                                            children: [
-                                              QueendomFamilyEmblemWidget(
-                                                family: family,
-                                                size: 11,
-                                              ),
-                                              const SizedBox(width: 3),
-                                              Flexible(
-                                                child: Text(
-                                                  '$family Family',
-                                                  style: TextStyle(
-                                                    fontSize: 9.5,
-                                                    color: Colors.white
-                                                        .withOpacity(0.9),
-                                                    fontWeight: FontWeight.w600,
-                                                  ),
-                                                  maxLines: 1,
-                                                  overflow: TextOverflow.ellipsis,
-                                                ),
-                                              ),
-                                            ],
-                                          ),
-                                        ),
-                                      ),
-                                    ],
-                                    Expanded(
-                                      child: StreamBuilder<Map<String, String>>(
-                                        stream: ref
-                                            .watch(groupControllerProvider)
-                                            .getGroupTypingStatus(widget.groupId),
-                                        builder: (context, typingSnapshot) {
-                                          final typingUsers =
-                                              typingSnapshot.data ?? {};
-                                          return GroupAppBarStatusSubtitle(
-                                            typingUsers: typingUsers,
-                                            memberCount: widget.membersUid.length,
-                                            accentColor: _accentColor,
-                                          );
-                                        },
+                                ),
+                                if (hasFamily) ...[
+                                  const SizedBox(height: 2.0),
+                                  Container(
+                                    padding: const EdgeInsets.symmetric(
+                                      horizontal: 5.0,
+                                      vertical: 1.0,
+                                    ),
+                                    decoration: BoxDecoration(
+                                      color: _accentColor
+                                          .withValues(alpha: 0.2),
+                                      borderRadius:
+                                          BorderRadius.circular(4),
+                                      border: Border.all(
+                                        color: _accentColor
+                                            .withValues(alpha: 0.5),
+                                        width: 0.6,
                                       ),
                                     ),
-                                  ],
-                                );
-                              },
-                            ),
-
-                          ],
+                                    child: Row(
+                                      mainAxisSize: MainAxisSize.min,
+                                      children: [
+                                        QueendomFamilyEmblemWidget(
+                                          family: family,
+                                          size: 10,
+                                        ),
+                                        const SizedBox(width: 3.0),
+                                        Text(
+                                          '$family Family',
+                                          style: TextStyle(
+                                            fontSize: 9.0,
+                                            color: Colors.white
+                                                .withValues(alpha: 0.9),
+                                            fontWeight: FontWeight.w600,
+                                          ),
+                                          maxLines: 1,
+                                        ),
+                                      ],
+                                    ),
+                                  ),
+                                ],
+                                if (cleanPlace.isNotEmpty) ...[
+                                  const SizedBox(height: 2.5),
+                                  Text(
+                                    cleanPlace,
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: TextStyle(
+                                      fontSize: 10.0,
+                                      fontWeight: FontWeight.w500,
+                                      color: _accentColor,
+                                      letterSpacing: 0.15,
+                                    ),
+                                  ),
+                                ],
+                              ],
+                            );
+                          },
                         ),
                       ),
                     ],
@@ -1060,28 +1158,13 @@ class _GroupChatScreenState extends ConsumerState<GroupChatScreen>
         ),
         centerTitle: false,
         actions: [
-          IconButton(
-            icon: const Icon(Icons.photo_library_outlined),
-            padding: const EdgeInsets.symmetric(horizontal: 2),
-            constraints: const BoxConstraints(minWidth: 32, minHeight: 40),
-            onPressed: () => Navigator.push(
-              context,
-              MaterialPageRoute(
-                builder: (_) => GroupGalleryScreen(
-                  groupId: widget.groupId,
-                  groupName: widget.name,
-                  accentColor: _accentColor,
-                ),
-              ),
-            ),
-          ),
           StreamBuilder<GroupModel>(
             stream: _groupStream,
             builder: (context, snapshot) {
               return PopupMenuButton<String>(
-                icon: const Icon(Icons.more_vert),
+                icon: const Icon(Icons.more_vert, size: 22),
                 padding: const EdgeInsets.only(left: 0, right: 6),
-                constraints: const BoxConstraints(minWidth: 32, minHeight: 40),
+                constraints: const BoxConstraints(minWidth: 36, minHeight: 48),
                 tooltip: 'More options',
                 shape: RoundedRectangleBorder(
                   borderRadius: BorderRadius.circular(12),
@@ -1098,6 +1181,56 @@ class _GroupChatScreenState extends ConsumerState<GroupChatScreen>
                   final isManual = currentMode == 'manual';
 
                   List<PopupMenuEntry<String>> menuItems = [
+                    PopupMenuItem<String>(
+                      value: 'search_messages',
+                      child: Row(
+                        children: [
+                          Icon(
+                            _powerUpController.searchOpenNotifier.value
+                                ? Icons.search_off_rounded
+                                : Icons.search_rounded,
+                            size: 20,
+                            color: _powerUpController.searchOpenNotifier.value
+                                ? _accentColor
+                                : Theme.of(context).iconTheme.color,
+                          ),
+                          const SizedBox(width: 12),
+                          Text(
+                            _powerUpController.searchOpenNotifier.value
+                                ? 'Close Search'
+                                : 'Search Messages',
+                          ),
+                        ],
+                      ),
+                    ),
+                    const PopupMenuItem<String>(
+                      value: 'pinned_messages',
+                      child: Row(
+                        children: [
+                          Icon(
+                            Icons.push_pin_outlined,
+                            size: 20,
+                            color: Color(0xFFFFD700),
+                          ),
+                          SizedBox(width: 12),
+                          Text('Pinned Messages'),
+                        ],
+                      ),
+                    ),
+                    PopupMenuItem<String>(
+                      value: 'gallery',
+                      child: Row(
+                        children: [
+                          Icon(
+                            Icons.photo_library_outlined,
+                            size: 20,
+                            color: Theme.of(context).iconTheme.color,
+                          ),
+                          const SizedBox(width: 12),
+                          const Text('Gallery'),
+                        ],
+                      ),
+                    ),
                     if (isQueendom) ...[
                       if (isRoleplayRunning) ...[
                         PopupMenuItem<String>(
@@ -1268,6 +1401,28 @@ class _GroupChatScreenState extends ConsumerState<GroupChatScreen>
                 },
                 onSelected: (String value) {
                   switch (value) {
+                    case 'search_messages':
+                      _powerUpController.toggleSearch();
+                      break;
+                    case 'pinned_messages':
+                      PinnedMessagesBanner.showPinnedMessagesSheet(
+                        context,
+                        controller: _powerUpController,
+                        accentColor: _accentColor,
+                        onUnpin: (id) async {
+                          ref
+                              .read(groupControllerProvider)
+                              .togglePinGroupMessage(
+                                groupId: widget.groupId,
+                                messageId: id,
+                                pin: false,
+                              );
+                        },
+                      );
+                      break;
+                    case 'gallery':
+                      _openGroupGallery();
+                      break;
                     case 'start_roleplay_auto':
                     case 'start_roleplay':
                       _startRoleplayMode(mode: RoleplayModeType.automatic);
@@ -1303,7 +1458,7 @@ class _GroupChatScreenState extends ConsumerState<GroupChatScreen>
                           .doc(widget.groupId)
                           .get()
                           .then((doc) {
-                            if (doc.exists) {
+                            if (doc.exists && mounted) {
                               Navigator.push(
                                 context,
                                 MaterialPageRoute(
@@ -1323,16 +1478,6 @@ class _GroupChatScreenState extends ConsumerState<GroupChatScreen>
           ),
           const SizedBox(width: 4),
         ],
-        bottom: _hasSanctuary
-            ? RoyalSanctuaryAppBarBottom(
-                stream: _groupStream,
-                initialGroup: _currentGroup,
-                fallbackWish: widget.wish,
-                fallbackName: widget.name,
-                accentColor: _accentColor,
-                onTap: _openGroupInfo,
-              )
-            : null,
       ),
       body: Stack(
         children: [
@@ -1372,19 +1517,33 @@ class _GroupChatScreenState extends ConsumerState<GroupChatScreen>
           Column(
             children: [
               _buildGroupBirthdayMention(),
+              ChatSearchToolbar(
+                controller: _powerUpController,
+                accentColor: _accentColor,
+              ),
+              PinnedMessagesBanner(
+                controller: _powerUpController,
+                accentColor: _accentColor,
+                onUnpin: (id) async {
+                  ref.read(groupControllerProvider).togglePinGroupMessage(
+                        groupId: widget.groupId,
+                        messageId: id,
+                        pin: false,
+                      );
+                },
+              ),
               Expanded(
                 child: GroupChatListWidget(
                   groupId: widget.groupId,
                   accentColor: _accentColor,
                   queendom: widget.queendom,
+                  powerUpController: _powerUpController,
                 ),
               ),
 
               // Floating in-chat typing bubble for groups
               StreamBuilder<Map<String, String>>(
-                stream: ref
-                    .watch(groupControllerProvider)
-                    .getGroupTypingStatus(widget.groupId),
+                stream: _groupTypingStream,
                 builder: (context, snapshot) {
                   final typingUsers = snapshot.data ?? {};
                   if (typingUsers.isEmpty) return const SizedBox.shrink();
@@ -1436,7 +1595,8 @@ class _GroupChatScreenState extends ConsumerState<GroupChatScreen>
           ),
         ],
       ),
-    );
+    ),
+  );
   }
 
   Widget _buildGroupBirthdayMention() {
@@ -1598,7 +1758,7 @@ class RoyalSanctuaryAppBarBottom extends StatelessWidget
   });
 
   @override
-  Size get preferredSize => const Size.fromHeight(42.0);
+  Size get preferredSize => const Size.fromHeight(32.0);
 
   @override
   Widget build(BuildContext context) {
@@ -1616,22 +1776,21 @@ class RoyalSanctuaryAppBarBottom extends StatelessWidget
   }
 
   Widget _buildContent(BuildContext context, GroupModel? group) {
-    if (group == null && fallbackWish == null) {
+    if (group == null && (fallbackName == null || fallbackName!.isEmpty)) {
       return const SizedBox.shrink();
     }
 
     final position = group?.position;
     final family = group?.family;
-    final wish = group?.wish ?? fallbackWish;
     final livingPlace = group?.effectiveLivingPlace ?? fallbackName ?? '';
 
     final hasPosition =
         position != null && position.isNotEmpty && position != 'None';
     final hasFamily =
         family != null && family.isNotEmpty && family != 'None';
-    final hasWish = wish != null && wish.isNotEmpty;
+    final hasLivingPlace = livingPlace.isNotEmpty;
 
-    if (!hasPosition && !hasFamily && !hasWish) {
+    if (!hasPosition && !hasFamily && !hasLivingPlace) {
       return const SizedBox.shrink();
     }
 
@@ -1641,9 +1800,9 @@ class RoyalSanctuaryAppBarBottom extends StatelessWidget
       onTap: onTap,
       behavior: HitTestBehavior.opaque,
       child: Container(
-        height: 42,
+        height: 32,
         width: double.infinity,
-        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 3),
+        padding: const EdgeInsets.symmetric(horizontal: 14),
         decoration: BoxDecoration(
           color: Colors.black.withValues(alpha: 0.18),
           border: Border(
@@ -1662,18 +1821,13 @@ class RoyalSanctuaryAppBarBottom extends StatelessWidget
             if (hasPosition) ...[
               QueendomEmblemWidget(
                 position: position,
-                size: 22,
+                size: 20,
               ),
               const SizedBox(width: 8),
             ],
             Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                mainAxisAlignment: MainAxisAlignment.center,
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  if (livingPlace.isNotEmpty)
-                    QueendomEmblemHelper.buildRichTitle(
+              child: livingPlace.isNotEmpty
+                  ? QueendomEmblemHelper.buildRichTitle(
                       title: livingPlace,
                       family: family,
                       fallbackFamily: 'Main',
@@ -1686,23 +1840,8 @@ class RoyalSanctuaryAppBarBottom extends StatelessWidget
                       emblemSize: 13,
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
-                    ),
-                  if (hasWish)
-                    Padding(
-                      padding: const EdgeInsets.only(top: 1),
-                      child: Text(
-                        wish,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: TextStyle(
-                          fontSize: 9.5,
-                          color: Colors.white.withValues(alpha: 0.85),
-                          fontStyle: FontStyle.italic,
-                        ),
-                      ),
-                    ),
-                ],
-              ),
+                    )
+                  : const SizedBox.shrink(),
             ),
             if (hasFamily) ...[
               const SizedBox(width: 6),
@@ -1710,7 +1849,7 @@ class RoyalSanctuaryAppBarBottom extends StatelessWidget
                 message: '$family Family',
                 child: QueendomFamilyEmblemWidget(
                   family: family,
-                  size: 20,
+                  size: 18,
                 ),
               ),
             ],

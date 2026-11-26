@@ -1,12 +1,11 @@
 import 'dart:developer';
 import 'dart:io';
 import 'package:cloud_firestore/cloud_firestore.dart';
-import 'package:cloudinary_flutter/cloudinary_context.dart';
-import 'package:cloudinary_url_gen/cloudinary.dart';
 import 'package:dio/dio.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:hive_flutter/hive_flutter.dart';
 import 'package:uuid/uuid.dart';
 import 'package:worship_chat/common/utils/firebase_notification_service.dart';
 import 'package:worship_chat/common/utils/utils.dart';
@@ -372,42 +371,92 @@ class StatusRepository {
     return null;
   }
 
-  void _initCloudinary() {
-    CloudinaryContext.cloudinary = Cloudinary.fromCloudName(
-      cloudName: _cloudName,
-    );
+  static List<Map<String, dynamic>> _memoryCache = [];
+
+  /// Returns cached statuses instantly (0ms) from memory or Hive.
+  static List<Map<String, dynamic>> getCachedStatuses() {
+    if (_memoryCache.isNotEmpty) return _memoryCache;
+    try {
+      if (Hive.isBoxOpen('status_cache')) {
+        final box = Hive.box('status_cache');
+        final raw = box.get('active_statuses') as List?;
+        if (raw != null) {
+          _memoryCache = raw.map((e) {
+            final map = Map<String, dynamic>.from(e as Map);
+            if (map['timeCreatedMillis'] != null && map['timeCreated'] == null) {
+              map['timeCreated'] = Timestamp.fromMillisecondsSinceEpoch(
+                map['timeCreatedMillis'] as int,
+              );
+            }
+            return map;
+          }).toList();
+          return _memoryCache;
+        }
+      }
+    } catch (_) {}
+    return [];
+  }
+
+  static void _saveToCache(List<Map<String, dynamic>> list) {
+    _memoryCache = list;
+    try {
+      if (Hive.isBoxOpen('status_cache')) {
+        final serializable = list.map((item) {
+          final copy = Map<String, dynamic>.from(item);
+          if (copy['timeCreated'] is Timestamp) {
+            copy['timeCreatedMillis'] =
+                (copy['timeCreated'] as Timestamp).millisecondsSinceEpoch;
+          }
+          return copy;
+        }).toList();
+        Hive.box('status_cache').put('active_statuses', serializable);
+      }
+    } catch (_) {}
   }
 
   // ── Fetch active statuses ──────────────────────────────────────────────────
 
-  Stream<List<Map<String, dynamic>>> getStatuses() {
-    final currentUserUid = auth.currentUser!.uid;
+  Stream<List<Map<String, dynamic>>> getStatuses() async* {
+    // 1. Instant local cache yield (0 ms) — eliminates initial loading lag completely
+    final cached = getCachedStatuses();
+    if (cached.isNotEmpty) {
+      yield cached;
+    }
+
+    final currentUserUid = safeCurrentUserId() ?? auth.currentUser?.uid ?? '';
     final now = DateTime.now();
 
-    return firestore
+    final stream = firestore
         .collection('status')
         .orderBy('timeCreated', descending: false)
-        .snapshots()
-        .map((snapshot) {
-          final List<Map<String, dynamic>> active = [];
-          for (final doc in snapshot.docs) {
-            final data = doc.data();
-            final timeCreated = (data['timeCreated'] as Timestamp).toDate();
-            if (now.difference(timeCreated).inHours >= 24) {
-              firestore.collection('status').doc(data['statusId']).delete();
-              continue;
-            }
-            final visibleTo = List<String>.from(data['visibleTo'] as List);
-            if (visibleTo.contains(currentUserUid)) {
-              active.add(sanitizeStatus(data));
-            }
-          }
-          active.sort((a, b) {
-            final aTime = (a['timeCreated'] as Timestamp).toDate();
-            final bTime = (b['timeCreated'] as Timestamp).toDate();
-            return aTime.compareTo(bTime);
-          });
-          return active;
-        });
+        .snapshots();
+
+    await for (final snapshot in stream) {
+      final List<Map<String, dynamic>> active = [];
+      for (final doc in snapshot.docs) {
+        final data = doc.data();
+        final timeCreated = (data['timeCreated'] as Timestamp).toDate();
+        if (now.difference(timeCreated).inHours >= 24) {
+          firestore
+              .collection('status')
+              .doc(data['statusId'])
+              .delete()
+              .catchError((_) {});
+          continue;
+        }
+        final visibleTo = List<String>.from(data['visibleTo'] as List? ?? []);
+        if (currentUserUid.isNotEmpty && visibleTo.contains(currentUserUid)) {
+          active.add(sanitizeStatus(data));
+        }
+      }
+      active.sort((a, b) {
+        final aTime = (a['timeCreated'] as Timestamp).toDate();
+        final bTime = (b['timeCreated'] as Timestamp).toDate();
+        return aTime.compareTo(bTime);
+      });
+
+      _saveToCache(active);
+      yield active;
+    }
   }
 }

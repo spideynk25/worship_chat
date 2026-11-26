@@ -11,8 +11,12 @@ import 'package:share_handler/share_handler.dart';
 import 'package:worship_chat/colors.dart';
 import 'package:worship_chat/common/screens/combined_contact_screen.dart';
 import 'package:worship_chat/common/utils/app_capabilities.dart';
+import 'package:worship_chat/common/utils/app_update_service.dart';
 import 'package:worship_chat/common/utils/fcm_token_manager.dart';
+import 'package:worship_chat/common/utils/firebase_notification_service.dart';
 import 'package:worship_chat/common/utils/share_intent_service.dart';
+import 'package:worship_chat/common/utils/utils.dart';
+import 'package:worship_chat/common/widgets/skeleton_loader.dart';
 import 'package:worship_chat/common/widgets/user_avatar.dart';
 import 'package:worship_chat/features/auth/controller/auth_controller.dart';
 import 'package:worship_chat/features/bookmark/screens/bookmark_screen.dart';
@@ -22,9 +26,9 @@ import 'package:worship_chat/features/dashboard/screens/dashboard_page.dart';
 import 'package:worship_chat/features/group/controller/group_controller.dart';
 import 'package:worship_chat/features/group/screens/create_group_screen.dart';
 import 'package:worship_chat/features/group/screens/folder_gallery_screen.dart';
-import 'package:worship_chat/features/group/screens/group_list_screen.dart';
 import 'package:worship_chat/features/group/screens/queen_pooja_queendom_screen.dart';
 import 'package:worship_chat/features/group/screens/queen_rashmika_queendom_screen.dart';
+import 'package:worship_chat/features/home/screens/photo_count_screen.dart';
 import 'package:worship_chat/features/home/screens/profile_screen.dart';
 import 'package:worship_chat/features/settings/screens/settings_screen.dart';
 import 'package:worship_chat/features/home/widgets/dynamic_text_widget.dart';
@@ -61,14 +65,12 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
     CombinedContactsScreen(isAllChats: false),
     QueenPoojaQueenScreen(),
     QueenRashmikaQueenScreen(),
-    GroupListScreen(),
   ];
 
   static const List<Widget> _galleryDeviceScreens = [
     DashboardPage(),
     QueenPoojaQueenScreen(),
     QueenRashmikaQueenScreen(),
-    GroupListScreen(),
   ];
 
   List<Widget> get _screens => AppCapabilities.current.chatEnabled
@@ -76,11 +78,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
       : _galleryDeviceScreens;
 
   String _safeGetCurrentUserUid() {
-    try {
-      return FirebaseAuth.instance.currentUser?.uid ?? '';
-    } catch (_) {
-      return '';
-    }
+    return safeCurrentUserId() ?? '';
   }
 
   User? _safeGetCurrentUser() {
@@ -130,12 +128,38 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
         FCMTokenManager.refreshAndSaveFCMToken();
       }
       if (AppCapabilities.current.chatEnabled) {
+        FirebaseNotificationService.syncPendingBackgroundRepliesToHive();
         try {
           ref.read(authControllerProvider).getUsetData();
           ref.read(authControllerProvider).setUserState(true);
         } catch (_) {}
       }
+      if (mounted) {
+        AppUpdateService.instance.setNativeUpdateTapHandler(() {
+          if (mounted) {
+            AppUpdateService.instance.openAvailableUpdateDialog(context);
+          }
+        });
+        FirebaseNotificationService.pendingUpdateNotificationNotifier
+            .addListener(_onPendingUpdateNotification);
+        _onPendingUpdateNotification();
+        AppUpdateService.instance.consumePendingNativeUpdateLaunch().then((launched) {
+          if (launched && mounted) {
+            AppUpdateService.instance.openAvailableUpdateDialog(context);
+          } else if (mounted) {
+            AppUpdateService.instance.checkForUpdateIfAvailable(context);
+          }
+        });
+      }
     });
+  }
+
+  void _onPendingUpdateNotification() {
+    final pending =
+        FirebaseNotificationService.pendingUpdateNotificationNotifier.value;
+    if (pending == null || !mounted) return;
+    FirebaseNotificationService.pendingUpdateNotificationNotifier.value = null;
+    AppUpdateService.instance.openAvailableUpdateDialog(context);
   }
 
   Future<void> _initShareHandler() async {
@@ -182,6 +206,9 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
 
   @override
   void dispose() {
+    FirebaseNotificationService.pendingUpdateNotificationNotifier
+        .removeListener(_onPendingUpdateNotification);
+    AppUpdateService.instance.setNativeUpdateTapHandler(null);
     if (AppCapabilities.current.chatEnabled) {
       try {
         ref.read(authControllerProvider).setUserState(false);
@@ -197,10 +224,20 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     super.didChangeAppLifecycleState(state);
+    if (state == AppLifecycleState.resumed) {
+      AppUpdateService.instance.consumePendingNativeUpdateLaunch().then((launched) {
+        if (launched && mounted) {
+          AppUpdateService.instance.openAvailableUpdateDialog(context);
+        } else if (mounted) {
+          AppUpdateService.instance.checkForUpdateOnResume(context);
+        }
+      });
+    }
     if (!AppCapabilities.current.chatEnabled) return;
     switch (state) {
       case AppLifecycleState.resumed:
         ref.read(authControllerProvider).setUserState(true);
+        FirebaseNotificationService.syncPendingBackgroundRepliesToHive();
         break;
       case AppLifecycleState.inactive:
       case AppLifecycleState.detached:
@@ -214,21 +251,11 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
   void _onItemTapped(int index) {
     if (_selectedIndex == index) return;
     HapticFeedback.selectionClick();
-    final prevIndex = _selectedIndex;
     setState(() {
       _selectedIndex = index;
     });
     if (_pageController.hasClients) {
-      final diff = (prevIndex - index).abs();
-      if (diff <= 1 && !AppCapabilities.current.isDesktop) {
-        _pageController.animateToPage(
-          index,
-          duration: const Duration(milliseconds: 260),
-          curve: Curves.easeOutCubic,
-        );
-      } else {
-        _pageController.jumpToPage(index);
-      }
+      _pageController.jumpToPage(index);
     }
   }
 
@@ -475,7 +502,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
             ),
           ),
         Padding(
-          padding: const EdgeInsets.only(right: 2),
+          padding: const EdgeInsets.only(right: 8),
           child: Column(
             mainAxisAlignment: MainAxisAlignment.center,
             crossAxisAlignment: CrossAxisAlignment.end,
@@ -488,11 +515,25 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
                   color: tabColor,
                 ),
               ),
-              Text(
-                displayUserName,
-                style: const TextStyle(
-                  fontWeight: FontWeight.w400,
-                  fontSize: 12,
+              ShimmerEffect(
+                baseColor: const Color(0xFFD4A017),
+                highlightColor: const Color(0xFFFFF8DC),
+                duration: const Duration(seconds: 10),
+                activeFraction: 0.14,
+                child: Text(
+                  displayUserName,
+                  style: const TextStyle(
+                    color: Colors.white,
+                    fontWeight: FontWeight.w600,
+                    fontSize: 12,
+                    letterSpacing: 0.25,
+                    shadows: [
+                      Shadow(
+                        color: Color(0x66FFD700),
+                        blurRadius: 8,
+                      ),
+                    ],
+                  ),
                 ),
               ),
             ],
@@ -514,28 +555,112 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
               width: 1.0,
             ),
           ),
-          icon: Hero(
-            tag: user?.uid ?? (currentUserUid.isNotEmpty ? currentUserUid : "profile_icon"),
-            child: Container(
-              padding: const EdgeInsets.all(2),
-              decoration: BoxDecoration(
-                shape: BoxShape.circle,
-                border: Border.all(
-                  color: tabColor.withValues(alpha: 0.75),
-                  width: 1.6,
-                ),
-                boxShadow: [
-                  BoxShadow(
-                    color: tabColor.withValues(alpha: 0.35),
-                    blurRadius: 8,
-                    offset: const Offset(0, 1.5),
-                  ),
+          icon: ValueListenableBuilder<UpdateCheckOutcome?>(
+            valueListenable: AppUpdateService.instance.availableOutcomeNotifier,
+            builder: (context, pendingUpdate, child) {
+              final hasUpdate =
+                  pendingUpdate?.status == UpdateCheckStatus.updateAvailable &&
+                  pendingUpdate?.updateInfo != null;
+              return Stack(
+                clipBehavior: Clip.none,
+                children: [
+                  child!,
+                  if (hasUpdate)
+                    Positioned(
+                      top: -1,
+                      right: -1,
+                      child: Container(
+                        constraints: const BoxConstraints(
+                          minWidth: 18,
+                          minHeight: 18,
+                        ),
+                        padding: const EdgeInsets.symmetric(horizontal: 4),
+                        alignment: Alignment.center,
+                        decoration: BoxDecoration(
+                          gradient: const LinearGradient(
+                            begin: Alignment.topLeft,
+                            end: Alignment.bottomRight,
+                            colors: [tabColor, accentOrange],
+                          ),
+                          shape: BoxShape.circle,
+                          border: Border.all(
+                            color: const Color(0xFF0F0E17),
+                            width: 1.8,
+                          ),
+                          boxShadow: [
+                            BoxShadow(
+                              color: tabColor.withValues(alpha: 0.65),
+                              blurRadius: 6,
+                              offset: const Offset(0, 1),
+                            ),
+                          ],
+                        ),
+                        child: const Text(
+                          '1',
+                          style: TextStyle(
+                            color: Colors.white,
+                            fontSize: 10.5,
+                            fontWeight: FontWeight.bold,
+                            height: 1.0,
+                          ),
+                        ),
+                      ),
+                    ),
                 ],
-              ),
+              );
+            },
+            child: Hero(
+              tag: user?.uid ?? (currentUserUid.isNotEmpty ? currentUserUid : "profile_icon"),
               child: UserAvatar(url: displayPic, radius: 22),
             ),
           ),
-          itemBuilder: (context) => [
+          itemBuilder: (context) {
+            final pendingUpdate =
+                AppUpdateService.instance.availableOutcomeNotifier.value;
+            final updateInfo =
+                pendingUpdate?.status == UpdateCheckStatus.updateAvailable
+                    ? pendingUpdate?.updateInfo
+                    : null;
+
+            return [
+              if (updateInfo != null) ...[
+                _buildMenuActionItem(
+                  icon: Icons.system_update_rounded,
+                  color: const Color(0xFF00E676),
+                  title: 'Update',
+                  textColor: const Color(0xFF69F0AE),
+                  trailing: Container(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 7,
+                      vertical: 2,
+                    ),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFF00E676).withValues(alpha: 0.16),
+                      borderRadius: BorderRadius.circular(10),
+                      border: Border.all(
+                        color: const Color(0xFF00E676).withValues(alpha: 0.45),
+                        width: 0.8,
+                      ),
+                    ),
+                    child: Text(
+                      'v${updateInfo.latestVersionName}',
+                      style: const TextStyle(
+                        color: Color(0xFF69F0AE),
+                        fontSize: 10.5,
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                  ),
+                  onTap: () => Future.microtask(() {
+                    if (mounted) {
+                      AppUpdateService.instance.openAvailableUpdateDialog(
+                        this.context,
+                      );
+                    }
+                  }),
+                ),
+                _buildMenuDivider(),
+              ],
             _buildMenuActionItem(
               icon: Icons.person_rounded,
               color: const Color(0xFF8B5CF6),
@@ -554,19 +679,6 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
                       },
                 ),
               ),
-            ),
-            _buildMenuActionItem(
-              icon: Icons.settings_rounded,
-              color: const Color(0xFF00D2D3),
-              title: 'Settings',
-              onTap: () => Future.microtask(() {
-                if (mounted) {
-                  Navigator.push(
-                    this.context,
-                    MaterialPageRoute(builder: (_) => const SettingsScreen()),
-                  );
-                }
-              }),
             ),
             if (isChatEnabled)
               _buildMenuActionItem(
@@ -597,11 +709,39 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
             ),
             _buildMenuActionItem(
               icon: Icons.folder_open_rounded,
-              color: tabColor,
-              title: 'Open Folder / ZIP',
+              color: const Color(0xFF64B5F6),
+              title: 'Folder',
               onTap: () => Future.microtask(() {
                 if (mounted) {
                   FolderGalleryScreen.showPickerOptions(this.context);
+                }
+              }),
+            ),
+            _buildMenuActionItem(
+              icon: Icons.collections_rounded,
+              color: const Color(0xFFFFD700),
+              title: 'Photo Counts',
+              onTap: () => Future.microtask(() {
+                if (mounted) {
+                  Navigator.push(
+                    this.context,
+                    MaterialPageRoute(
+                      builder: (_) => const PhotoCountScreen(),
+                    ),
+                  );
+                }
+              }),
+            ),
+            _buildMenuActionItem(
+              icon: Icons.settings_rounded,
+              color: const Color(0xFF00D2D3),
+              title: 'Settings',
+              onTap: () => Future.microtask(() {
+                if (mounted) {
+                  Navigator.push(
+                    this.context,
+                    MaterialPageRoute(builder: (_) => const SettingsScreen()),
+                  );
                 }
               }),
             ),
@@ -627,8 +767,10 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
                 }
               }),
             ),
-          ],
+            ];
+          },
         ),
+        const SizedBox(width: 4),
       ],
     );
   }
@@ -638,6 +780,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
     required Color color,
     required String title,
     Color? textColor,
+    Widget? trailing,
     required VoidCallback onTap,
   }) {
     return PopupMenuItem<String>(
@@ -661,15 +804,23 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
             child: Icon(icon, size: 15, color: color),
           ),
           const SizedBox(width: 10),
-          Text(
-            title,
-            style: TextStyle(
-              fontSize: 13,
-              fontWeight: FontWeight.w600,
-              color: textColor ?? Colors.white,
-              letterSpacing: 0.2,
+          Flexible(
+            child: Text(
+              title,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(
+                fontSize: 13,
+                fontWeight: FontWeight.w600,
+                color: textColor ?? Colors.white,
+                letterSpacing: 0.2,
+              ),
             ),
           ),
+          if (trailing != null) ...[
+            const SizedBox(width: 8),
+            trailing,
+          ],
         ],
       ),
     );
@@ -734,7 +885,6 @@ class _HomeScreenNavHost extends ConsumerStatefulWidget {
 
 class _HomeScreenNavHostState extends ConsumerState<_HomeScreenNavHost> {
   Stream<List<ChatContact>>? _chatContactsStream;
-  Stream<List<GroupModel>>? _generalGroupsStream;
   Stream<List<GroupModel>>? _poojaGroupsStream;
   Stream<List<GroupModel>>? _rashmikaGroupsStream;
 
@@ -743,7 +893,6 @@ class _HomeScreenNavHostState extends ConsumerState<_HomeScreenNavHost> {
     super.initState();
     if (AppCapabilities.current.chatEnabled) {
       _chatContactsStream = ref.read(chatControllerProvider).chatContacts();
-      _generalGroupsStream = ref.read(groupControllerProvider).chatGroups();
       _poojaGroupsStream = ref.read(groupControllerProvider).getQueenPoojaStream();
       _rashmikaGroupsStream =
           ref.read(groupControllerProvider).getQueenRashmikaStream();
@@ -788,14 +937,6 @@ class _HomeScreenNavHostState extends ConsumerState<_HomeScreenNavHost> {
         .length;
   }
 
-  int _getUnseenCountForGeneralGroups(List<GroupModel> groups) {
-    final currentUserId = FirebaseAuth.instance.currentUser?.uid;
-    if (currentUserId == null) return 0;
-    return groups
-        .where((g) => g.queendom == 'None' && g.hasUnseenForUser(currentUserId))
-        .length;
-  }
-
   @override
   Widget build(BuildContext context) {
     if (!AppCapabilities.current.chatEnabled) {
@@ -803,7 +944,7 @@ class _HomeScreenNavHostState extends ConsumerState<_HomeScreenNavHost> {
         _NavBarItemConfig(
           iconBuilder: (isSelected) => Icon(
             Icons.grid_view_rounded,
-            size: isSelected ? 28 : 25,
+            size: 26,
             color: isSelected ? tabColor : Colors.white.withValues(alpha: 0.55),
           ),
           label: 'Home',
@@ -827,15 +968,6 @@ class _HomeScreenNavHostState extends ConsumerState<_HomeScreenNavHost> {
           label: 'Rashmika',
           badgeCount: 0,
         ),
-        _NavBarItemConfig(
-          iconBuilder: (isSelected) => Icon(
-            Icons.groups_rounded,
-            size: isSelected ? 28 : 25,
-            color: isSelected ? tabColor : Colors.white.withValues(alpha: 0.55),
-          ),
-          label: 'Groups',
-          badgeCount: 0,
-        ),
       ];
 
       return widget.isWide
@@ -854,96 +986,77 @@ class _HomeScreenNavHostState extends ConsumerState<_HomeScreenNavHost> {
       stream: _chatContactsStream ?? Stream.value(const []),
       builder: (context, chatSnapshot) {
         return StreamBuilder<List<GroupModel>>(
-          stream: _generalGroupsStream ?? const Stream.empty(),
-          builder: (context, generalSnapshot) {
+          stream: _poojaGroupsStream ?? const Stream.empty(),
+          builder: (context, poojaSnapshot) {
             return StreamBuilder<List<GroupModel>>(
-              stream: _poojaGroupsStream ?? const Stream.empty(),
-              builder: (context, poojaSnapshot) {
-                return StreamBuilder<List<GroupModel>>(
-                  stream: _rashmikaGroupsStream ?? const Stream.empty(),
-                  builder: (context, rashmikaSnapshot) {
-                    final contacts = chatSnapshot.data ?? const [];
-                    final generalGroups = generalSnapshot.data ?? const [];
-                    final poojaGroups = poojaSnapshot.data ?? const [];
-                    final rashmikaGroups = rashmikaSnapshot.data ?? const [];
+              stream: _rashmikaGroupsStream ?? const Stream.empty(),
+              builder: (context, rashmikaSnapshot) {
+                final contacts = chatSnapshot.data ?? const [];
+                final poojaGroups = poojaSnapshot.data ?? const [];
+                final rashmikaGroups = rashmikaSnapshot.data ?? const [];
 
-                    final unreadChatsCount = _getUnreadChatsCount(contacts);
-                    final unseenStatusCount =
-                        _getUnseenStatusCount(statuses, currentUserUid);
-                    final generalUnseenCount =
-                        _getUnseenCountForGeneralGroups(generalGroups);
-                    final poojaUnseenCount =
-                        _getUnseenCountForQueendom(poojaGroups, 'Queen Pooja');
-                    final rashmikaUnseenCount =
-                        _getUnseenCountForQueendom(rashmikaGroups, 'Queen Rashmika');
+                final unreadChatsCount = _getUnreadChatsCount(contacts);
+                final unseenStatusCount =
+                    _getUnseenStatusCount(statuses, currentUserUid);
+                final poojaUnseenCount =
+                    _getUnseenCountForQueendom(poojaGroups, 'Queen Pooja');
+                final rashmikaUnseenCount =
+                    _getUnseenCountForQueendom(rashmikaGroups, 'Queen Rashmika');
 
-                    final chatTabBadge = unreadChatsCount + unseenStatusCount;
+                final chatTabBadge = unreadChatsCount + unseenStatusCount;
 
-                    final navItems = [
-                      _NavBarItemConfig(
-                        iconBuilder: (isSelected) => Icon(
-                          Icons.grid_view_rounded,
-                          size: isSelected ? 28 : 25,
-                          color: isSelected
-                              ? tabColor
-                              : Colors.white.withValues(alpha: 0.55),
-                        ),
-                        label: 'Home',
-                        badgeCount: 0,
-                      ),
-                      _NavBarItemConfig(
-                        iconBuilder: (isSelected) => Icon(
-                          isSelected
-                              ? Icons.chat_bubble_rounded
-                              : Icons.chat_bubble_outline_rounded,
-                          size: isSelected ? 28 : 25,
-                          color: isSelected
-                              ? tabColor
-                              : Colors.white.withValues(alpha: 0.55),
-                        ),
-                        label: 'Chats',
-                        badgeCount: chatTabBadge,
-                      ),
-                      _NavBarItemConfig(
-                        iconBuilder: (isSelected) => _buildQueendomNavIcon(
-                          isSelected: isSelected,
-                          activeAsset: 'assets/images/queen_pooja_nav_active.jpg',
-                          inactiveAsset: 'assets/images/queen_pooja_nav_inactive.jpg',
-                        ),
-                        label: 'Pooja',
-                        badgeCount: poojaUnseenCount,
-                      ),
-                      _NavBarItemConfig(
-                        iconBuilder: (isSelected) => _buildQueendomNavIcon(
-                          isSelected: isSelected,
-                          activeAsset: 'assets/images/queen_rashmika_nav_active.jpg',
-                          inactiveAsset: 'assets/images/queen_rashmika_nav_inactive.jpg',
-                        ),
-                        label: 'Rashmika',
-                        badgeCount: rashmikaUnseenCount,
-                      ),
-                      _NavBarItemConfig(
-                        iconBuilder: (isSelected) => Icon(
-                          Icons.groups_rounded,
-                          size: isSelected ? 28 : 25,
-                          color: isSelected
-                              ? tabColor
-                              : Colors.white.withValues(alpha: 0.55),
-                        ),
-                        label: 'Groups',
-                        badgeCount: generalUnseenCount,
-                      ),
-                    ];
+                final navItems = [
+                  _NavBarItemConfig(
+                    iconBuilder: (isSelected) => Icon(
+                      Icons.grid_view_rounded,
+                      size: 26,
+                      color: isSelected
+                          ? tabColor
+                          : Colors.white.withValues(alpha: 0.55),
+                    ),
+                    label: 'Home',
+                    badgeCount: 0,
+                  ),
+                  _NavBarItemConfig(
+                    iconBuilder: (isSelected) => Icon(
+                      isSelected
+                          ? Icons.chat_bubble_rounded
+                          : Icons.chat_bubble_outline_rounded,
+                      size: 26,
+                      color: isSelected
+                          ? tabColor
+                          : Colors.white.withValues(alpha: 0.55),
+                    ),
+                    label: 'Chats',
+                    badgeCount: chatTabBadge,
+                  ),
+                  _NavBarItemConfig(
+                    iconBuilder: (isSelected) => _buildQueendomNavIcon(
+                      isSelected: isSelected,
+                      activeAsset: 'assets/images/queen_pooja_nav_active.jpg',
+                      inactiveAsset: 'assets/images/queen_pooja_nav_inactive.jpg',
+                    ),
+                    label: 'Pooja',
+                    badgeCount: poojaUnseenCount,
+                  ),
+                  _NavBarItemConfig(
+                    iconBuilder: (isSelected) => _buildQueendomNavIcon(
+                      isSelected: isSelected,
+                      activeAsset: 'assets/images/queen_rashmika_nav_active.jpg',
+                      inactiveAsset: 'assets/images/queen_rashmika_nav_inactive.jpg',
+                    ),
+                    label: 'Rashmika',
+                    badgeCount: rashmikaUnseenCount,
+                  ),
+                ];
 
-                    return widget.isWide
-                        ? _HomeScreenSideNavRail(
-                            selectedIndex: widget.selectedIndex,
-                            onItemTapped: widget.onItemTapped,
-                            navItems: navItems,
-                          )
-                        : _buildModernBottomNavBar(navItems: navItems);
-                  },
-                );
+                return widget.isWide
+                    ? _HomeScreenSideNavRail(
+                        selectedIndex: widget.selectedIndex,
+                        onItemTapped: widget.onItemTapped,
+                        navItems: navItems,
+                      )
+                    : _buildModernBottomNavBar(navItems: navItems);
               },
             );
           },
@@ -975,63 +1088,67 @@ class _HomeScreenNavHostState extends ConsumerState<_HomeScreenNavHost> {
       ),
       child: SafeArea(
         top: false,
-        child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
-          child: Row(
-            mainAxisAlignment: MainAxisAlignment.spaceAround,
-            children: List.generate(navItems.length, (index) {
-              final item = navItems[index];
-              final isSelected = widget.selectedIndex == index;
+        child: SizedBox(
+          height: 60,
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 8),
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.spaceAround,
+              children: List.generate(navItems.length, (index) {
+                final item = navItems[index];
+                final isSelected = widget.selectedIndex == index;
 
-              return GestureDetector(
-                behavior: HitTestBehavior.opaque,
-                onTap: () {
-                  HapticFeedback.lightImpact();
-                  widget.onItemTapped(index);
-                },
-                child: Semantics(
-                  label: item.label,
-                  button: true,
-                  selected: isSelected,
-                  child: AnimatedContainer(
-                    duration: const Duration(milliseconds: 180),
-                    curve: Curves.easeInOutCubic,
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 14,
-                      vertical: 6,
-                    ),
-                    decoration: isSelected
-                        ? BoxDecoration(
-                            gradient: LinearGradient(
-                              colors: [
-                                tabColor.withValues(alpha: 0.22),
-                                accentOrange.withValues(alpha: 0.12),
-                              ],
-                              begin: Alignment.topLeft,
-                              end: Alignment.bottomRight,
-                            ),
-                            borderRadius: BorderRadius.circular(18),
-                            border: Border.all(
-                              color: tabColor.withValues(alpha: 0.45),
-                              width: 1,
-                            ),
-                            boxShadow: [
-                              BoxShadow(
-                                color: tabColor.withValues(alpha: 0.18),
-                                blurRadius: 10,
-                                offset: const Offset(0, 2),
+                return GestureDetector(
+                  behavior: HitTestBehavior.opaque,
+                  onTap: () {
+                    HapticFeedback.lightImpact();
+                    widget.onItemTapped(index);
+                  },
+                  child: Semantics(
+                    label: item.label,
+                    button: true,
+                    selected: isSelected,
+                    child: AnimatedContainer(
+                      duration: const Duration(milliseconds: 180),
+                      curve: Curves.easeInOutCubic,
+                      height: 44,
+                      alignment: Alignment.center,
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 14,
+                      ),
+                      decoration: isSelected
+                          ? BoxDecoration(
+                              gradient: LinearGradient(
+                                colors: [
+                                  tabColor.withValues(alpha: 0.22),
+                                  accentOrange.withValues(alpha: 0.12),
+                                ],
+                                begin: Alignment.topLeft,
+                                end: Alignment.bottomRight,
                               ),
-                            ],
-                          )
-                        : BoxDecoration(
-                            borderRadius: BorderRadius.circular(18),
-                            color: Colors.transparent,
-                          ),
-                    child: _buildNavIcon(item: item, isSelected: isSelected),
+                              borderRadius: BorderRadius.circular(18),
+                              border: Border.all(
+                                color: tabColor.withValues(alpha: 0.45),
+                                width: 1,
+                              ),
+                              boxShadow: [
+                                BoxShadow(
+                                  color: tabColor.withValues(alpha: 0.18),
+                                  blurRadius: 10,
+                                  offset: const Offset(0, 2),
+                                ),
+                              ],
+                            )
+                          : BoxDecoration(
+                              borderRadius: BorderRadius.circular(18),
+                              color: Colors.transparent,
+                            ),
+                      child: _buildNavIcon(item: item, isSelected: isSelected),
+                    ),
                   ),
-                ),
-              );
-            }),
+                );
+              }),
+            ),
           ),
         ),
       ),
@@ -1044,7 +1161,7 @@ class _HomeScreenNavHostState extends ConsumerState<_HomeScreenNavHost> {
     required String inactiveAsset,
   }) {
     final asset = isSelected ? activeAsset : inactiveAsset;
-    final size = isSelected ? 38.0 : 34.0;
+    const size = 34.0;
 
     return AnimatedContainer(
       duration: const Duration(milliseconds: 180),
@@ -1100,6 +1217,7 @@ class _HomeScreenNavHostState extends ConsumerState<_HomeScreenNavHost> {
 
     return Stack(
       clipBehavior: Clip.none,
+      alignment: Alignment.center,
       children: [
         iconWidget,
         Positioned(

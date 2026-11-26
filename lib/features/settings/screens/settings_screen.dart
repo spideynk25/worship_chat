@@ -1,8 +1,10 @@
 import 'package:flutter/material.dart';
 import 'package:hive_flutter/hive_flutter.dart';
 import 'package:worship_chat/colors.dart';
+import 'package:worship_chat/common/utils/app_update_service.dart';
 import 'package:worship_chat/common/widgets/user_avatar.dart';
 import 'package:worship_chat/features/settings/screens/display_settings_screen.dart';
+import 'package:worship_chat/features/settings/screens/home_widget_settings_screen.dart';
 import 'package:worship_chat/features/settings/screens/queendom_management_screen.dart';
 import 'package:worship_chat/models/user_model.dart';
 
@@ -93,11 +95,41 @@ class SettingsScreen extends StatelessWidget {
                       );
                     },
                   ),
+                  Divider(
+                    height: 1,
+                    thickness: 0.6,
+                    indent: 68,
+                    endIndent: 16,
+                    color: Colors.white.withValues(alpha: 0.07),
+                  ),
+                  _buildSettingsRow(
+                    icon: Icons.widgets_rounded,
+                    iconColor: const Color(0xFFFF2D78),
+                    title: 'Home Screen Widget',
+                    subtitle: 'Android photo widget playlist, rotation & preview',
+                    onTap: () {
+                      Navigator.push(
+                        context,
+                        MaterialPageRoute(
+                          builder: (_) => const HomeWidgetSettingsScreen(),
+                        ),
+                      );
+                    },
+                  ),
                 ]),
 
                 const SizedBox(height: 24),
 
-                // ── Section 3: App Information ───────────────────────────────
+                // ── Section 3: App Updates ───────────────────────────────────
+                _buildSectionTitle('APP UPDATES'),
+                const SizedBox(height: 10),
+                _buildSettingsCard([
+                  const _CheckForUpdatesRow(),
+                ]),
+
+                const SizedBox(height: 24),
+
+                // ── Section 4: App Information ───────────────────────────────
                 _buildSectionTitle('ABOUT & VERSION'),
                 const SizedBox(height: 10),
                 _buildSettingsCard([
@@ -105,9 +137,14 @@ class SettingsScreen extends StatelessWidget {
                     icon: Icons.workspace_premium_rounded,
                     iconColor: const Color(0xFFFFD700),
                     title: 'Worship Chat',
-                    subtitle: 'Version 2.0 • Imperial Queendom Edition',
+                    subtitle: 'Imperial Queendom Edition',
                     showArrow: false,
-                    trailing: const Text('👑', style: TextStyle(fontSize: 16)),
+                    trailing: Image.asset(
+                      'assets/emojis/queen.png',
+                      width: 18,
+                      height: 18,
+                      fit: BoxFit.contain,
+                    ),
                   ),
                 ]),
               ],
@@ -229,7 +266,10 @@ class SettingsScreen extends StatelessWidget {
     );
   }
 
-  Widget _buildSectionTitle(String title) {
+  Widget _buildSectionTitle(String title) => buildSectionTitle(title);
+
+  /// Shared uppercase section header matching the royal dark Settings styling.
+  static Widget buildSectionTitle(String title) {
     return Padding(
       padding: const EdgeInsets.only(left: 4),
       child: Text(
@@ -244,7 +284,10 @@ class SettingsScreen extends StatelessWidget {
     );
   }
 
-  Widget _buildSettingsCard(List<Widget> children) {
+  Widget _buildSettingsCard(List<Widget> children) => buildCard(children);
+
+  /// Shared `#161426` card container with subtle border used across Settings & Profile.
+  static Widget buildCard(List<Widget> children) {
     return Container(
       decoration: BoxDecoration(
         color: const Color(0xFF161426),
@@ -261,6 +304,26 @@ class SettingsScreen extends StatelessWidget {
   }
 
   Widget _buildSettingsRow({
+    required IconData icon,
+    required Color iconColor,
+    required String title,
+    required String subtitle,
+    VoidCallback? onTap,
+    bool showArrow = true,
+    Widget? trailing,
+  }) =>
+      buildRow(
+        icon: icon,
+        iconColor: iconColor,
+        title: title,
+        subtitle: subtitle,
+        onTap: onTap,
+        showArrow: showArrow,
+        trailing: trailing,
+      );
+
+  /// Shared row layout used across static and stateful settings items.
+  static Widget buildRow({
     required IconData icon,
     required Color iconColor,
     required String title,
@@ -323,6 +386,86 @@ class SettingsScreen extends StatelessWidget {
           ],
         ),
       ),
+    );
+  }
+}
+
+class _CheckForUpdatesRow extends StatefulWidget {
+  const _CheckForUpdatesRow();
+
+  @override
+  State<_CheckForUpdatesRow> createState() => _CheckForUpdatesRowState();
+}
+
+class _CheckForUpdatesRowState extends State<_CheckForUpdatesRow> {
+  InstalledAppVersion? _installed;
+  bool _checking = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadInstalledVersion();
+  }
+
+  Future<void> _loadInstalledVersion() async {
+    final ver = await AppUpdateService.instance.getInstalledVersion();
+    if (mounted) {
+      setState(() => _installed = ver);
+    }
+  }
+
+  Future<void> _onCheckPressed() async {
+    if (_checking) return;
+    setState(() => _checking = true);
+    try {
+      await AppUpdateService.instance.checkManually(context);
+    } finally {
+      if (mounted) {
+        setState(() => _checking = false);
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final subtitle = _installed == null
+        ? 'Tap to check for new APK releases'
+        : 'Installed: v${_installed!.versionName}+${_installed!.versionCode} • Tap to check';
+
+    return SettingsScreen.buildRow(
+      icon: Icons.system_update_rounded,
+      iconColor: tabColor,
+      title: 'Check for Updates',
+      subtitle: subtitle,
+      onTap: _checking ? null : _onCheckPressed,
+      trailing: _checking
+          ? const SizedBox(
+              width: 18,
+              height: 18,
+              child: CircularProgressIndicator(
+                strokeWidth: 2,
+                color: tabColor,
+              ),
+            )
+          : Container(
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+              decoration: BoxDecoration(
+                color: tabColor.withValues(alpha: 0.16),
+                borderRadius: BorderRadius.circular(20),
+                border: Border.all(
+                  color: tabColor.withValues(alpha: 0.45),
+                  width: 0.9,
+                ),
+              ),
+              child: const Text(
+                'Check',
+                style: TextStyle(
+                  color: tabColor,
+                  fontSize: 11.5,
+                  fontWeight: FontWeight.w700,
+                ),
+              ),
+            ),
     );
   }
 }

@@ -163,7 +163,7 @@ void main() {
 
       // Top category carousel and filter row ARE present
       expect(find.text('All Mistresses'), findsOneWidget);
-      expect(find.text('Aura Goddesses'), findsOneWidget);
+      expect(find.text('Aura Elixiria Goddesses'), findsOneWidget);
       expect(find.text('Filters:'), findsOneWidget);
       expect(find.text('Has Unseen'), findsOneWidget);
       expect(find.text('With Sub-groups'), findsOneWidget);
@@ -205,8 +205,8 @@ void main() {
       expect(find.text('CARD: Rashmika Mandanna'), findsOneWidget);
       expect(find.text('CARD: Solar Aurelia'), findsOneWidget);
 
-      // Tap "Aura Goddesses" category chip
-      await tester.tap(find.text('Aura Goddesses'));
+      // Tap "Aura Elixiria Goddesses" category chip
+      await tester.tap(find.text('Aura Elixiria Goddesses'));
       await tester.pumpAndSettle();
 
       // Only Aura mistress visible

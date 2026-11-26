@@ -16,10 +16,14 @@ import 'package:worship_chat/colors.dart';
 import 'package:worship_chat/common/utils/google_lens_service.dart';
 import 'package:worship_chat/common/utils/utils.dart';
 import 'package:worship_chat/common/widgets/loader.dart';
+import 'package:worship_chat/common/widgets/wallpaper_widget_sheet.dart';
 import 'package:worship_chat/features/auth/controller/auth_controller.dart';
 import 'package:worship_chat/features/bookmark/controller/bookmark_controller.dart';
+import 'package:worship_chat/features/bookmark/widgets/save_to_collection_sheet.dart';
 import 'package:worship_chat/features/group/controller/group_gallery_controller.dart';
+import 'package:worship_chat/features/group/screens/duplicate_finder_screen.dart';
 import 'package:worship_chat/features/group/screens/slide_show_screen.dart';
+import 'package:worship_chat/features/group/services/duplicate_detection_service.dart';
 import 'package:worship_chat/features/chat/widgets/forward_message_sheet.dart';
 import 'package:worship_chat/features/group/services/gallery_media_service.dart';
 import 'package:worship_chat/features/group/widgets/multi_gallery_shuffle_sheet.dart';
@@ -52,6 +56,7 @@ class _GroupGalleryScreenState extends ConsumerState<GroupGalleryScreen>
   final ValueNotifier<int> _totalToUploadNotifier = ValueNotifier(0);
 
   List<GroupGalleryImage>? _shuffledImages;
+  List<GroupGalleryImage> _currentGalleryImages = [];
   bool _isShuffled = false;
 
   late TabController _tabController;
@@ -116,7 +121,68 @@ class _GroupGalleryScreenState extends ConsumerState<GroupGalleryScreen>
     try {
       final picked = await ImagePicker().pickMultiImage();
       if (picked.isEmpty) return;
-      final files = picked.map((x) => File(x.path)).toList();
+      var files = picked.map((x) => File(x.path)).toList();
+
+      // Pre-upload Smart Duplicate Check
+      if (_currentGalleryImages.isNotEmpty) {
+        final duplicateFiles = <File>[];
+        for (final file in files) {
+          final dup = await DuplicateDetectionService.findDuplicateForLocalFile(
+            file: file,
+            existingImages: _currentGalleryImages,
+          );
+          if (dup != null) {
+            duplicateFiles.add(file);
+          }
+        }
+
+        if (duplicateFiles.isNotEmpty && mounted) {
+          final skipDuplicates = await showDialog<bool>(
+            context: context,
+            builder: (ctx) => AlertDialog(
+              backgroundColor: const Color(0xFF1B1827),
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(16),
+                side: BorderSide(color: _accent.withValues(alpha: 0.3)),
+              ),
+              title: const Row(
+                children: [
+                  Icon(Icons.copy_rounded, color: Colors.orangeAccent, size: 20),
+                  SizedBox(width: 8),
+                  Text('Duplicate Photos Detected', style: TextStyle(fontSize: 16)),
+                ],
+              ),
+              content: Text(
+                '${duplicateFiles.length} of the ${files.length} selected photos appear to already exist in this gallery.\n\nWould you like to skip uploading them?',
+                style: const TextStyle(color: Colors.white70, fontSize: 13),
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.pop(ctx, false),
+                  child: const Text('Upload All', style: TextStyle(color: Colors.white54)),
+                ),
+                ElevatedButton(
+                  onPressed: () => Navigator.pop(ctx, true),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: _accent,
+                    foregroundColor: Colors.white,
+                  ),
+                  child: const Text('Skip Duplicates'),
+                ),
+              ],
+            ),
+          );
+
+          if (skipDuplicates == true) {
+            files = files.where((f) => !duplicateFiles.contains(f)).toList();
+            if (files.isEmpty) {
+              _snack('All selected photos were duplicates and skipped.');
+              return;
+            }
+          }
+        }
+      }
+
       _showUploadSheet(files);
     } catch (e) {
       log('image picker error: $e');
@@ -345,6 +411,7 @@ class _GroupGalleryScreenState extends ConsumerState<GroupGalleryScreen>
         }
 
         final originalImages = snapshot.data ?? [];
+        _currentGalleryImages = originalImages;
         final photos = originalImages.where((m) => m.isImage).toList();
         final videos = originalImages.where((m) => m.isVideo).toList();
 
@@ -698,6 +765,31 @@ class _GroupGalleryScreenState extends ConsumerState<GroupGalleryScreen>
                 ? null
                 : () => _showDownloadZipDialog(images),
           ),
+
+          const SizedBox(width: 14),
+
+          // ── Smart Duplicate Finder ────────────────────────
+          _buildActionIconButton(
+            icon: const Icon(
+              Icons.copy_rounded,
+              color: Colors.white70,
+              size: 19,
+            ),
+            tooltip: 'Smart Duplicate Finder',
+            onPressed: () {
+              Navigator.push(
+                context,
+                MaterialPageRoute(
+                  builder: (_) => DuplicateFinderScreen(
+                    initialImages: images,
+                    groupId: widget.groupId,
+                    groupName: widget.groupName,
+                    accentColor: _accent,
+                  ),
+                ),
+              );
+            },
+          ),
         ],
       ),
     );
@@ -839,21 +931,126 @@ class _FullscreenViewerState extends ConsumerState<_FullscreenViewer> {
     }
   }
 
-  // ── Bookmark ──────────────────────────────────────────────────────────────
+  // ── Bookmark & Collection ──────────────────────────────────────────────────
+
+  Future<void> _openSaveToCollection({String? bookmarkId}) async {
+    final userData = await ref.read(userDataAuthProvider.future);
+    if (!mounted) return;
+    final uid = userData?.uid ?? widget.currentUserId;
+    if (uid.isEmpty) return;
+    final img = widget.images[_index];
+
+    String? bId = bookmarkId;
+    bId ??= await ref.read(bookmarkControllerProvider).ensureBookmarked(
+          imageUrl: img.imageUrl,
+          groupId: widget.groupId,
+          groupName: widget.groupName,
+          userName: userData?.name ?? 'Unknown',
+          userProfilePic: userData?.profilePic ?? '',
+        );
+
+    if (bId != null && mounted) {
+      await SaveToCollectionSheet.show(
+        context: context,
+        bookmarkId: bId,
+        imageUrl: img.imageUrl,
+        userId: uid,
+      );
+    }
+  }
+
+  Future<void> _handleBookmarkPress(bool isCurrentlyBookmarked) async {
+    if (isCurrentlyBookmarked) {
+      _showBookmarkActionSheet();
+    } else {
+      await _toggleBookmark();
+    }
+  }
 
   Future<void> _toggleBookmark() async {
     final userData = await ref.read(userDataAuthProvider.future);
     if (userData == null) return;
     final img = widget.images[_index];
-    await ref
+    final result = await ref
         .read(bookmarkControllerProvider)
-        .toggleBookmark(
+        .toggleBookmarkWithResult(
           imageUrl: img.imageUrl,
           groupId: widget.groupId,
           groupName: widget.groupName,
           userName: userData.name ?? 'Unknown',
           userProfilePic: userData.profilePic ?? '',
         );
+
+    if (!mounted) return;
+
+    if (result.isBookmarked && result.bookmarkId != null) {
+      // Auto-open SaveToCollectionSheet to give the user immediate choice of collection
+      _openSaveToCollection(bookmarkId: result.bookmarkId);
+      AppSnackBar.show(
+        context,
+        message: 'Saved to bookmarks',
+        type: SnackBarType.success,
+        actionLabel: 'Collections',
+        onAction: () => _openSaveToCollection(bookmarkId: result.bookmarkId),
+      );
+    } else {
+      AppSnackBar.show(
+        context,
+        message: 'Bookmark removed',
+        type: SnackBarType.info,
+      );
+    }
+  }
+
+  void _showBookmarkActionSheet() {
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: const Color(0xFF1B1728),
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (ctx) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Container(
+              margin: const EdgeInsets.only(top: 8, bottom: 4),
+              width: 36,
+              height: 4,
+              decoration: BoxDecoration(
+                color: Colors.white24,
+                borderRadius: BorderRadius.circular(2),
+              ),
+            ),
+            ListTile(
+              leading:
+                  const Icon(Icons.folder_special_rounded, color: tabColor),
+              title: const Text('Save to Collection',
+                  style: TextStyle(
+                      color: Colors.white, fontWeight: FontWeight.bold)),
+              subtitle: const Text('Choose or change collection folder',
+                  style: TextStyle(color: Colors.white54, fontSize: 12)),
+              onTap: () {
+                Navigator.pop(ctx);
+                _openSaveToCollection();
+              },
+            ),
+            ListTile(
+              leading: const Icon(Icons.bookmark_remove_rounded,
+                  color: Colors.redAccent),
+              title: const Text('Remove Bookmark',
+                  style: TextStyle(color: Colors.redAccent)),
+              subtitle: const Text('Delete from all bookmarks and collections',
+                  style: TextStyle(color: Colors.white54, fontSize: 12)),
+              onTap: () {
+                Navigator.pop(ctx);
+                _toggleBookmark();
+              },
+            ),
+          ],
+        ),
+      ),
+    );
   }
 
   void _snack(String msg, [Color? color]) {
@@ -979,24 +1176,29 @@ class _FullscreenViewerState extends ConsumerState<_FullscreenViewer> {
                                 mainAxisAlignment:
                                     MainAxisAlignment.spaceEvenly,
                                 children: [
-                                  // ── Bookmark ───────────────────────────
+                                  // ── Bookmark & Collection ─────────────
                                   StreamBuilder<bool>(
                                     stream: isBookmarked,
                                     builder: (context, snap) {
                                       final bookmarked = snap.data ?? false;
-                                      return IconButton(
-                                        icon: Icon(
-                                          bookmarked
-                                              ? Icons.bookmark
-                                              : Icons.bookmark_outline,
-                                          color: bookmarked
-                                              ? Colors.amber
-                                              : Colors.white,
+                                      return GestureDetector(
+                                        onLongPress: () =>
+                                            _openSaveToCollection(),
+                                        child: IconButton(
+                                          icon: Icon(
+                                            bookmarked
+                                                ? Icons.bookmark
+                                                : Icons.bookmark_outline,
+                                            color: bookmarked
+                                                ? Colors.amber
+                                                : Colors.white,
+                                          ),
+                                          tooltip: bookmarked
+                                              ? 'Bookmark options / Collections'
+                                              : 'Bookmark & Save to collection',
+                                          onPressed: () =>
+                                              _handleBookmarkPress(bookmarked),
                                         ),
-                                        tooltip: bookmarked
-                                            ? 'Remove bookmark'
-                                            : 'Bookmark',
-                                        onPressed: _toggleBookmark,
                                       );
                                     },
                                   ),
@@ -1073,6 +1275,27 @@ class _FullscreenViewerState extends ConsumerState<_FullscreenViewer> {
                                       onPressed: () => GoogleLensService.search(
                                         context: context,
                                         imageUrl: img.imageUrl,
+                                      ),
+                                    ),
+
+                                  // ── Wallpaper & Home Widget ─────────────
+                                  if (!img.isVideo)
+                                    IconButton(
+                                      icon: const Icon(
+                                        Icons.wallpaper_rounded,
+                                        color: Colors.white,
+                                      ),
+                                      tooltip: 'Wallpaper & Home Widget',
+                                      onPressed: () =>
+                                          WallpaperAndWidgetSheet.show(
+                                        context,
+                                        photoId: 'gal_${img.imageId}',
+                                        imageUrl: img.imageUrl,
+                                        title: (img.caption?.trim().isNotEmpty ??
+                                                false)
+                                            ? img.caption!.trim()
+                                            : widget.groupName,
+                                        subtitle: 'Queendom Gallery',
                                       ),
                                     ),
 
@@ -1411,7 +1634,7 @@ class _EmptyGallery extends StatelessWidget {
 // Gallery Grid
 // ─────────────────────────────────────────────────────────────────────────────
 
-class _GalleryGrid extends StatelessWidget {
+class _GalleryGrid extends ConsumerWidget {
   final List<GroupGalleryImage> images;
   final bool isVideo;
   final String groupId;
@@ -1433,7 +1656,7 @@ class _GalleryGrid extends StatelessWidget {
   });
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
     if (images.isEmpty) {
       return _EmptyGallery(
         accentColor: accentColor,
@@ -1542,6 +1765,40 @@ class _GalleryGrid extends StatelessWidget {
                             ),
                             if (!img.isVideo)
                               ListTile(
+                                leading: const Icon(Icons.bookmark_add_rounded,
+                                    color: Colors.amber),
+                                title: const Text('Save to Collection',
+                                    style: TextStyle(color: Colors.white)),
+                                subtitle: const Text(
+                                    'Bookmark and organize into collections',
+                                    style: TextStyle(
+                                        color: Colors.white54, fontSize: 12)),
+                                onTap: () async {
+                                  Navigator.pop(ctx);
+                                  final userData = await ref
+                                      .read(userDataAuthProvider.future);
+                                  final bId = await ref
+                                      .read(bookmarkControllerProvider)
+                                      .ensureBookmarked(
+                                        imageUrl: img.imageUrl,
+                                        groupId: groupId,
+                                        groupName: groupName,
+                                        userName: userData?.name ?? 'Unknown',
+                                        userProfilePic:
+                                            userData?.profilePic ?? '',
+                                      );
+                                  if (bId != null && context.mounted) {
+                                    SaveToCollectionSheet.show(
+                                      context: context,
+                                      bookmarkId: bId,
+                                      imageUrl: img.imageUrl,
+                                      userId: currentUserId,
+                                    );
+                                  }
+                                },
+                              ),
+                            if (!img.isVideo)
+                              ListTile(
                                 leading: Icon(Icons.slideshow_rounded,
                                     color: accentColor),
                                 title: const Text('Start Slideshow',
@@ -1575,6 +1832,32 @@ class _GalleryGrid extends StatelessWidget {
                                   GoogleLensService.search(
                                     context: context,
                                     imageUrl: img.imageUrl,
+                                  );
+                                },
+                              ),
+                            if (!img.isVideo)
+                              ListTile(
+                                leading: const Icon(
+                                  Icons.wallpaper_rounded,
+                                  color: Color(0xFFFFD700),
+                                ),
+                                title: const Text('Wallpaper & Home Widget',
+                                    style: TextStyle(color: Colors.white)),
+                                subtitle: const Text(
+                                    'Set phone wallpaper or pin to widget',
+                                    style: TextStyle(
+                                        color: Colors.white54, fontSize: 12)),
+                                onTap: () {
+                                  Navigator.pop(ctx);
+                                  WallpaperAndWidgetSheet.show(
+                                    context,
+                                    photoId: 'gal_${img.imageId}',
+                                    imageUrl: img.imageUrl,
+                                    title:
+                                        (img.caption?.trim().isNotEmpty ?? false)
+                                            ? img.caption!.trim()
+                                            : groupName,
+                                    subtitle: 'Queendom Gallery',
                                   );
                                 },
                               ),

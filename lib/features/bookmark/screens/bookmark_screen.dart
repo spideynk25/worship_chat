@@ -14,6 +14,7 @@ import 'package:worship_chat/features/group/services/gallery_media_service.dart'
 import 'package:worship_chat/features/group/widgets/gallery_navigation_controls.dart';
 import 'package:worship_chat/common/widgets/skeleton_loader.dart';
 import 'package:worship_chat/common/widgets/user_avatar.dart';
+import 'package:worship_chat/common/widgets/wallpaper_widget_sheet.dart';
 import 'package:worship_chat/features/bookmark/controller/bookmark_controller.dart';
 import 'package:worship_chat/features/chat/widgets/forward_message_sheet.dart';
 import 'package:worship_chat/features/group/screens/slide_show_screen.dart';
@@ -518,6 +519,32 @@ class _UserBookmarksScreenState extends ConsumerState<_UserBookmarksScreen>
                 GoogleLensService.search(
                   context: context,
                   imageUrl: bm.imageUrl,
+                );
+              },
+            ),
+            ListTile(
+              leading: const Icon(
+                Icons.wallpaper_rounded,
+                color: Color(0xFFFFD700),
+              ),
+              title: const Text(
+                'Wallpaper & Home Widget',
+                style: TextStyle(color: Colors.white),
+              ),
+              subtitle: const Text(
+                'Set phone wallpaper or pin to widget',
+                style: TextStyle(color: Colors.white54, fontSize: 12),
+              ),
+              onTap: () {
+                Navigator.pop(ctx);
+                WallpaperAndWidgetSheet.show(
+                  context,
+                  photoId: 'bm_${bm.bookmarkId}',
+                  imageUrl: bm.imageUrl,
+                  title: bm.groupName.isNotEmpty
+                      ? bm.groupName
+                      : widget.userName,
+                  subtitle: 'Saved Bookmark',
                 );
               },
             ),
@@ -1450,6 +1477,25 @@ class BookmarkFullscreenViewerState
                                     onPressed: () => GoogleLensService.search(
                                       context: context,
                                       imageUrl: bm.imageUrl,
+                                    ),
+                                  ),
+
+                                  // ── Wallpaper & Home Widget ────────────
+                                  IconButton(
+                                    icon: const Icon(
+                                      Icons.wallpaper_rounded,
+                                      color: Colors.white,
+                                    ),
+                                    tooltip: 'Wallpaper & Home Widget',
+                                    onPressed: () =>
+                                        WallpaperAndWidgetSheet.show(
+                                      context,
+                                      photoId: 'bm_${bm.bookmarkId}',
+                                      imageUrl: bm.imageUrl,
+                                      title: bm.groupName.isNotEmpty
+                                          ? bm.groupName
+                                          : 'Saved Bookmark',
+                                      subtitle: 'Worship Chat Bookmarks',
                                     ),
                                   ),
 
