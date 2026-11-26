@@ -9,11 +9,10 @@ import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:hive_flutter/hive_flutter.dart';
 import 'package:image/image.dart' as img;
-import 'package:image_picker/image_picker.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:worship_chat/colors.dart';
-import 'package:worship_chat/common/utils/app_capabilities.dart';
 import 'package:worship_chat/common/utils/utils.dart';
+import 'package:worship_chat/common/widgets/app_media_picker_sheet.dart';
 import 'package:worship_chat/common/widgets/user_avatar.dart';
 import 'package:worship_chat/features/auth/controller/auth_controller.dart';
 import 'package:worship_chat/features/settings/screens/settings_screen.dart';
@@ -33,6 +32,7 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
   final TextEditingController _userNameController = TextEditingController();
   final TextEditingController _nameController = TextEditingController();
   File? _selectedImage;
+  String? _selectedImageUrl;
   bool _removePhotoRequested = false;
   bool _isLoading = false;
   String _initialName = '';
@@ -66,6 +66,7 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
 
   bool get _hasUnsavedChanges =>
       _selectedImage != null ||
+      _selectedImageUrl != null ||
       _removePhotoRequested ||
       _nameController.text.trim() != _initialName.trim() ||
       _userNameController.text.trim() != _initialUserName.trim();
@@ -164,16 +165,15 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
     }
   }
 
-  Future<void> _pickImage(ImageSource source) async {
+  Future<void> _applyPickedLocalFile(File pickedImage) async {
     try {
-      final pickedImage = await pickImageFromSource(context, source: source);
-      if (!mounted || pickedImage == null) return;
       final cropped = await _cropImage(pickedImage);
       if (!mounted || cropped == null) return;
       final resized = await _resizeImage(cropped);
       if (!mounted || resized == null) return;
       setState(() {
         _selectedImage = resized;
+        _selectedImageUrl = null;
         _removePhotoRequested = false;
       });
     } catch (e) {
@@ -184,6 +184,9 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
   bool _hasActivePhoto(UserModel? user) {
     if (_removePhotoRequested) return false;
     if (_selectedImage != null && _selectedImage!.existsSync()) return true;
+    if (_selectedImageUrl != null && _selectedImageUrl!.trim().isNotEmpty) {
+      return true;
+    }
     return UserAvatar.sanitizeUrl(user?.profilePic) != null;
   }
 
@@ -191,7 +194,7 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
     final hasFile = _selectedImage != null && _selectedImage!.existsSync();
     final url = _removePhotoRequested
         ? null
-        : UserAvatar.sanitizeUrl(user?.profilePic);
+        : (_selectedImageUrl ?? UserAvatar.sanitizeUrl(user?.profilePic));
     if (!hasFile && url == null) return;
 
     Navigator.push(
@@ -208,113 +211,28 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
 
   void _showAvatarOptions(UserModel? user) {
     final hasPhoto = _hasActivePhoto(user);
-    final isDesktop = AppCapabilities.current.isDesktop;
-
-    showModalBottomSheet<void>(
+    showProfilePicSourceSheet(
       context: context,
-      backgroundColor: const Color(0xFF161426),
-      shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(22)),
-      ),
-      builder: (sheetCtx) {
-        return SafeArea(
-          child: Padding(
-            padding: const EdgeInsets.fromLTRB(16, 12, 16, 16),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                Center(
-                  child: Container(
-                    width: 40,
-                    height: 4,
-                    decoration: BoxDecoration(
-                      color: Colors.white24,
-                      borderRadius: BorderRadius.circular(2),
-                    ),
-                  ),
-                ),
-                const SizedBox(height: 14),
-                const Text(
-                  'Profile Photo',
-                  style: TextStyle(
-                    color: Colors.white,
-                    fontSize: 16,
-                    fontWeight: FontWeight.bold,
-                  ),
-                ),
-                const SizedBox(height: 10),
-                if (hasPhoto)
-                  _buildSheetTile(
-                    icon: Icons.fullscreen_rounded,
-                    color: const Color(0xFF38BDF8),
-                    title: 'View Photo',
-                    onTap: () {
-                      Navigator.pop(sheetCtx);
-                      _openFullScreenPhoto(user);
-                    },
-                  ),
-                _buildSheetTile(
-                  icon: Icons.photo_library_rounded,
-                  color: tabColor,
-                  title: 'Choose from Gallery',
-                  onTap: () {
-                    Navigator.pop(sheetCtx);
-                    _pickImage(ImageSource.gallery);
-                  },
-                ),
-                if (!isDesktop)
-                  _buildSheetTile(
-                    icon: Icons.camera_alt_rounded,
-                    color: accentOrange,
-                    title: 'Take Photo',
-                    onTap: () {
-                      Navigator.pop(sheetCtx);
-                      _pickImage(ImageSource.camera);
-                    },
-                  ),
-                if (hasPhoto)
-                  _buildSheetTile(
-                    icon: Icons.delete_outline_rounded,
-                    color: const Color(0xFFFF5252),
-                    title: 'Remove Photo',
-                    textColor: const Color(0xFFFF6B6B),
-                    onTap: () {
-                      Navigator.pop(sheetCtx);
-                      setState(() {
-                        _selectedImage = null;
-                        _removePhotoRequested = true;
-                      });
-                    },
-                  ),
-              ],
-            ),
-          ),
-        );
+      hasPhoto: hasPhoto,
+      onViewPhoto: hasPhoto ? () => _openFullScreenPhoto(user) : null,
+      onRemovePhoto: hasPhoto
+          ? () {
+              setState(() {
+                _selectedImage = null;
+                _selectedImageUrl = null;
+                _removePhotoRequested = true;
+              });
+            }
+          : null,
+      onLocalFileSelected: _applyPickedLocalFile,
+      onRemoteUrlSelected: (url) async {
+        if (!mounted) return;
+        setState(() {
+          _selectedImage = null;
+          _selectedImageUrl = url;
+          _removePhotoRequested = false;
+        });
       },
-    );
-  }
-
-  Widget _buildSheetTile({
-    required IconData icon,
-    required Color color,
-    required String title,
-    required VoidCallback onTap,
-    Color textColor = Colors.white,
-  }) {
-    return ListTile(
-      contentPadding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-      leading: _buildIconBadge(icon: icon, color: color),
-      title: Text(
-        title,
-        style: TextStyle(
-          color: textColor,
-          fontSize: 14.5,
-          fontWeight: FontWeight.w600,
-        ),
-      ),
-      onTap: onTap,
     );
   }
 
@@ -324,6 +242,7 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
       _nameController.text = _initialName;
       _userNameController.text = _initialUserName;
       _selectedImage = null;
+      _selectedImageUrl = null;
       _removePhotoRequested = false;
       _usernameStatus = _UsernameStatus.none;
     });
@@ -455,6 +374,8 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
             trimmedName,
             _selectedImage,
             userName: trimmedUserName,
+            profilePicUrlOverride:
+                _selectedImage == null ? _selectedImageUrl : null,
             navigateHomeOnComplete: false,
             removeProfilePic: _removePhotoRequested,
           );
@@ -464,6 +385,7 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
           _initialName = trimmedName;
           _initialUserName = trimmedUserName;
           _selectedImage = null;
+          _selectedImageUrl = null;
           _removePhotoRequested = false;
           _usernameStatus = _UsernameStatus.none;
         });
@@ -704,7 +626,7 @@ class _ProfileScreenState extends ConsumerState<ProfileScreen> {
                           : UserAvatar(
                               url: _removePhotoRequested
                                   ? null
-                                  : user?.profilePic,
+                                  : (_selectedImageUrl ?? user?.profilePic),
                               radius: 50,
                               backgroundColor: const Color(0xFF231F38),
                             ),

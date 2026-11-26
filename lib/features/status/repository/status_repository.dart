@@ -101,6 +101,7 @@ class StatusRepository {
       }
 
       final List<String> uploadedStatusIds = [];
+      String? firstStatusUrl;
 
       // 2. Upload each file in sequence
       for (int i = 0; i < statusFiles.length; i++) {
@@ -133,6 +134,7 @@ class StatusRepository {
           'likes': {},
         });
 
+        firstStatusUrl ??= statusUrl;
         uploadedStatusIds.add(statusId);
       }
 
@@ -163,6 +165,11 @@ class StatusRepository {
             'profilePic': profilePic,
             'statusId': uploadedStatusIds.first,
             'tag': 'story_$uid',
+            if (!isVideo && firstStatusUrl != null) ...{
+              'messageType': 'image',
+              'fileMessageData': firstStatusUrl,
+              'statusUrl': firstStatusUrl,
+            },
           },
         );
         log('📢 Sent story notification to ${recipientFcmTokens.length} remaining users');

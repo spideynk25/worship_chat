@@ -5,6 +5,8 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:worship_chat/common/utils/background_task_service.dart';
+import 'package:worship_chat/common/utils/utils.dart';
 import 'package:worship_chat/features/group/controller/group_controller.dart';
 import 'package:worship_chat/features/group/screens/group_chat_screen.dart';
 import 'package:worship_chat/features/group/utils/group_template_helper.dart';
@@ -542,5 +544,177 @@ class _QueendomGroupPickerSheetState extends State<_QueendomGroupPickerSheet>
         );
       },
     );
+  }
+}
+
+/// Resolves the devotion wish message for a group, falling back to position template.
+String resolveQueendomGroupWish(GroupModel group) {
+  if (group.wish != null && group.wish!.trim().isNotEmpty) {
+    return group.wish!.trim();
+  }
+  final template = GroupTemplateHelper.generateTemplate(
+    position: group.position ?? '',
+    name: group.name,
+    family: group.family ?? '',
+  );
+  if (template.wish.trim().isNotEmpty) {
+    return template.wish.trim();
+  }
+  return '🙇‍♀️🙇‍♀️ Praise ${group.name} 🙇‍♀️🙇‍♀️';
+}
+
+/// Confirms and sends wishes to all [groupsToWish] inside [BackgroundTaskService],
+/// persisting finalized wish messages in local Hive storage and Firestore even if
+/// the user navigates away before completion.
+Future<void> confirmAndWishCategoryGroups({
+  required BuildContext context,
+  required WidgetRef ref,
+  required String categoryTitle,
+  required Color accentColor,
+  required String queendomType,
+  required List<GroupModel> groupsToWish,
+  required ValueNotifier<bool> isWishingNotifier,
+  required bool Function() isMounted,
+  VoidCallback? onComplete,
+}) async {
+  if (groupsToWish.isEmpty) {
+    if (context.mounted) {
+      showSnackBar(
+        context: context,
+        content: 'No mistresses found in $categoryTitle',
+      );
+    }
+    return;
+  }
+
+  HapticFeedback.lightImpact();
+
+  final count = groupsToWish.length;
+  final confirm = await showDialog<bool>(
+    context: context,
+    builder: (ctx) => AlertDialog(
+      backgroundColor: const Color(0xFF1E1A2E),
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+      title: Row(
+        children: [
+          const Text('🙇🏻‍♂️', style: TextStyle(fontSize: 22)),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              'Wish All $categoryTitle?',
+              style: const TextStyle(
+                color: Colors.white,
+                fontSize: 17,
+                fontWeight: FontWeight.bold,
+              ),
+            ),
+          ),
+        ],
+      ),
+      content: Text(
+        'Send royal devotion wishes to all $count ${count == 1 ? 'mistress' : 'mistresses'} in $categoryTitle?',
+        style: const TextStyle(color: Colors.white70, fontSize: 13),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(ctx, false),
+          child: const Text('Cancel', style: TextStyle(color: Colors.white60)),
+        ),
+        ElevatedButton(
+          style: ElevatedButton.styleFrom(
+            backgroundColor: accentColor,
+            foregroundColor: Colors.black,
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(10),
+            ),
+          ),
+          onPressed: () => Navigator.pop(ctx, true),
+          child: const Text(
+            'Wish All 🙇🏻‍♂️',
+            style: TextStyle(fontWeight: FontWeight.bold),
+          ),
+        ),
+      ],
+    ),
+  );
+
+  if (confirm != true || !isMounted()) return;
+
+  HapticFeedback.mediumImpact();
+  isWishingNotifier.value = true;
+
+  // Capture controller and snapshot list before running so background completion
+  // never touches a disposed WidgetRef or aborts when navigating away.
+  final controller = ref.read(groupControllerProvider);
+  final snapshotGroups = List<GroupModel>.from(groupsToWish);
+
+  try {
+    final sentCount =
+        await BackgroundTaskService.instance.runWithBackgroundTask<int>(
+      title: 'Wishing $categoryTitle',
+      initialMessage:
+          'Sending wishes to ${snapshotGroups.length} ${snapshotGroups.length == 1 ? 'mistress' : 'mistresses'}...',
+      successMessage: 'Sent royal wishes to $categoryTitle',
+      task: (updateProgress) async {
+        int sent = 0;
+        final total = snapshotGroups.length;
+        for (final group in snapshotGroups) {
+          final wishText = resolveQueendomGroupWish(group);
+          if (wishText.isEmpty) continue;
+
+          updateProgress(
+            'Wishing ${group.name} (${sent + 1}/$total)...',
+            progress: sent,
+            maxProgress: total,
+          );
+
+          await controller.sendTextMessage(
+            // Intentionally keep caller context for signature compatibility;
+            // GroupRepository checks context.mounted so unmounting never aborts.
+            // ignore: use_build_context_synchronously
+            context,
+            wishText,
+            group.groupId,
+            'wish',
+            null,
+            List<String>.from(group.fcmTokens),
+            List<String>.from(group.membersUid),
+            group.nameWithPosition,
+            queendomType,
+            clearReply: true,
+          );
+          sent++;
+
+          updateProgress(
+            'Saved & wished $sent/$total',
+            progress: sent,
+            maxProgress: total,
+          );
+          await Future.delayed(const Duration(milliseconds: 30));
+        }
+        return sent;
+      },
+    );
+
+    if (context.mounted) {
+      showSnackBar(
+        context: context,
+        content:
+            'Sent royal wishes to $sentCount ${sentCount == 1 ? 'mistress' : 'mistresses'} in $categoryTitle! 🙇🏻‍♂️✨',
+      );
+    }
+  } catch (e) {
+    log('❌ Error wishing category: $e');
+    if (context.mounted) {
+      showSnackBar(
+        context: context,
+        content: 'Failed to send wishes: $e',
+      );
+    }
+  } finally {
+    if (isMounted()) {
+      isWishingNotifier.value = false;
+      onComplete?.call();
+    }
   }
 }

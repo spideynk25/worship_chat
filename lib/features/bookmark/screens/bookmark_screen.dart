@@ -12,6 +12,7 @@ import 'package:worship_chat/common/utils/google_lens_service.dart';
 import 'package:worship_chat/common/utils/utils.dart';
 import 'package:worship_chat/features/group/services/gallery_media_service.dart';
 import 'package:worship_chat/features/group/widgets/gallery_navigation_controls.dart';
+import 'package:worship_chat/common/widgets/set_as_profile_pic_sheet.dart';
 import 'package:worship_chat/common/widgets/skeleton_loader.dart';
 import 'package:worship_chat/common/widgets/user_avatar.dart';
 import 'package:worship_chat/common/widgets/wallpaper_widget_sheet.dart';
@@ -439,13 +440,15 @@ class _UserBookmarksScreenState extends ConsumerState<_UserBookmarksScreen>
     showModalBottomSheet(
       context: context,
       backgroundColor: const Color(0xFF1B1728),
+      isScrollControlled: true,
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
       ),
       builder: (ctx) => SafeArea(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
+        child: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
             Container(
               margin: const EdgeInsets.only(top: 8, bottom: 4),
               width: 36,
@@ -550,6 +553,32 @@ class _UserBookmarksScreenState extends ConsumerState<_UserBookmarksScreen>
             ),
             ListTile(
               leading: const Icon(
+                Icons.account_circle_outlined,
+                color: tabColor,
+              ),
+              title: const Text(
+                'Set as Profile Pic',
+                style: TextStyle(color: Colors.white),
+              ),
+              subtitle: const Text(
+                'Use for your profile or any group',
+                style: TextStyle(color: Colors.white54, fontSize: 12),
+              ),
+              onTap: () {
+                Navigator.pop(ctx);
+                SetAsProfilePicSheet.show(
+                  context,
+                  imageUrl: bm.imageUrl,
+                  sourceGroupId: bm.groupId,
+                  sourceGroupName: bm.groupName,
+                  title: bm.groupName.isNotEmpty
+                      ? bm.groupName
+                      : widget.userName,
+                );
+              },
+            ),
+            ListTile(
+              leading: const Icon(
                 Icons.download_rounded,
                 color: Colors.white70,
               ),
@@ -639,6 +668,7 @@ class _UserBookmarksScreenState extends ConsumerState<_UserBookmarksScreen>
                 },
               ),
           ],
+          ),
         ),
       ),
     );
@@ -1414,10 +1444,17 @@ class BookmarkFullscreenViewerState
                                 horizontal: 16,
                                 vertical: 2,
                               ),
-                              child: Row(
-                                mainAxisAlignment:
-                                    MainAxisAlignment.spaceEvenly,
-                                children: [
+                              child: SingleChildScrollView(
+                                scrollDirection: Axis.horizontal,
+                                child: ConstrainedBox(
+                                  constraints: BoxConstraints(
+                                    minWidth:
+                                        MediaQuery.sizeOf(context).width - 32,
+                                  ),
+                                  child: Row(
+                                    mainAxisAlignment:
+                                        MainAxisAlignment.spaceEvenly,
+                                    children: [
                                   // ── Download ───────────────────────────
                                   IconButton(
                                     icon: _isDownloading
@@ -1499,6 +1536,24 @@ class BookmarkFullscreenViewerState
                                     ),
                                   ),
 
+                                  // ── Set as Profile Pic ─────────────────
+                                  IconButton(
+                                    icon: const Icon(
+                                      Icons.account_circle_outlined,
+                                      color: Colors.white,
+                                    ),
+                                    tooltip: 'Set as Profile Pic',
+                                    onPressed: () => SetAsProfilePicSheet.show(
+                                      context,
+                                      imageUrl: bm.imageUrl,
+                                      sourceGroupId: bm.groupId,
+                                      sourceGroupName: bm.groupName,
+                                      title: bm.groupName.isNotEmpty
+                                          ? bm.groupName
+                                          : 'Saved Bookmark',
+                                    ),
+                                  ),
+
                                   // ── Save to Collection (own only) ──────
                                   if (widget.isOwner)
                                     IconButton(
@@ -1528,6 +1583,8 @@ class BookmarkFullscreenViewerState
                                       onPressed: _confirmRemove,
                                     ),
                                 ],
+                              ),
+                                ),
                               ),
                             ),
                           ],

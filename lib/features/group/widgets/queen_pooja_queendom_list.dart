@@ -12,6 +12,7 @@ import 'package:worship_chat/common/utils/utils.dart';
 import 'package:worship_chat/features/group/screens/group_gallery_screen.dart';
 import 'package:worship_chat/features/group/utils/group_template_helper.dart';
 import 'package:worship_chat/features/group/utils/queendom_emblem_helper.dart';
+import 'package:worship_chat/features/group/utils/queendom_group_helper.dart';
 import 'package:worship_chat/features/group/widgets/queendom_search_view.dart';
 import 'package:worship_chat/features/group/widgets/royal_avatar_decoration.dart';
 import 'package:worship_chat/features/settings/providers/queendom_customization_provider.dart';
@@ -145,146 +146,6 @@ class _QueenPoojaQueendomListState extends ConsumerState<QueenPoojaQueendomList>
         .length;
   }
 
-  String _resolveGroupWish(GroupModel group) {
-    if (group.wish != null && group.wish!.trim().isNotEmpty) {
-      return group.wish!.trim();
-    }
-    final template = GroupTemplateHelper.generateTemplate(
-      position: group.position ?? '',
-      name: group.name,
-      family: group.family ?? '',
-    );
-    if (template.wish.trim().isNotEmpty) {
-      return template.wish.trim();
-    }
-    return '🙇‍♀️🙇‍♀️ Praise ${group.name} 🙇‍♀️🙇‍♀️';
-  }
-
-  Future<void> _wishAllGroupsInCategory(
-    BuildContext context,
-    _CategoryData selectedCategory,
-    List<GroupModel> groupsToWish,
-  ) async {
-    if (groupsToWish.isEmpty) {
-      if (context.mounted) {
-        showSnackBar(
-          context: context,
-          content: 'No mistresses found in ${selectedCategory.title}',
-        );
-      }
-      return;
-    }
-
-    HapticFeedback.lightImpact();
-
-    final count = groupsToWish.length;
-    final confirm = await showDialog<bool>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        backgroundColor: const Color(0xFF1E1A2E),
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-        title: Row(
-          children: [
-            const Text("🙇🏻‍♂️", style: TextStyle(fontSize: 22)),
-            const SizedBox(width: 8),
-            Expanded(
-              child: Text(
-                'Wish All ${selectedCategory.title}?',
-                style: const TextStyle(
-                  color: Colors.white,
-                  fontSize: 17,
-                  fontWeight: FontWeight.bold,
-                ),
-              ),
-            ),
-          ],
-        ),
-        content: Text(
-          'Send royal devotion wishes to all $count ${count == 1 ? 'mistress' : 'mistresses'} in ${selectedCategory.title}?',
-          style: const TextStyle(color: Colors.white70, fontSize: 13),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx, false),
-            child: const Text('Cancel', style: TextStyle(color: Colors.white60)),
-          ),
-          ElevatedButton(
-            style: ElevatedButton.styleFrom(
-              backgroundColor: selectedCategory.color,
-              foregroundColor: Colors.black,
-              shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(10),
-              ),
-            ),
-            onPressed: () => Navigator.pop(ctx, true),
-            child: const Text(
-              'Wish All 🙇🏻‍♂️',
-              style: TextStyle(fontWeight: FontWeight.bold),
-            ),
-          ),
-        ],
-      ),
-    );
-
-    if (confirm != true || !mounted) return;
-
-    HapticFeedback.mediumImpact();
-
-    _isWishingCategory.value = true;
-
-    try {
-      int sentCount = 0;
-      final controller = ref.read(groupControllerProvider);
-
-      for (final group in groupsToWish) {
-        final wishText = _resolveGroupWish(group);
-        if (wishText.isEmpty) continue;
-
-        if (!context.mounted) break;
-        await controller.sendTextMessage(
-          context,
-          wishText,
-          group.groupId,
-          'wish',
-          null,
-          List<String>.from(group.fcmTokens),
-          List<String>.from(group.membersUid),
-          group.nameWithPosition,
-          'queenPooja',
-          clearReply: true,
-        );
-        sentCount++;
-        await Future.delayed(const Duration(milliseconds: 30));
-      }
-
-      if (context.mounted) {
-        showSnackBar(
-          context: context,
-          content:
-              'Sent royal wishes to $sentCount ${sentCount == 1 ? 'mistress' : 'mistresses'} in ${selectedCategory.title}! 🙇🏻‍♂️✨',
-        );
-      }
-    } catch (e) {
-      log('❌ Error wishing category: $e');
-      if (context.mounted) {
-        showSnackBar(
-          context: context,
-          content: 'Failed to send wishes: $e',
-        );
-      }
-    } finally {
-      if (mounted) {
-        _isWishingCategory.value = false;
-        if (_pendingGroups != null) {
-          setState(() {
-            _groups = _pendingGroups;
-            _pendingGroups = null;
-          });
-        }
-      }
-    }
-  }
-
   Widget _buildNormalHeader(
     BuildContext context,
     _CategoryData selectedCategory,
@@ -368,10 +229,23 @@ class _QueenPoojaQueendomListState extends ConsumerState<QueenPoojaQueendomList>
                     splashColor: Colors.white.withValues(alpha: 0.25),
                     onTap: isWishing || filteredGroups.isEmpty
                         ? null
-                        : () => _wishAllGroupsInCategory(
-                              context,
-                              selectedCategory,
-                              filteredGroups,
+                        : () => confirmAndWishCategoryGroups(
+                              context: context,
+                              ref: ref,
+                              categoryTitle: selectedCategory.title,
+                              accentColor: selectedCategory.color,
+                              queendomType: 'queenPooja',
+                              groupsToWish: filteredGroups,
+                              isWishingNotifier: _isWishingCategory,
+                              isMounted: () => mounted,
+                              onComplete: () {
+                                if (mounted && _pendingGroups != null) {
+                                  setState(() {
+                                    _groups = _pendingGroups;
+                                    _pendingGroups = null;
+                                  });
+                                }
+                              },
                             ),
                     child: Container(
                       padding: const EdgeInsets.all(9),

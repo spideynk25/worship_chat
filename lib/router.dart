@@ -18,6 +18,7 @@ import 'package:worship_chat/features/status/screens/view_status_screen.dart';
 import 'package:worship_chat/features/dashboard/widgets/todo_page.dart';
 import 'package:worship_chat/features/dashboard/screens/event_calender_page.dart';
 import 'package:worship_chat/features/settings/screens/settings_screen.dart';
+import 'package:worship_chat/features/settings/screens/development_screen.dart';
 import 'package:worship_chat/features/settings/screens/display_settings_screen.dart';
 import 'package:worship_chat/features/settings/screens/home_widget_settings_screen.dart';
 import 'package:worship_chat/features/settings/screens/queendom_management_screen.dart';
@@ -109,6 +110,12 @@ Route<dynamic> generateRoute(RouteSettings settings) {
 
     case QueendomManagementScreen.routeName:
       return MaterialPageRoute(builder: (context) => const QueendomManagementScreen());
+
+    case DevelopmentScreen.routeName:
+      return MaterialPageRoute(
+        settings: settings,
+        builder: (context) => const DevelopmentScreen(),
+      );
 
     case GalleryHomeScreen.routeName:
       return MaterialPageRoute(builder: (context) => const GalleryHomeScreen());

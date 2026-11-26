@@ -2,7 +2,8 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:worship_chat/colors.dart';
-import 'package:worship_chat/common/utils/utils.dart';
+import 'package:worship_chat/common/widgets/app_media_picker_sheet.dart';
+import 'package:worship_chat/common/widgets/user_avatar.dart';
 import 'package:worship_chat/features/auth/controller/auth_controller.dart';
 
 class UserInformationScreen extends ConsumerStatefulWidget {
@@ -17,24 +18,42 @@ class UserInformationScreen extends ConsumerStatefulWidget {
 class _UserInformationScreenState extends ConsumerState<UserInformationScreen> {
   final TextEditingController nameController = TextEditingController();
   File? image;
+  String? selectedImageUrl;
   @override
   void dispose() {
     nameController.dispose();
     super.dispose();
   }
 
-  void selectImage() async {
-    final selectedImage = await pickImageFromGallery(context);
-    if (!mounted || selectedImage == null) return;
-    setState(() => image = selectedImage);
+  void selectImage() {
+    showProfilePicSourceSheet(
+      context: context,
+      onLocalFileSelected: (selectedImage) async {
+        if (!mounted) return;
+        setState(() {
+          image = selectedImage;
+          selectedImageUrl = null;
+        });
+      },
+      onRemoteUrlSelected: (url) async {
+        if (!mounted) return;
+        setState(() {
+          image = null;
+          selectedImageUrl = url;
+        });
+      },
+    );
   }
 
   void storeUserData() async {
     String name = nameController.text.trim();
     if (name.isNotEmpty) {
-      ref
-          .read(authControllerProvider)
-          .saveUserDatatoFirebase(context, name, image);
+      ref.read(authControllerProvider).saveUserDatatoFirebase(
+            context,
+            name,
+            image,
+            profilePicUrlOverride: image == null ? selectedImageUrl : null,
+          );
     }
   }
 
@@ -52,20 +71,26 @@ class _UserInformationScreenState extends ConsumerState<UserInformationScreen> {
                 children: [
                   Stack(
                     children: [
-                      image == null
-                          ? const CircleAvatar(
-                              backgroundColor: greyColor,
-                              radius: 64,
-                              child: Icon(
-                                Icons.person,
-                                color: blackColor,
-                                size: 70,
-                              ),
-                            )
-                          : CircleAvatar(
+                      image != null
+                          ? CircleAvatar(
                               radius: 64,
                               backgroundImage: FileImage(image!),
-                            ),
+                            )
+                          : (selectedImageUrl != null
+                              ? UserAvatar(
+                                  url: selectedImageUrl,
+                                  radius: 64,
+                                  backgroundColor: greyColor,
+                                )
+                              : const CircleAvatar(
+                                  backgroundColor: greyColor,
+                                  radius: 64,
+                                  child: Icon(
+                                    Icons.person,
+                                    color: blackColor,
+                                    size: 70,
+                                  ),
+                                )),
                       Positioned(
                         bottom: -10,
                         left: 80,

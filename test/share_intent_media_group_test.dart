@@ -99,34 +99,36 @@ class _RecordingGroupController implements GroupController {
   final List<_GroupMessageCall> calls = [];
   List<GroupChatMessageModel> messagesToStream = [];
 
-  @override
-  Stream<List<GroupModel>> chatGroups() => Stream.value([
-        GroupModel(
-          senderId: 'current_user_id',
-          name: 'Royal Chamber',
-          groupId: 'royal_group_1',
-          lastMessage: 'Hail',
-          groupPic: '',
-          membersUid: ['current_user_id', 'other_uid'],
-          timeSent: DateTime.now(),
-          fcmTokens: ['fcm_grp_1'],
-          unseenMessages: const {},
-        ),
-        GroupModel(
-          senderId: 'current_user_id',
-          name: 'Royal Courtyard',
-          groupId: 'royal_group_2',
-          lastMessage: 'Greetings',
-          groupPic: '',
-          membersUid: ['current_user_id', 'other_uid_2'],
-          timeSent: DateTime.now(),
-          fcmTokens: ['fcm_grp_2'],
-          unseenMessages: const {},
-        ),
-      ]);
+  static final List<GroupModel> _testGroups = [
+    GroupModel(
+      senderId: 'current_user_id',
+      name: 'Royal Chamber',
+      groupId: 'royal_group_1',
+      lastMessage: 'Hail',
+      groupPic: '',
+      membersUid: ['current_user_id', 'other_uid'],
+      timeSent: DateTime.now(),
+      fcmTokens: ['fcm_grp_1'],
+      unseenMessages: const {},
+    ),
+    GroupModel(
+      senderId: 'current_user_id',
+      name: 'Royal Courtyard',
+      groupId: 'royal_group_2',
+      lastMessage: 'Greetings',
+      groupPic: '',
+      membersUid: ['current_user_id', 'other_uid_2'],
+      timeSent: DateTime.now(),
+      fcmTokens: ['fcm_grp_2'],
+      unseenMessages: const {},
+    ),
+  ];
 
   @override
-  Stream<List<GroupModel>> getQueenPoojaStream() => Stream.value([]);
+  Stream<List<GroupModel>> chatGroups() => Stream.value(_testGroups);
+
+  @override
+  Stream<List<GroupModel>> getQueenPoojaStream() => Stream.value(_testGroups);
   @override
   Stream<List<GroupModel>> getQueenRashmikaStream() => Stream.value([]);
 
@@ -178,6 +180,40 @@ void main() {
     groupId: ['royal_group_1'],
   );
 
+  Future<void> pumpPushedShareScreen(
+    WidgetTester tester, {
+    required _RecordingChatController chatController,
+    required _RecordingGroupController groupController,
+    required SharedPayload payload,
+  }) async {
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [
+          chatControllerProvider.overrideWithValue(chatController),
+          groupControllerProvider.overrideWithValue(groupController),
+          userDataAuthProvider.overrideWith((ref) => Future.value(testUser)),
+        ],
+        child: MaterialApp(
+          home: Builder(
+            builder: (context) => Scaffold(
+              body: ElevatedButton(
+                onPressed: () => Navigator.of(context).push(
+                  MaterialPageRoute(
+                    builder: (_) => ShareUploadScreen(payload: payload),
+                  ),
+                ),
+                child: const Text('Open Share'),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+
+    await tester.tap(find.text('Open Share'));
+    await tester.pumpAndSettle();
+  }
+
   group('Intent Share Media Grouping Tests', () {
     testWidgets(
         'Multi-photo direct chat intent passes shared groupId and attaches caption to first only',
@@ -195,21 +231,12 @@ void main() {
         text: 'Royal blessings from the garden',
       );
 
-      await tester.pumpWidget(
-        ProviderScope(
-          overrides: [
-            chatControllerProvider.overrideWithValue(mockChatController),
-            groupControllerProvider.overrideWithValue(mockGroupController),
-            userDataAuthProvider.overrideWith((ref) => Future.value(testUser)),
-          ],
-          child: MaterialApp(
-            home: ShareUploadScreen(payload: payload),
-          ),
-        ),
+      await pumpPushedShareScreen(
+        tester,
+        chatController: mockChatController,
+        groupController: mockGroupController,
+        payload: payload,
       );
-
-      await tester.pump();
-      await tester.pumpAndSettle();
 
       // Initial tab is "Direct Message"
       final contactTile = find.text('Pooja Devotee');
@@ -259,24 +286,15 @@ void main() {
         text: 'Royal group greetings',
       );
 
-      await tester.pumpWidget(
-        ProviderScope(
-          overrides: [
-            chatControllerProvider.overrideWithValue(mockChatController),
-            groupControllerProvider.overrideWithValue(mockGroupController),
-            userDataAuthProvider.overrideWith((ref) => Future.value(testUser)),
-          ],
-          child: MaterialApp(
-            home: ShareUploadScreen(payload: payload),
-          ),
-        ),
+      await pumpPushedShareScreen(
+        tester,
+        chatController: mockChatController,
+        groupController: mockGroupController,
+        payload: payload,
       );
 
-      await tester.pump();
-      await tester.pumpAndSettle();
-
-      // Switch to 'My Groups' tab
-      await tester.tap(find.text('My Groups'));
+      // Switch to 'Queen Pooja' tab
+      await tester.tap(find.text('Queen Pooja'));
       await tester.pumpAndSettle();
 
       // For image payloads, the default target on group tab is Gallery. Switch to Chat toggle:
@@ -331,24 +349,15 @@ void main() {
         text: 'Royal multi greetings',
       );
 
-      await tester.pumpWidget(
-        ProviderScope(
-          overrides: [
-            chatControllerProvider.overrideWithValue(mockChatController),
-            groupControllerProvider.overrideWithValue(mockGroupController),
-            userDataAuthProvider.overrideWith((ref) => Future.value(testUser)),
-          ],
-          child: MaterialApp(
-            home: ShareUploadScreen(payload: payload),
-          ),
-        ),
+      await pumpPushedShareScreen(
+        tester,
+        chatController: mockChatController,
+        groupController: mockGroupController,
+        payload: payload,
       );
 
-      await tester.pump();
-      await tester.pumpAndSettle();
-
-      // Switch to 'My Groups' tab
-      await tester.tap(find.text('My Groups'));
+      // Switch to 'Queen Pooja' tab
+      await tester.tap(find.text('Queen Pooja'));
       await tester.pumpAndSettle();
 
       // Switch to Chat toggle
@@ -360,7 +369,9 @@ void main() {
       await tester.pumpAndSettle();
 
       // Select group 2 ("Royal Courtyard")
-      await tester.tap(find.textContaining('Royal Courtyard', findRichText: true).first);
+      final group2Finder = find.textContaining('Royal Courtyard', findRichText: true).first;
+      await tester.ensureVisible(group2Finder);
+      await tester.tap(group2Finder);
       await tester.pumpAndSettle();
 
       // Verify submit button says: 'Send 2 photos to 2 Groups'
@@ -394,21 +405,12 @@ void main() {
         text: 'Single photo caption',
       );
 
-      await tester.pumpWidget(
-        ProviderScope(
-          overrides: [
-            chatControllerProvider.overrideWithValue(mockChatController),
-            groupControllerProvider.overrideWithValue(mockGroupController),
-            userDataAuthProvider.overrideWith((ref) => Future.value(testUser)),
-          ],
-          child: MaterialApp(
-            home: ShareUploadScreen(payload: payload),
-          ),
-        ),
+      await pumpPushedShareScreen(
+        tester,
+        chatController: mockChatController,
+        groupController: mockGroupController,
+        payload: payload,
       );
-
-      await tester.pump();
-      await tester.pumpAndSettle();
 
       // Initial tab is Direct Message: select contact
       final contactTile = find.text('Pooja Devotee');

@@ -7,23 +7,33 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:worship_chat/colors.dart';
-import 'package:worship_chat/common/utils/ai_inpainting_service.dart';
-import 'package:worship_chat/common/utils/ai_segmentation_service.dart';
 import 'package:worship_chat/common/utils/ai_text_remover_service.dart';
 import 'package:worship_chat/common/utils/utils.dart';
 
-enum StudioTool {
-  objectRemover,
-  textRemover,
-  bgRemover,
+enum _TextMarginPreset {
+  tight('Tight', 0.12),
+  normal('Normal', 0.22),
+  wide('Wide', 0.34);
+
+  final String label;
+  final double fraction;
+  const _TextMarginPreset(this.label, this.fraction);
 }
 
 class AiMagicStudioScreen extends StatefulWidget {
   final File initialImage;
+  final List<DetectedTextBlock>? initialDetectedTextBlocks;
+  final bool autoDetectOnOpen;
+  final Future<List<DetectedTextBlock>> Function(File image)? detectTextOverride;
+  final String? outputDirectoryPath;
 
   const AiMagicStudioScreen({
     super.key,
     required this.initialImage,
+    this.initialDetectedTextBlocks,
+    this.autoDetectOnOpen = true,
+    this.detectTextOverride,
+    this.outputDirectoryPath,
   });
 
   @override
@@ -31,39 +41,35 @@ class AiMagicStudioScreen extends StatefulWidget {
 }
 
 class _AiMagicStudioScreenState extends State<AiMagicStudioScreen> {
+  static const Color _accentCyan = Color(0xFF00E5FF);
+  static const Color _brushAccent = Color(0xFFFF6B6B);
+
   late File _originalImage;
   late File _currentImage;
 
-  // History stack for Undo / Redo
   final List<File> _history = [];
   int _historyIndex = -1;
 
-  StudioTool _activeTool = StudioTool.objectRemover;
-
-  // Brush state
-  double _brushRadius = 24.0;
+  // Manual brush state for missed logos/watermarks
+  double _brushRadius = 18.0;
   bool _isPanMode = false;
   final List<_DrawnStroke> _strokes = [];
   _DrawnStroke? _activeStroke;
 
-  // Text remover state
+  // Detected text state
   List<DetectedTextBlock> _detectedTextBlocks = [];
   final Set<int> _selectedTextIndices = {};
   bool _isDetectingText = false;
+  _TextMarginPreset _marginPreset = _TextMarginPreset.normal;
 
-  // Background remover state
-  BackgroundMode _selectedBgMode = BackgroundMode.transparent;
-  final int _blurIntensity = 16;
-
-  // Processing state
+  // Processing & preview state
   bool _isProcessing = false;
   String _processingMessage = '';
   bool _isShowingOriginal = false;
 
-  // Image size caching
   ui.Image? _decodedUiImage;
-
-  final TransformationController _transformationController = TransformationController();
+  final TransformationController _transformationController =
+      TransformationController();
 
   @override
   void initState() {
@@ -71,14 +77,28 @@ class _AiMagicStudioScreenState extends State<AiMagicStudioScreen> {
     _originalImage = widget.initialImage;
     _currentImage = widget.initialImage;
     _pushHistory(_currentImage);
-    _decodeUiImage(_currentImage);
+
+    if (widget.initialDetectedTextBlocks != null) {
+      _detectedTextBlocks = List<DetectedTextBlock>.from(
+        widget.initialDetectedTextBlocks!,
+      );
+      for (int i = 0; i < _detectedTextBlocks.length; i++) {
+        _selectedTextIndices.add(i);
+      }
+    }
+
+    _decodeUiImage(_currentImage).then((_) {
+      if (!mounted) return;
+      if (widget.initialDetectedTextBlocks == null && widget.autoDetectOnOpen) {
+        _detectTextInImage(silentEmpty: true);
+      }
+    });
   }
 
   @override
   void dispose() {
     _transformationController.dispose();
     _decodedUiImage?.dispose();
-    AiSegmentationService.instance.dispose();
     AiTextRemoverService.instance.dispose();
     super.dispose();
   }
@@ -87,15 +107,18 @@ class _AiMagicStudioScreenState extends State<AiMagicStudioScreen> {
     final bytes = await file.readAsBytes();
     final codec = await ui.instantiateImageCodec(bytes);
     final frame = await codec.getNextFrame();
-    if (mounted) {
-      setState(() {
-        _decodedUiImage = frame.image;
-      });
+    if (!mounted) {
+      frame.image.dispose();
+      return;
     }
+    final previous = _decodedUiImage;
+    setState(() {
+      _decodedUiImage = frame.image;
+    });
+    previous?.dispose();
   }
 
   void _pushHistory(File file) {
-    // If we branched from an earlier state, truncate subsequent history
     if (_historyIndex < _history.length - 1) {
       _history.removeRange(_historyIndex + 1, _history.length);
     }
@@ -104,89 +127,52 @@ class _AiMagicStudioScreenState extends State<AiMagicStudioScreen> {
   }
 
   void _undo() {
-    if (_historyIndex > 0) {
-      HapticFeedback.lightImpact();
-      setState(() {
-        _historyIndex--;
-        _currentImage = _history[_historyIndex];
-        _strokes.clear();
-        _selectedTextIndices.clear();
-      });
-      _decodeUiImage(_currentImage);
-    }
+    if (_historyIndex <= 0) return;
+    HapticFeedback.lightImpact();
+    setState(() {
+      _historyIndex--;
+      _currentImage = _history[_historyIndex];
+      _strokes.clear();
+      _detectedTextBlocks.clear();
+      _selectedTextIndices.clear();
+    });
+    _decodeUiImage(_currentImage);
   }
 
   void _redo() {
-    if (_historyIndex < _history.length - 1) {
-      HapticFeedback.lightImpact();
-      setState(() {
-        _historyIndex++;
-        _currentImage = _history[_historyIndex];
-        _strokes.clear();
-        _selectedTextIndices.clear();
-      });
-      _decodeUiImage(_currentImage);
-    }
-  }
-
-  Future<String> _getNewOutputPath({String ext = 'jpg'}) async {
-    final dir = await getTemporaryDirectory();
-    final timestamp = DateTime.now().millisecondsSinceEpoch;
-    return '${dir.path}/magic_edit_$timestamp.$ext';
-  }
-
-  // ── Object Inpainting ────────────────────────────────────────────────────────
-  Future<void> _applyObjectRemoval() async {
-    if (_strokes.isEmpty) {
-      AppSnackBar.info(context, 'Brush over an object or person first');
-      return;
-    }
-
-    if (_decodedUiImage == null) return;
-
-    HapticFeedback.mediumImpact();
+    if (_historyIndex >= _history.length - 1) return;
+    HapticFeedback.lightImpact();
     setState(() {
-      _isProcessing = true;
-      _processingMessage = 'Erasing object on-device...';
+      _historyIndex++;
+      _currentImage = _history[_historyIndex];
+      _strokes.clear();
+      _detectedTextBlocks.clear();
+      _selectedTextIndices.clear();
     });
+    _decodeUiImage(_currentImage);
+  }
 
-    try {
-      final imgW = _decodedUiImage!.width;
-      final imgH = _decodedUiImage!.height;
-
-      // Rasterize strokes to a binary mask buffer (imgW x imgH)
-      final maskBytes = await _rasterizeStrokesToMask(imgW, imgH);
-      final outputPath = await _getNewOutputPath();
-
-      final resultFile = await AiInpaintingService.instance.inpaintImage(
-        sourceImage: _currentImage,
-        maskBytes: maskBytes,
-        maskWidth: imgW,
-        maskHeight: imgH,
-        outputPath: outputPath,
-        patchRadius: math.max(4, (_brushRadius * 0.25).round()),
-      );
-
-      setState(() {
-        _currentImage = resultFile;
-        _strokes.clear();
-        _pushHistory(resultFile);
-        _isProcessing = false;
-      });
-
-      await _decodeUiImage(resultFile);
-      HapticFeedback.mediumImpact();
-      if (!mounted) return;
-      AppSnackBar.success(context, 'Object removed successfully');
-    } catch (e) {
-      if (!mounted) return;
-      setState(() => _isProcessing = false);
-      AppSnackBar.error(context, 'Object removal error: $e');
+  Future<String> _getNewOutputPath() async {
+    String? dirPath = widget.outputDirectoryPath;
+    if (dirPath == null || dirPath.isEmpty) {
+      try {
+        final dir = await getTemporaryDirectory().timeout(
+          const Duration(seconds: 2),
+        );
+        dirPath = dir.path;
+      } catch (_) {
+        dirPath = _originalImage.parent.path;
+      }
     }
+    final ext = _originalImage.path.toLowerCase().endsWith('.png') ? 'png' : 'jpg';
+    final timestamp = DateTime.now().millisecondsSinceEpoch;
+    return '$dirPath/text_removed_$timestamp.$ext';
   }
 
   // ── Text Detection & Removal ────────────────────────────────────────────────
-  Future<void> _detectTextInImage() async {
+
+  Future<void> _detectTextInImage({bool silentEmpty = false}) async {
+    if (_isDetectingText || _isProcessing) return;
     HapticFeedback.selectionClick();
     setState(() {
       _isDetectingText = true;
@@ -195,11 +181,12 @@ class _AiMagicStudioScreenState extends State<AiMagicStudioScreen> {
     });
 
     try {
-      final blocks = await AiTextRemoverService.instance.detectText(_currentImage);
+      final blocks = widget.detectTextOverride != null
+          ? await widget.detectTextOverride!(_currentImage)
+          : await AiTextRemoverService.instance.detectText(_currentImage);
       if (!mounted) return;
       setState(() {
         _detectedTextBlocks = blocks;
-        // Pre-select all detected text for 1-tap removal
         for (int i = 0; i < blocks.length; i++) {
           _selectedTextIndices.add(i);
         }
@@ -207,114 +194,75 @@ class _AiMagicStudioScreenState extends State<AiMagicStudioScreen> {
       });
 
       if (blocks.isEmpty) {
-        AppSnackBar.info(context, 'No text detected. You can also brush over text manually.');
+        if (!silentEmpty) {
+          AppSnackBar.info(
+            context,
+            'No text detected. Brush manually over any watermark or caption.',
+          );
+        }
       } else {
-        AppSnackBar.success(context, 'Found ${blocks.length} text elements');
+        AppSnackBar.success(context, 'Found ${blocks.length} text region${blocks.length == 1 ? '' : 's'}');
       }
     } catch (e) {
       if (!mounted) return;
       setState(() => _isDetectingText = false);
-      AppSnackBar.error(context, 'Text detection error: $e');
+      if (!silentEmpty) {
+        AppSnackBar.error(context, 'Text detection error: $e');
+      }
     }
   }
 
   Future<void> _applyTextRemoval() async {
     if (_strokes.isEmpty && _selectedTextIndices.isEmpty) {
-      AppSnackBar.info(context, 'Select detected text or brush over text first');
+      AppSnackBar.info(
+        context,
+        'Select detected text boxes or brush over text first',
+      );
       return;
     }
 
-    if (_decodedUiImage == null) return;
+    if (_strokes.isNotEmpty && _decodedUiImage == null) return;
 
     HapticFeedback.mediumImpact();
     setState(() {
       _isProcessing = true;
-      _processingMessage = 'Removing text on-device...';
+      _processingMessage = 'Removing text cleanly...';
     });
 
     try {
-      final imgW = _decodedUiImage!.width;
-      final imgH = _decodedUiImage!.height;
       final outputPath = await _getNewOutputPath();
 
-      // If user selected detected text blocks
-      if (_selectedTextIndices.isNotEmpty) {
-        final rectsToErase = _selectedTextIndices
-            .map((idx) => _detectedTextBlocks[idx].boundingBox)
-            .toList();
+      final selectedBlocks = _selectedTextIndices
+          .where((idx) => idx >= 0 && idx < _detectedTextBlocks.length)
+          .map((idx) => _detectedTextBlocks[idx])
+          .toList();
 
-        final result = await AiTextRemoverService.instance.eraseDetectedText(
-          sourceImage: _currentImage,
-          textRects: rectsToErase,
-          outputPath: outputPath,
-        );
-
-        setState(() {
-          _currentImage = result;
-          _detectedTextBlocks.clear();
-          _selectedTextIndices.clear();
-          _strokes.clear();
-          _pushHistory(result);
-          _isProcessing = false;
-        });
-
-        await _decodeUiImage(result);
-      } else {
-        // If user manually brushed over text
-        final maskBytes = await _rasterizeStrokesToMask(imgW, imgH);
-        final result = await AiInpaintingService.instance.inpaintImage(
-          sourceImage: _currentImage,
-          maskBytes: maskBytes,
-          maskWidth: imgW,
-          maskHeight: imgH,
-          outputPath: outputPath,
-          patchRadius: 5,
-        );
-
-        setState(() {
-          _currentImage = result;
-          _strokes.clear();
-          _pushHistory(result);
-          _isProcessing = false;
-        });
-
-        await _decodeUiImage(result);
+      Uint8List? brushMask;
+      int brushW = 0;
+      int brushH = 0;
+      if (_strokes.isNotEmpty && _decodedUiImage != null) {
+        brushW = _decodedUiImage!.width;
+        brushH = _decodedUiImage!.height;
+        brushMask = await _rasterizeStrokesToMask(brushW, brushH);
       }
 
-      HapticFeedback.mediumImpact();
-      if (!mounted) return;
-      AppSnackBar.success(context, 'Text removed successfully');
-    } catch (e) {
-      if (!mounted) return;
-      setState(() => _isProcessing = false);
-      AppSnackBar.error(context, 'Text removal error: $e');
-    }
-  }
-
-  // ── Background Removal / Cutout ─────────────────────────────────────────────
-  Future<void> _applyBackgroundRemoval() async {
-    HapticFeedback.mediumImpact();
-    setState(() {
-      _isProcessing = true;
-      _processingMessage = 'Segmenting subject on-device...';
-    });
-
-    try {
-      final isPng = _selectedBgMode == BackgroundMode.transparent;
-      final outputPath = await _getNewOutputPath(ext: isPng ? 'png' : 'jpg');
-
-      final result = await AiSegmentationService.instance.processBackground(
+      final result = await AiTextRemoverService.instance.eraseDetectedText(
         sourceImage: _currentImage,
+        textBlocks: selectedBlocks,
+        additionalMaskBytes: brushMask,
+        additionalMaskWidth: brushW,
+        additionalMaskHeight: brushH,
         outputPath: outputPath,
-        mode: _selectedBgMode,
-        blurRadius: _blurIntensity,
-        bgColorR: _selectedBgMode == BackgroundMode.studioWhite ? 255 : 18,
-        bgColorG: _selectedBgMode == BackgroundMode.studioWhite ? 255 : 17,
-        bgColorB: _selectedBgMode == BackgroundMode.studioWhite ? 255 : 26,
+        marginFraction: _marginPreset.fraction,
+        scrubTextHalos: true,
       );
 
+      if (!mounted) return;
       setState(() {
         _currentImage = result;
+        _detectedTextBlocks.clear();
+        _selectedTextIndices.clear();
+        _strokes.clear();
         _pushHistory(result);
         _isProcessing = false;
       });
@@ -322,26 +270,27 @@ class _AiMagicStudioScreenState extends State<AiMagicStudioScreen> {
       await _decodeUiImage(result);
       HapticFeedback.mediumImpact();
       if (!mounted) return;
-      AppSnackBar.success(context, 'Background transformed successfully');
+      AppSnackBar.success(context, 'Text removed cleanly');
     } catch (e) {
       if (!mounted) return;
       setState(() => _isProcessing = false);
-      AppSnackBar.error(context, 'Background removal: $e');
+      AppSnackBar.error(context, 'Text removal error: $e');
     }
   }
 
-  /// Converts drawn finger stroke paths into a 1-channel binary mask bitmap
+  /// Rasterizes drawn brush strokes into a 1-channel bitmap at native image dimensions.
   Future<Uint8List> _rasterizeStrokesToMask(int width, int height) async {
     final recorder = ui.PictureRecorder();
-    final canvas = Canvas(recorder, Rect.fromLTWH(0, 0, width.toDouble(), height.toDouble()));
+    final canvas = Canvas(
+      recorder,
+      Rect.fromLTWH(0, 0, width.toDouble(), height.toDouble()),
+    );
 
-    // Black background (0 = clean pixel)
     canvas.drawRect(
       Rect.fromLTWH(0, 0, width.toDouble(), height.toDouble()),
       Paint()..color = Colors.black,
     );
 
-    // White brush strokes (255 = inpaint mask)
     final maskPaint = Paint()
       ..color = Colors.white
       ..style = PaintingStyle.stroke
@@ -356,6 +305,14 @@ class _AiMagicStudioScreenState extends State<AiMagicStudioScreen> {
         for (int i = 1; i < stroke.points.length; i++) {
           path.lineTo(stroke.points[i].dx, stroke.points[i].dy);
         }
+        if (stroke.points.length == 1) {
+          canvas.drawCircle(
+            stroke.points.first,
+            stroke.radius,
+            Paint()..color = Colors.white,
+          );
+          continue;
+        }
       }
       canvas.drawPath(path, maskPaint);
     }
@@ -363,17 +320,15 @@ class _AiMagicStudioScreenState extends State<AiMagicStudioScreen> {
     final picture = recorder.endRecording();
     final maskImage = await picture.toImage(width, height);
     final byteData = await maskImage.toByteData(format: ui.ImageByteFormat.rawRgba);
+    maskImage.dispose();
 
     if (byteData == null) return Uint8List(width * height);
 
     final rawBytes = byteData.buffer.asUint8List();
     final mask1Channel = Uint8List(width * height);
-
     for (int i = 0; i < width * height; i++) {
-      // Sample R channel (since mask was drawn in white)
       mask1Channel[i] = rawBytes[i * 4];
     }
-
     return mask1Channel;
   }
 
@@ -387,28 +342,29 @@ class _AiMagicStudioScreenState extends State<AiMagicStudioScreen> {
     return Scaffold(
       backgroundColor: const Color(0xFF0F0E17),
       body: Stack(
+        fit: StackFit.expand,
         children: [
-          // ── Main Image Canvas ─────────────────────────────────────────────
-          Positioned.fill(
-            child: _buildCanvasArea(),
-          ),
+          Positioned.fill(child: _buildCanvasArea()),
 
-          // ── Top Glass Navigation & Undo/Redo Bar ──────────────────────────
-          SafeArea(
-            child: Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
-              child: _buildTopGlassBar(),
+          Positioned(
+            top: 0,
+            left: 0,
+            right: 0,
+            child: SafeArea(
+              bottom: false,
+              child: Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+                child: _buildTopGlassBar(),
+              ),
             ),
           ),
 
-          // ── Floating Zoom / Brush Mode Toggle (Right Side) ────────────────
           Positioned(
             right: 14,
-            top: 130,
+            top: 120,
             child: _buildModeToggleFab(),
           ),
 
-          // ── Bottom Studio Control Panel ───────────────────────────────────
           Positioned(
             left: 0,
             right: 0,
@@ -416,65 +372,65 @@ class _AiMagicStudioScreenState extends State<AiMagicStudioScreen> {
             child: _buildBottomPanel(),
           ),
 
-          // ── Processing Overlay with Shimmer ───────────────────────────────
-          if (_isProcessing)
-            Positioned.fill(
-              child: Container(
-                color: Colors.black.withValues(alpha: 0.65),
-                child: Center(
-                  child: Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 18),
-                    decoration: BoxDecoration(
-                      color: const Color(0xFF1E1C2E),
-                      borderRadius: BorderRadius.circular(18),
-                      border: Border.all(color: Colors.white12),
-                      boxShadow: [
-                        BoxShadow(
-                          color: Colors.black.withValues(alpha: 0.5),
-                          blurRadius: 20,
-                        ),
-                      ],
-                    ),
-                    child: Column(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        const SizedBox(
-                          width: 38,
-                          height: 38,
-                          child: CircularProgressIndicator(
-                            color: Color(0xFF00E676),
-                            strokeWidth: 3,
-                          ),
-                        ),
-                        const SizedBox(height: 14),
-                        Text(
-                          _processingMessage,
-                          style: const TextStyle(
-                            color: Colors.white,
-                            fontSize: 14,
-                            fontWeight: FontWeight.w600,
-                          ),
-                        ),
-                        const SizedBox(height: 4),
-                        const Text(
-                          '100% On-Device • Zero API Cost',
-                          style: TextStyle(
-                            color: Colors.white54,
-                            fontSize: 11,
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                ),
-              ),
-            ),
+          if (_isProcessing) _buildProcessingOverlay(),
         ],
       ),
     );
   }
 
-  // ── Canvas Area with Touch Drawing & Pan/Zoom ─────────────────────────────
+  Widget _buildProcessingOverlay() {
+    return Positioned.fill(
+      child: Container(
+        color: Colors.black.withValues(alpha: 0.65),
+        child: Center(
+          child: Container(
+            padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 18),
+            decoration: BoxDecoration(
+              color: const Color(0xFF1E1C2E),
+              borderRadius: BorderRadius.circular(18),
+              border: Border.all(color: Colors.white12),
+              boxShadow: [
+                BoxShadow(
+                  color: Colors.black.withValues(alpha: 0.5),
+                  blurRadius: 20,
+                ),
+              ],
+            ),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const SizedBox(
+                  width: 38,
+                  height: 38,
+                  child: CircularProgressIndicator(
+                    color: _accentCyan,
+                    strokeWidth: 3,
+                  ),
+                ),
+                const SizedBox(height: 14),
+                Text(
+                  _processingMessage,
+                  style: const TextStyle(
+                    color: Colors.white,
+                    fontSize: 14,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+                const SizedBox(height: 4),
+                const Text(
+                  'On-device full resolution restore',
+                  style: TextStyle(color: Colors.white54, fontSize: 11),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  // ── Canvas with Tap-to-Toggle Text Boxes & Manual Brush ────────────────────
+
   Widget _buildCanvasArea() {
     if (_decodedUiImage == null) {
       return const Center(
@@ -489,8 +445,10 @@ class _AiMagicStudioScreenState extends State<AiMagicStudioScreen> {
         final imgW = _decodedUiImage!.width.toDouble();
         final imgH = _decodedUiImage!.height.toDouble();
 
-        // Calculate fitted display size inside viewport
-        final scale = math.min(constraints.maxWidth / imgW, constraints.maxHeight / imgH);
+        final scale = math.min(
+          constraints.maxWidth / imgW,
+          constraints.maxHeight / imgH,
+        );
         final renderW = imgW * scale;
         final renderH = imgH * scale;
 
@@ -506,28 +464,29 @@ class _AiMagicStudioScreenState extends State<AiMagicStudioScreen> {
               height: renderH,
               child: GestureDetector(
                 behavior: HitTestBehavior.opaque,
-                onPanStart: _isPanMode ? null : (details) => _onDrawStart(details.localPosition, scale),
-                onPanUpdate: _isPanMode ? null : (details) => _onDrawUpdate(details.localPosition, scale),
-                onPanEnd: _isPanMode ? null : (details) => _onDrawEnd(),
+                onTapUp: (details) => _onCanvasTap(details.localPosition, scale),
+                onPanStart: _isPanMode
+                    ? null
+                    : (details) => _onDrawStart(details.localPosition, scale),
+                onPanUpdate: _isPanMode
+                    ? null
+                    : (details) => _onDrawUpdate(details.localPosition, scale),
+                onPanEnd: _isPanMode ? null : (_) => _onDrawEnd(),
                 child: Stack(
                   fit: StackFit.expand,
                   children: [
-                    // Rendered Image
                     Image.file(
                       displayedFile,
                       fit: BoxFit.contain,
                     ),
-
-                    // Custom Painter for Brush Mask & Detected Text Overlays
                     if (!_isShowingOriginal)
                       CustomPaint(
-                        painter: _StudioMaskPainter(
+                        painter: _TextRemoverOverlayPainter(
                           strokes: _strokes,
                           activeStroke: _activeStroke,
                           scale: scale,
                           detectedBlocks: _detectedTextBlocks,
                           selectedTextIndices: _selectedTextIndices,
-                          showTextBoxes: _activeTool == StudioTool.textRemover,
                         ),
                       ),
                   ],
@@ -540,10 +499,29 @@ class _AiMagicStudioScreenState extends State<AiMagicStudioScreen> {
     );
   }
 
-  void _onDrawStart(Offset localPos, double scale) {
-    if (_activeTool == StudioTool.bgRemover) return;
+  void _onCanvasTap(Offset localPos, double scale) {
+    if (_isShowingOriginal || _detectedTextBlocks.isEmpty) return;
 
-    // Convert screen coordinates to original image coordinates
+    final imgPos = Offset(localPos.dx / scale, localPos.dy / scale);
+    final hitPad = 10.0 / scale;
+
+    for (int i = _detectedTextBlocks.length - 1; i >= 0; i--) {
+      final expanded = _detectedTextBlocks[i].boundingBox.inflate(hitPad);
+      if (expanded.contains(imgPos)) {
+        HapticFeedback.selectionClick();
+        setState(() {
+          if (_selectedTextIndices.contains(i)) {
+            _selectedTextIndices.remove(i);
+          } else {
+            _selectedTextIndices.add(i);
+          }
+        });
+        return;
+      }
+    }
+  }
+
+  void _onDrawStart(Offset localPos, double scale) {
     final imgPos = Offset(localPos.dx / scale, localPos.dy / scale);
     setState(() {
       _activeStroke = _DrawnStroke(
@@ -570,7 +548,8 @@ class _AiMagicStudioScreenState extends State<AiMagicStudioScreen> {
     }
   }
 
-  // ── Top Glass Navigation Bar ──────────────────────────────────────────────
+  // ── Top Glass Bar ───────────────────────────────────────────────────────────
+
   Widget _buildTopGlassBar() {
     final canUndo = _historyIndex > 0;
     final canRedo = _historyIndex < _history.length - 1;
@@ -580,7 +559,7 @@ class _AiMagicStudioScreenState extends State<AiMagicStudioScreen> {
       child: BackdropFilter(
         filter: ui.ImageFilter.blur(sigmaX: 16, sigmaY: 16),
         child: Container(
-          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 6),
           decoration: BoxDecoration(
             color: const Color(0xFF161524).withValues(alpha: 0.90),
             borderRadius: BorderRadius.circular(20),
@@ -594,101 +573,116 @@ class _AiMagicStudioScreenState extends State<AiMagicStudioScreen> {
           ),
           child: Row(
             children: [
-              // Back / Close
               IconButton(
-                icon: const Icon(Icons.close_rounded, color: Colors.white, size: 22),
+                icon: const Icon(Icons.close_rounded, color: Colors.white, size: 20),
                 tooltip: 'Cancel',
+                constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
+                padding: EdgeInsets.zero,
                 onPressed: () => Navigator.pop(context),
               ),
-              const SizedBox(width: 4),
-
-              // Title pill
-              Container(
-                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-                decoration: BoxDecoration(
-                  color: tabColor.withValues(alpha: 0.18),
-                  borderRadius: BorderRadius.circular(12),
-                  border: Border.all(color: tabColor.withValues(alpha: 0.4), width: 0.8),
-                ),
-                child: const Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Icon(Icons.auto_fix_high_rounded, color: tabColor, size: 16),
-                    SizedBox(width: 6),
-                    Text(
-                      'AI Magic Studio',
-                      style: TextStyle(
-                        color: Colors.white,
-                        fontSize: 13,
-                        fontWeight: FontWeight.w700,
-                      ),
+              Flexible(
+                child: Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 4),
+                  decoration: BoxDecoration(
+                    color: _accentCyan.withValues(alpha: 0.14),
+                    borderRadius: BorderRadius.circular(12),
+                    border: Border.all(
+                      color: _accentCyan.withValues(alpha: 0.4),
+                      width: 0.8,
                     ),
-                  ],
+                  ),
+                  child: const Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(Icons.text_fields_rounded, color: _accentCyan, size: 15),
+                      SizedBox(width: 5),
+                      Flexible(
+                        child: Text(
+                          'Text Remover',
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                            color: Colors.white,
+                            fontSize: 12.5,
+                            fontWeight: FontWeight.w700,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
                 ),
               ),
-
-              const Spacer(),
-
-              // Undo
+              const SizedBox(width: 4),
               IconButton(
                 icon: Icon(
                   Icons.undo_rounded,
                   color: canUndo ? Colors.white : Colors.white30,
-                  size: 20,
+                  size: 19,
                 ),
                 tooltip: 'Undo',
+                constraints: const BoxConstraints(minWidth: 34, minHeight: 34),
+                padding: EdgeInsets.zero,
                 onPressed: canUndo ? _undo : null,
               ),
-
-              // Redo
               IconButton(
                 icon: Icon(
                   Icons.redo_rounded,
                   color: canRedo ? Colors.white : Colors.white30,
-                  size: 20,
+                  size: 19,
                 ),
                 tooltip: 'Redo',
+                constraints: const BoxConstraints(minWidth: 34, minHeight: 34),
+                padding: EdgeInsets.zero,
                 onPressed: canRedo ? _redo : null,
               ),
-
-              // Hold to Compare Eye Button
               GestureDetector(
                 onTapDown: (_) => setState(() => _isShowingOriginal = true),
                 onTapUp: (_) => setState(() => _isShowingOriginal = false),
                 onTapCancel: () => setState(() => _isShowingOriginal = false),
-                child: Container(
-                  margin: const EdgeInsets.symmetric(horizontal: 4),
-                  padding: const EdgeInsets.all(7),
-                  decoration: BoxDecoration(
-                    color: _isShowingOriginal
-                        ? const Color(0xFF00E676).withValues(alpha: 0.25)
-                        : Colors.white.withValues(alpha: 0.08),
-                    shape: BoxShape.circle,
-                  ),
-                  child: Icon(
-                    _isShowingOriginal ? Icons.visibility_rounded : Icons.visibility_outlined,
-                    color: _isShowingOriginal ? const Color(0xFF00E676) : Colors.white70,
-                    size: 18,
+                child: Tooltip(
+                  message: 'Hold to compare original',
+                  child: Container(
+                    margin: const EdgeInsets.symmetric(horizontal: 4),
+                    padding: const EdgeInsets.all(6),
+                    decoration: BoxDecoration(
+                      color: _isShowingOriginal
+                          ? const Color(0xFF00E676).withValues(alpha: 0.25)
+                          : Colors.white.withValues(alpha: 0.08),
+                      shape: BoxShape.circle,
+                    ),
+                    child: Icon(
+                      _isShowingOriginal
+                          ? Icons.visibility_rounded
+                          : Icons.visibility_outlined,
+                      color: _isShowingOriginal
+                          ? const Color(0xFF00E676)
+                          : Colors.white70,
+                      size: 17,
+                    ),
                   ),
                 ),
               ),
-
-              const SizedBox(width: 4),
-
-              // Save & Done Button
-              ElevatedButton.icon(
-                icon: const Icon(Icons.check_rounded, size: 18, color: Colors.white),
-                label: const Text(
-                  'Done',
-                  style: TextStyle(color: Colors.white, fontWeight: FontWeight.w700, fontSize: 13),
-                ),
+              const SizedBox(width: 2),
+              ElevatedButton(
                 style: ElevatedButton.styleFrom(
                   backgroundColor: tabColor,
-                  padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
-                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
+                  minimumSize: Size.zero,
+                  tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(12),
+                  ),
                   elevation: 0,
                 ),
                 onPressed: _finishAndSave,
+                child: const Text(
+                  'Done',
+                  style: TextStyle(
+                    color: Colors.white,
+                    fontWeight: FontWeight.w700,
+                    fontSize: 12.5,
+                  ),
+                ),
               ),
             ],
           ),
@@ -697,91 +691,97 @@ class _AiMagicStudioScreenState extends State<AiMagicStudioScreen> {
     );
   }
 
-  // ── Floating Toggle (Pan Mode vs Draw Mode) ───────────────────────────────
+  // ── Floating Pan / Zoom vs Draw Mode Toggle ────────────────────────────────
+
   Widget _buildModeToggleFab() {
     return Column(
       mainAxisSize: MainAxisSize.min,
       children: [
-        ClipRRect(
-          borderRadius: BorderRadius.circular(15),
-          child: BackdropFilter(
-            filter: ui.ImageFilter.blur(sigmaX: 12, sigmaY: 12),
-            child: Container(
-              width: 44,
-              height: 44,
-              decoration: BoxDecoration(
-                color: _isPanMode ? tabColor.withValues(alpha: 0.25) : const Color(0xFF161524).withValues(alpha: 0.88),
-                borderRadius: BorderRadius.circular(15),
-                border: Border.all(
-                  color: _isPanMode ? tabColor : Colors.white.withValues(alpha: 0.14),
-                  width: _isPanMode ? 1.5 : 0.8,
-                ),
-              ),
-              child: Material(
-                color: Colors.transparent,
-                child: InkWell(
-                  borderRadius: BorderRadius.circular(15),
-                  onTap: () {
-                    HapticFeedback.lightImpact();
-                    setState(() => _isPanMode = !_isPanMode);
-                  },
-                  child: Center(
-                    child: Icon(
-                      _isPanMode ? Icons.pan_tool_rounded : Icons.brush_rounded,
-                      color: _isPanMode ? tabColor : Colors.white,
-                      size: 20,
-                    ),
-                  ),
-                ),
-              ),
-            ),
-          ),
+        _buildGlassIconFab(
+          icon: _isPanMode ? Icons.pan_tool_rounded : Icons.brush_rounded,
+          isActive: _isPanMode,
+          tooltip: _isPanMode ? 'Switch to brush' : 'Switch to pan/zoom',
+          onTap: () {
+            HapticFeedback.lightImpact();
+            setState(() => _isPanMode = !_isPanMode);
+          },
         ),
         const SizedBox(height: 8),
-
-        // Reset Zoom & Position
-        ClipRRect(
-          borderRadius: BorderRadius.circular(15),
-          child: BackdropFilter(
-            filter: ui.ImageFilter.blur(sigmaX: 12, sigmaY: 12),
-            child: Container(
-              width: 44,
-              height: 44,
-              decoration: BoxDecoration(
-                color: const Color(0xFF161524).withValues(alpha: 0.88),
-                borderRadius: BorderRadius.circular(15),
-                border: Border.all(color: Colors.white.withValues(alpha: 0.14)),
-              ),
-              child: Material(
-                color: Colors.transparent,
-                child: InkWell(
-                  borderRadius: BorderRadius.circular(15),
-                  onTap: () {
-                    HapticFeedback.lightImpact();
-                    _transformationController.value = Matrix4.identity();
-                  },
-                  child: const Center(
-                    child: Icon(Icons.fit_screen_rounded, color: Colors.white70, size: 20),
-                  ),
-                ),
-              ),
-            ),
-          ),
+        _buildGlassIconFab(
+          icon: Icons.fit_screen_rounded,
+          isActive: false,
+          tooltip: 'Reset zoom',
+          onTap: () {
+            HapticFeedback.lightImpact();
+            _transformationController.value = Matrix4.identity();
+          },
         ),
       ],
     );
   }
 
-  // ── Bottom Control Panel ──────────────────────────────────────────────────
+  Widget _buildGlassIconFab({
+    required IconData icon,
+    required bool isActive,
+    required String tooltip,
+    required VoidCallback onTap,
+  }) {
+    return Tooltip(
+      message: tooltip,
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(14),
+        child: BackdropFilter(
+          filter: ui.ImageFilter.blur(sigmaX: 12, sigmaY: 12),
+          child: Container(
+            width: 42,
+            height: 42,
+            decoration: BoxDecoration(
+              color: isActive
+                  ? _accentCyan.withValues(alpha: 0.22)
+                  : const Color(0xFF161524).withValues(alpha: 0.88),
+              borderRadius: BorderRadius.circular(14),
+              border: Border.all(
+                color: isActive
+                    ? _accentCyan
+                    : Colors.white.withValues(alpha: 0.14),
+                width: isActive ? 1.4 : 0.8,
+              ),
+            ),
+            child: Material(
+              color: Colors.transparent,
+              child: InkWell(
+                borderRadius: BorderRadius.circular(14),
+                onTap: onTap,
+                child: Center(
+                  child: Icon(
+                    icon,
+                    color: isActive ? _accentCyan : Colors.white,
+                    size: 19,
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  // ── Bottom Text Remover Control Panel ───────────────────────────────────────
+
   Widget _buildBottomPanel() {
+    final selectedCount = _selectedTextIndices.length;
+    final totalDetected = _detectedTextBlocks.length;
+    final hasAnyTarget = _strokes.isNotEmpty || _selectedTextIndices.isNotEmpty;
+
     return ClipRRect(
-      borderRadius: const BorderRadius.vertical(top: Radius.circular(26)),
+      borderRadius: const BorderRadius.vertical(top: Radius.circular(24)),
       child: BackdropFilter(
         filter: ui.ImageFilter.blur(sigmaX: 18, sigmaY: 18),
         child: Container(
           decoration: BoxDecoration(
             color: const Color(0xFF161524).withValues(alpha: 0.94),
-            borderRadius: const BorderRadius.vertical(top: Radius.circular(26)),
+            borderRadius: const BorderRadius.vertical(top: Radius.circular(24)),
             border: Border.all(color: Colors.white.withValues(alpha: 0.12)),
             boxShadow: [
               BoxShadow(
@@ -794,39 +794,225 @@ class _AiMagicStudioScreenState extends State<AiMagicStudioScreen> {
           child: SafeArea(
             top: false,
             child: Padding(
-              padding: const EdgeInsets.fromLTRB(16, 12, 16, 16),
+              padding: const EdgeInsets.fromLTRB(16, 12, 16, 14),
               child: Column(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  // Active Tool Specific Controls
-                  if (_activeTool == StudioTool.objectRemover) _buildObjectRemoverControls(),
-                  if (_activeTool == StudioTool.textRemover) _buildTextRemoverControls(),
-                  if (_activeTool == StudioTool.bgRemover) _buildBgRemoverControls(),
-
-                  const Divider(color: Colors.white12, height: 24),
-
-                  // 3 Master Tool Switcher Tabs
+                  // Status & quick selection actions
                   Row(
                     children: [
-                      _buildToolTab(
-                        tool: StudioTool.objectRemover,
-                        title: 'Object Remover',
-                        icon: Icons.auto_fix_high_rounded,
-                        accentColor: const Color(0xFFFF5252),
+                      Expanded(
+                        child: Text(
+                          totalDetected > 0
+                              ? '$selectedCount/$totalDetected text boxes${_strokes.isNotEmpty ? ' • ${_strokes.length} brush' : ''} (tap box to toggle)'
+                              : (_strokes.isNotEmpty
+                                  ? '${_strokes.length} manual brush mask${_strokes.length == 1 ? '' : 's'} ready'
+                                  : 'Tap text boxes or brush missed text'),
+                          style: const TextStyle(
+                            color: Colors.white70,
+                            fontSize: 11.5,
+                          ),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ),
+                      if (totalDetected > 0) ...[
+                        const SizedBox(width: 6),
+                        _buildQuickChip(
+                          label: selectedCount == totalDetected ? 'None' : 'All',
+                          onTap: () {
+                            HapticFeedback.selectionClick();
+                            setState(() {
+                              if (selectedCount == totalDetected) {
+                                _selectedTextIndices.clear();
+                              } else {
+                                for (int i = 0; i < totalDetected; i++) {
+                                  _selectedTextIndices.add(i);
+                                }
+                              }
+                            });
+                          },
+                        ),
+                      ],
+                      if (_strokes.isNotEmpty) ...[
+                        const SizedBox(width: 6),
+                        _buildQuickChip(
+                          label: 'Clear Brush',
+                          onTap: () => setState(() => _strokes.clear()),
+                        ),
+                      ],
+                    ],
+                  ),
+                  const SizedBox(height: 8),
+
+                  // Coverage Margin Selector (Tight / Normal / Wide)
+                  Row(
+                    children: [
+                      const Text(
+                        'Padding:',
+                        style: TextStyle(color: Colors.white54, fontSize: 11.5),
                       ),
                       const SizedBox(width: 8),
-                      _buildToolTab(
-                        tool: StudioTool.textRemover,
-                        title: 'Text Remover',
-                        icon: Icons.text_fields_rounded,
-                        accentColor: const Color(0xFF00E5FF),
+                      Expanded(
+                        child: Row(
+                          children: _TextMarginPreset.values.map((preset) {
+                            final active = _marginPreset == preset;
+                            return Expanded(
+                              child: Padding(
+                                padding: const EdgeInsets.symmetric(horizontal: 3),
+                                child: GestureDetector(
+                                  onTap: () {
+                                    HapticFeedback.selectionClick();
+                                    setState(() => _marginPreset = preset);
+                                  },
+                                  child: Container(
+                                    padding: const EdgeInsets.symmetric(vertical: 5),
+                                    decoration: BoxDecoration(
+                                      color: active
+                                          ? _accentCyan.withValues(alpha: 0.16)
+                                          : Colors.white.withValues(alpha: 0.05),
+                                      borderRadius: BorderRadius.circular(8),
+                                      border: Border.all(
+                                        color: active
+                                            ? _accentCyan
+                                            : Colors.white.withValues(alpha: 0.08),
+                                      ),
+                                    ),
+                                    alignment: Alignment.center,
+                                    child: Text(
+                                      preset.label,
+                                      style: TextStyle(
+                                        color: active ? _accentCyan : Colors.white60,
+                                        fontSize: 11,
+                                        fontWeight: active
+                                            ? FontWeight.w700
+                                            : FontWeight.w500,
+                                      ),
+                                    ),
+                                  ),
+                                ),
+                              ),
+                            );
+                          }).toList(),
+                        ),
                       ),
-                      const SizedBox(width: 8),
-                      _buildToolTab(
-                        tool: StudioTool.bgRemover,
-                        title: 'Cutout & BG',
-                        icon: Icons.content_cut_rounded,
-                        accentColor: const Color(0xFF00E676),
+                    ],
+                  ),
+                  const SizedBox(height: 6),
+
+                  // Manual Brush Size Slider
+                  Row(
+                    children: [
+                      const Icon(Icons.brush_rounded, color: Colors.white70, size: 16),
+                      const SizedBox(width: 6),
+                      Text(
+                        'Brush: ${_brushRadius.round()}px',
+                        style: const TextStyle(color: Colors.white70, fontSize: 11.5),
+                      ),
+                      const SizedBox(width: 6),
+                      Container(
+                        width: (_brushRadius * 0.45).clamp(6.0, 20.0),
+                        height: (_brushRadius * 0.45).clamp(6.0, 20.0),
+                        decoration: const BoxDecoration(
+                          color: _brushAccent,
+                          shape: BoxShape.circle,
+                        ),
+                      ),
+                      Expanded(
+                        child: SliderTheme(
+                          data: SliderTheme.of(context).copyWith(
+                            activeTrackColor: _brushAccent,
+                            thumbColor: _brushAccent,
+                            trackHeight: 2.5,
+                            overlayShape: const RoundSliderOverlayShape(
+                              overlayRadius: 14,
+                            ),
+                          ),
+                          child: Slider(
+                            value: _brushRadius,
+                            min: 8.0,
+                            max: 48.0,
+                            onChanged: (val) => setState(() => _brushRadius = val),
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 6),
+
+                  // Scan & Erase Action Row
+                  Row(
+                    children: [
+                      Expanded(
+                        child: OutlinedButton.icon(
+                          icon: _isDetectingText
+                              ? const SizedBox(
+                                  width: 15,
+                                  height: 15,
+                                  child: CircularProgressIndicator(
+                                    color: _accentCyan,
+                                    strokeWidth: 2,
+                                  ),
+                                )
+                              : const Icon(
+                                  Icons.search_rounded,
+                                  size: 17,
+                                  color: _accentCyan,
+                                ),
+                          label: Text(
+                            totalDetected == 0
+                                ? 'Auto-Detect Text'
+                                : 'Re-scan ($totalDetected)',
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: const TextStyle(
+                              color: _accentCyan,
+                              fontWeight: FontWeight.w600,
+                              fontSize: 12.5,
+                            ),
+                          ),
+                          style: OutlinedButton.styleFrom(
+                            side: const BorderSide(color: _accentCyan),
+                            padding: const EdgeInsets.symmetric(vertical: 11),
+                            shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(12),
+                            ),
+                          ),
+                          onPressed: _isDetectingText ? null : () => _detectTextInImage(),
+                        ),
+                      ),
+                      const SizedBox(width: 10),
+                      Expanded(
+                        child: ElevatedButton.icon(
+                          icon: const Icon(
+                            Icons.cleaning_services_rounded,
+                            size: 17,
+                            color: Color(0xFF0A0912),
+                          ),
+                          label: const Text(
+                            'Erase Text',
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: TextStyle(
+                              color: Color(0xFF0A0912),
+                              fontWeight: FontWeight.w800,
+                              fontSize: 13,
+                            ),
+                          ),
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: _accentCyan,
+                            disabledBackgroundColor: Colors.grey[800],
+                            disabledForegroundColor: Colors.white38,
+                            padding: const EdgeInsets.symmetric(vertical: 11),
+                            shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(12),
+                            ),
+                            elevation: 0,
+                          ),
+                          onPressed: hasAnyTarget && !_isProcessing
+                              ? _applyTextRemoval
+                              : null,
+                        ),
                       ),
                     ],
                   ),
@@ -839,319 +1025,25 @@ class _AiMagicStudioScreenState extends State<AiMagicStudioScreen> {
     );
   }
 
-  Widget _buildToolTab({
-    required StudioTool tool,
-    required String title,
-    required IconData icon,
-    required Color accentColor,
+  Widget _buildQuickChip({
+    required String label,
+    required VoidCallback onTap,
   }) {
-    final isSelected = _activeTool == tool;
-
-    return Expanded(
-      child: Material(
-        color: Colors.transparent,
-        child: InkWell(
-          onTap: () {
-            HapticFeedback.lightImpact();
-            setState(() {
-              _activeTool = tool;
-              _strokes.clear();
-            });
-            if (tool == StudioTool.textRemover && _detectedTextBlocks.isEmpty) {
-              _detectTextInImage();
-            }
-          },
-          borderRadius: BorderRadius.circular(14),
-          child: Container(
-            padding: const EdgeInsets.symmetric(vertical: 10),
-            decoration: BoxDecoration(
-              color: isSelected ? accentColor.withValues(alpha: 0.16) : const Color(0xFF1E1C2E),
-              borderRadius: BorderRadius.circular(14),
-              border: Border.all(
-                color: isSelected ? accentColor : Colors.white.withValues(alpha: 0.08),
-                width: isSelected ? 1.5 : 0.8,
-              ),
-            ),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Icon(icon, color: isSelected ? accentColor : Colors.white70, size: 20),
-                const SizedBox(height: 4),
-                Text(
-                  title,
-                  style: TextStyle(
-                    color: isSelected ? Colors.white : Colors.white60,
-                    fontSize: 11,
-                    fontWeight: isSelected ? FontWeight.w700 : FontWeight.w500,
-                  ),
-                ),
-              ],
-            ),
-          ),
+    return GestureDetector(
+      onTap: onTap,
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+        decoration: BoxDecoration(
+          color: Colors.white.withValues(alpha: 0.08),
+          borderRadius: BorderRadius.circular(8),
+          border: Border.all(color: Colors.white.withValues(alpha: 0.14)),
         ),
-      ),
-    );
-  }
-
-  // ── Object Remover Controls ───────────────────────────────────────────────
-  Widget _buildObjectRemoverControls() {
-    return Column(
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        // Brush size slider + circle preview
-        Row(
-          children: [
-            const Icon(Icons.brush_rounded, color: Colors.white70, size: 18),
-            const SizedBox(width: 8),
-            Text(
-              'Brush Size: ${_brushRadius.round()}px',
-              style: const TextStyle(color: Colors.white70, fontSize: 12.5),
-            ),
-            const SizedBox(width: 8),
-            // Live circle dot
-            Container(
-              width: _brushRadius * 0.6,
-              height: _brushRadius * 0.6,
-              decoration: const BoxDecoration(
-                color: Color(0xFFFF5252),
-                shape: BoxShape.circle,
-              ),
-            ),
-            Expanded(
-              child: SliderTheme(
-                data: SliderTheme.of(context).copyWith(
-                  activeTrackColor: const Color(0xFFFF5252),
-                  thumbColor: const Color(0xFFFF5252),
-                  trackHeight: 3,
-                ),
-                child: Slider(
-                  value: _brushRadius,
-                  min: 8.0,
-                  max: 60.0,
-                  onChanged: (val) => setState(() => _brushRadius = val),
-                ),
-              ),
-            ),
-          ],
-        ),
-        const SizedBox(height: 10),
-
-        // Action Buttons Row (Clear Mask & Erase Object)
-        Row(
-          children: [
-            if (_strokes.isNotEmpty)
-              OutlinedButton.icon(
-                icon: const Icon(Icons.clear_rounded, size: 18, color: Colors.white70),
-                label: const Text('Clear Mask', style: TextStyle(color: Colors.white70, fontSize: 13)),
-                style: OutlinedButton.styleFrom(
-                  side: const BorderSide(color: Colors.white24),
-                  padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
-                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
-                ),
-                onPressed: () => setState(() => _strokes.clear()),
-              ),
-            if (_strokes.isNotEmpty) const SizedBox(width: 10),
-
-            Expanded(
-              child: ElevatedButton.icon(
-                icon: const Icon(Icons.auto_fix_high_rounded, size: 18, color: Colors.white),
-                label: Text(
-                  _strokes.isEmpty ? 'Paint over an object to erase' : 'Erase Object Now',
-                  style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w700, fontSize: 13.5),
-                ),
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: _strokes.isEmpty ? Colors.grey[800] : const Color(0xFFFF5252),
-                  padding: const EdgeInsets.symmetric(vertical: 12),
-                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
-                  elevation: 0,
-                ),
-                onPressed: _strokes.isEmpty ? null : _applyObjectRemoval,
-              ),
-            ),
-          ],
-        ),
-      ],
-    );
-  }
-
-  // ── Text Remover Controls ─────────────────────────────────────────────────
-  Widget _buildTextRemoverControls() {
-    return Column(
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        Row(
-          children: [
-            Expanded(
-              child: OutlinedButton.icon(
-                icon: _isDetectingText
-                    ? const SizedBox(
-                        width: 16,
-                        height: 16,
-                        child: CircularProgressIndicator(color: Color(0xFF00E5FF), strokeWidth: 2),
-                      )
-                    : const Icon(Icons.search_rounded, size: 18, color: Color(0xFF00E5FF)),
-                label: Text(
-                  _detectedTextBlocks.isEmpty ? 'Auto-Detect Text' : 'Re-scan Text (${_detectedTextBlocks.length})',
-                  style: const TextStyle(color: Color(0xFF00E5FF), fontWeight: FontWeight.w600, fontSize: 12.5),
-                ),
-                style: OutlinedButton.styleFrom(
-                  side: const BorderSide(color: Color(0xFF00E5FF)),
-                  padding: const EdgeInsets.symmetric(vertical: 11),
-                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-                ),
-                onPressed: _isDetectingText ? null : _detectTextInImage,
-              ),
-            ),
-            const SizedBox(width: 10),
-
-            Expanded(
-              child: ElevatedButton.icon(
-                icon: const Icon(Icons.cleaning_services_rounded, size: 18, color: Colors.white),
-                label: const Text(
-                  'Erase Text',
-                  style: TextStyle(color: Colors.white, fontWeight: FontWeight.w700, fontSize: 13),
-                ),
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: const Color(0xFF00E5FF),
-                  padding: const EdgeInsets.symmetric(vertical: 12),
-                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-                  elevation: 0,
-                ),
-                onPressed: (_strokes.isNotEmpty || _selectedTextIndices.isNotEmpty) ? _applyTextRemoval : null,
-              ),
-            ),
-          ],
-        ),
-      ],
-    );
-  }
-
-  // ── Background Remover Controls ───────────────────────────────────────────
-  Widget _buildBgRemoverControls() {
-    return Column(
-      mainAxisSize: MainAxisSize.min,
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        const Text(
-          'SELECT BACKGROUND STYLE',
-          style: TextStyle(
-            color: Colors.white54,
-            fontSize: 11,
-            fontWeight: FontWeight.w700,
-            letterSpacing: 0.8,
-          ),
-        ),
-        const SizedBox(height: 8),
-
-        // Style Selector Carousel
-        SizedBox(
-          height: 48,
-          child: ListView(
-            scrollDirection: Axis.horizontal,
-            children: [
-              _buildBgStyleChip(
-                mode: BackgroundMode.transparent,
-                title: 'Transparent',
-                icon: Icons.grid_view_rounded,
-                accentColor: const Color(0xFF00E676),
-              ),
-              const SizedBox(width: 8),
-              _buildBgStyleChip(
-                mode: BackgroundMode.portraitBlur,
-                title: 'Portrait Blur',
-                icon: Icons.blur_on_rounded,
-                accentColor: const Color(0xFF29B6F6),
-              ),
-              const SizedBox(width: 8),
-              _buildBgStyleChip(
-                mode: BackgroundMode.studioDark,
-                title: 'Studio Dark',
-                icon: Icons.dark_mode_rounded,
-                accentColor: const Color(0xFFAB47BC),
-              ),
-              const SizedBox(width: 8),
-              _buildBgStyleChip(
-                mode: BackgroundMode.studioWhite,
-                title: 'Studio White',
-                icon: Icons.light_mode_rounded,
-                accentColor: Colors.white,
-              ),
-              const SizedBox(width: 8),
-              _buildBgStyleChip(
-                mode: BackgroundMode.studioGradient,
-                title: 'Royal Gradient',
-                icon: Icons.gradient_rounded,
-                accentColor: const Color(0xFFFFB300),
-              ),
-            ],
-          ),
-        ),
-        const SizedBox(height: 12),
-
-        // 1-Tap Background Removal Action
-        SizedBox(
-          width: double.infinity,
-          child: ElevatedButton.icon(
-            icon: const Icon(Icons.content_cut_rounded, size: 18, color: Colors.white),
-            label: Text(
-              _selectedBgMode == BackgroundMode.transparent
-                  ? 'Cut Out Subject (Transparent PNG)'
-                  : 'Apply Background Transformation',
-              style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w700, fontSize: 13.5),
-            ),
-            style: ElevatedButton.styleFrom(
-              backgroundColor: const Color(0xFF00E676),
-              padding: const EdgeInsets.symmetric(vertical: 12),
-              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
-              elevation: 0,
-            ),
-            onPressed: _applyBackgroundRemoval,
-          ),
-        ),
-      ],
-    );
-  }
-
-  Widget _buildBgStyleChip({
-    required BackgroundMode mode,
-    required String title,
-    required IconData icon,
-    required Color accentColor,
-  }) {
-    final isSelected = _selectedBgMode == mode;
-
-    return Material(
-      color: Colors.transparent,
-      child: InkWell(
-        onTap: () {
-          HapticFeedback.lightImpact();
-          setState(() => _selectedBgMode = mode);
-        },
-        borderRadius: BorderRadius.circular(12),
-        child: Container(
-          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-          decoration: BoxDecoration(
-            color: isSelected ? accentColor.withValues(alpha: 0.18) : const Color(0xFF1E1C2E),
-            borderRadius: BorderRadius.circular(12),
-            border: Border.all(
-              color: isSelected ? accentColor : Colors.white.withValues(alpha: 0.08),
-              width: isSelected ? 1.5 : 0.8,
-            ),
-          ),
-          child: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Icon(icon, color: isSelected ? accentColor : Colors.white70, size: 16),
-              const SizedBox(width: 6),
-              Text(
-                title,
-                style: TextStyle(
-                  color: isSelected ? Colors.white : Colors.white70,
-                  fontSize: 12,
-                  fontWeight: isSelected ? FontWeight.w700 : FontWeight.w500,
-                ),
-              ),
-            ],
+        child: Text(
+          label,
+          style: const TextStyle(
+            color: Colors.white70,
+            fontSize: 10.5,
+            fontWeight: FontWeight.w600,
           ),
         ),
       ),
@@ -1166,67 +1058,114 @@ class _DrawnStroke {
   _DrawnStroke({required this.points, required this.radius});
 }
 
-class _StudioMaskPainter extends CustomPainter {
+class _TextRemoverOverlayPainter extends CustomPainter {
   final List<_DrawnStroke> strokes;
   final _DrawnStroke? activeStroke;
   final double scale;
   final List<DetectedTextBlock> detectedBlocks;
   final Set<int> selectedTextIndices;
-  final bool showTextBoxes;
 
-  _StudioMaskPainter({
+  _TextRemoverOverlayPainter({
     required this.strokes,
     required this.activeStroke,
     required this.scale,
     required this.detectedBlocks,
     required this.selectedTextIndices,
-    required this.showTextBoxes,
   });
 
   @override
   void paint(Canvas canvas, Size size) {
-    // 1. Paint detected text bounding boxes if in Text Remover mode
-    if (showTextBoxes) {
-      final boxPaint = Paint()
-        ..color = const Color(0xFF00E5FF).withValues(alpha: 0.35)
-        ..style = PaintingStyle.fill;
+    final selectedFillPaint = Paint()
+      ..color = const Color(0xFF00E5FF).withValues(alpha: 0.28)
+      ..style = PaintingStyle.fill;
 
-      final borderPaint = Paint()
-        ..color = const Color(0xFF00E5FF)
-        ..style = PaintingStyle.stroke
-        ..strokeWidth = 1.5;
+    final selectedBorderPaint = Paint()
+      ..color = const Color(0xFF00E5FF)
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1.6;
 
-      for (int i = 0; i < detectedBlocks.length; i++) {
-        final block = detectedBlocks[i];
-        final rect = Rect.fromLTRB(
-          block.boundingBox.left * scale,
-          block.boundingBox.top * scale,
-          block.boundingBox.right * scale,
-          block.boundingBox.bottom * scale,
-        );
+    final unselectedBorderPaint = Paint()
+      ..color = Colors.white.withValues(alpha: 0.45)
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1.1;
 
-        if (selectedTextIndices.contains(i)) {
-          canvas.drawRect(rect, boxPaint);
-          canvas.drawRect(rect, borderPaint);
+    for (int i = 0; i < detectedBlocks.length; i++) {
+      final block = detectedBlocks[i];
+      final isSelected = selectedTextIndices.contains(i);
+
+      if (block.words.isNotEmpty) {
+        for (final word in block.words) {
+          if (word.cornerPoints.length == 4) {
+            final path = Path()
+              ..moveTo(
+                word.cornerPoints[0].dx * scale,
+                word.cornerPoints[0].dy * scale,
+              )
+              ..lineTo(
+                word.cornerPoints[1].dx * scale,
+                word.cornerPoints[1].dy * scale,
+              )
+              ..lineTo(
+                word.cornerPoints[2].dx * scale,
+                word.cornerPoints[2].dy * scale,
+              )
+              ..lineTo(
+                word.cornerPoints[3].dx * scale,
+                word.cornerPoints[3].dy * scale,
+              )
+              ..close();
+            _drawBoxOrPath(
+              canvas,
+              isSelected: isSelected,
+              fillPaint: selectedFillPaint,
+              selectedBorderPaint: selectedBorderPaint,
+              unselectedBorderPaint: unselectedBorderPaint,
+              path: path,
+            );
+          } else {
+            _drawBoxOrPath(
+              canvas,
+              isSelected: isSelected,
+              fillPaint: selectedFillPaint,
+              selectedBorderPaint: selectedBorderPaint,
+              unselectedBorderPaint: unselectedBorderPaint,
+              rect: _scaledRect(word.boundingBox, scale),
+            );
+          }
         }
+      } else {
+        _drawBoxOrPath(
+          canvas,
+          isSelected: isSelected,
+          fillPaint: selectedFillPaint,
+          selectedBorderPaint: selectedBorderPaint,
+          unselectedBorderPaint: unselectedBorderPaint,
+          rect: _scaledRect(block.boundingBox, scale),
+        );
       }
     }
 
-    // 2. Paint brush stroke masks (Neon Coral glowing highlight)
     final strokePaint = Paint()
-      ..color = const Color(0xFFFF5252).withValues(alpha: 0.45)
+      ..color = const Color(0xFFFF6B6B).withValues(alpha: 0.48)
       ..style = PaintingStyle.stroke
       ..strokeCap = StrokeCap.round
       ..strokeJoin = StrokeJoin.round;
 
     final allStrokes = [...strokes, if (activeStroke != null) activeStroke!];
-
     for (final s in allStrokes) {
       if (s.points.isEmpty) continue;
       strokePaint.strokeWidth = s.radius * 2 * scale;
+      if (s.points.length == 1) {
+        canvas.drawCircle(
+          Offset(s.points.first.dx * scale, s.points.first.dy * scale),
+          s.radius * scale,
+          Paint()..color = const Color(0xFFFF6B6B).withValues(alpha: 0.48),
+        );
+        continue;
+      }
 
-      final path = Path();
-      path.moveTo(s.points.first.dx * scale, s.points.first.dy * scale);
+      final path = Path()
+        ..moveTo(s.points.first.dx * scale, s.points.first.dy * scale);
       for (int i = 1; i < s.points.length; i++) {
         path.lineTo(s.points[i].dx * scale, s.points[i].dy * scale);
       }
@@ -1234,6 +1173,43 @@ class _StudioMaskPainter extends CustomPainter {
     }
   }
 
+  void _drawBoxOrPath(
+    Canvas canvas, {
+    required bool isSelected,
+    required Paint fillPaint,
+    required Paint selectedBorderPaint,
+    required Paint unselectedBorderPaint,
+    Path? path,
+    Rect? rect,
+  }) {
+    if (path != null) {
+      if (isSelected) {
+        canvas.drawPath(path, fillPaint);
+        canvas.drawPath(path, selectedBorderPaint);
+      } else {
+        canvas.drawPath(path, unselectedBorderPaint);
+      }
+      return;
+    }
+    if (rect != null) {
+      if (isSelected) {
+        canvas.drawRect(rect, fillPaint);
+        canvas.drawRect(rect, selectedBorderPaint);
+      } else {
+        canvas.drawRect(rect, unselectedBorderPaint);
+      }
+    }
+  }
+
+  Rect _scaledRect(Rect box, double s) {
+    return Rect.fromLTRB(
+      box.left * s,
+      box.top * s,
+      box.right * s,
+      box.bottom * s,
+    );
+  }
+
   @override
-  bool shouldRepaint(covariant _StudioMaskPainter oldDelegate) => true;
+  bool shouldRepaint(covariant _TextRemoverOverlayPainter oldDelegate) => true;
 }

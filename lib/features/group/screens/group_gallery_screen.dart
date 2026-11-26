@@ -16,6 +16,7 @@ import 'package:worship_chat/colors.dart';
 import 'package:worship_chat/common/utils/google_lens_service.dart';
 import 'package:worship_chat/common/utils/utils.dart';
 import 'package:worship_chat/common/widgets/loader.dart';
+import 'package:worship_chat/common/widgets/set_as_profile_pic_sheet.dart';
 import 'package:worship_chat/common/widgets/wallpaper_widget_sheet.dart';
 import 'package:worship_chat/features/auth/controller/auth_controller.dart';
 import 'package:worship_chat/features/bookmark/controller/bookmark_controller.dart';
@@ -1172,10 +1173,17 @@ class _FullscreenViewerState extends ConsumerState<_FullscreenViewer> {
                             Padding(
                               padding: const EdgeInsets.symmetric(
                                   horizontal: 8, vertical: 2),
-                              child: Row(
-                                mainAxisAlignment:
-                                    MainAxisAlignment.spaceEvenly,
-                                children: [
+                              child: SingleChildScrollView(
+                                scrollDirection: Axis.horizontal,
+                                child: ConstrainedBox(
+                                  constraints: BoxConstraints(
+                                    minWidth:
+                                        MediaQuery.sizeOf(context).width - 16,
+                                  ),
+                                  child: Row(
+                                    mainAxisAlignment:
+                                        MainAxisAlignment.spaceEvenly,
+                                    children: [
                                   // ── Bookmark & Collection ─────────────
                                   StreamBuilder<bool>(
                                     stream: isBookmarked,
@@ -1299,6 +1307,27 @@ class _FullscreenViewerState extends ConsumerState<_FullscreenViewer> {
                                       ),
                                     ),
 
+                                  // ── Set as Profile Pic ─────────────────
+                                  if (!img.isVideo)
+                                    IconButton(
+                                      icon: const Icon(
+                                        Icons.account_circle_outlined,
+                                        color: Colors.white,
+                                      ),
+                                      tooltip: 'Set as Profile Pic',
+                                      onPressed: () =>
+                                          SetAsProfilePicSheet.show(
+                                        context,
+                                        imageUrl: img.imageUrl,
+                                        sourceGroupId: widget.groupId,
+                                        sourceGroupName: widget.groupName,
+                                        title: (img.caption?.trim().isNotEmpty ??
+                                                false)
+                                            ? img.caption!.trim()
+                                            : widget.groupName,
+                                      ),
+                                    ),
+
                                   // ── Delete ─────────────────────────────
                                   IconButton(
                                     icon: const Icon(
@@ -1315,6 +1344,8 @@ class _FullscreenViewerState extends ConsumerState<_FullscreenViewer> {
                                     },
                                   ),
                                 ],
+                              ),
+                                ),
                               ),
                             ),
                           ],
@@ -1720,14 +1751,16 @@ class _GalleryGrid extends ConsumerWidget {
                     showModalBottomSheet(
                       context: context,
                       backgroundColor: const Color(0xFF1B1728),
+                      isScrollControlled: true,
                       shape: const RoundedRectangleBorder(
                         borderRadius:
                             BorderRadius.vertical(top: Radius.circular(20)),
                       ),
                       builder: (ctx) => SafeArea(
-                        child: Column(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
+                        child: SingleChildScrollView(
+                          child: Column(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
                             Container(
                               margin: const EdgeInsets.only(top: 8, bottom: 4),
                               width: 36,
@@ -1861,7 +1894,34 @@ class _GalleryGrid extends ConsumerWidget {
                                   );
                                 },
                               ),
+                            if (!img.isVideo)
+                              ListTile(
+                                leading: const Icon(
+                                  Icons.account_circle_outlined,
+                                  color: tabColor,
+                                ),
+                                title: const Text('Set as Profile Pic',
+                                    style: TextStyle(color: Colors.white)),
+                                subtitle: const Text(
+                                    'Use for your profile or any group',
+                                    style: TextStyle(
+                                        color: Colors.white54, fontSize: 12)),
+                                onTap: () {
+                                  Navigator.pop(ctx);
+                                  SetAsProfilePicSheet.show(
+                                    context,
+                                    imageUrl: img.imageUrl,
+                                    sourceGroupId: groupId,
+                                    sourceGroupName: groupName,
+                                    title:
+                                        (img.caption?.trim().isNotEmpty ?? false)
+                                            ? img.caption!.trim()
+                                            : groupName,
+                                  );
+                                },
+                              ),
                           ],
+                          ),
                         ),
                       ),
                     );

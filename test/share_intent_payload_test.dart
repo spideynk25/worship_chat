@@ -173,9 +173,9 @@ void main() {
       // Verifies copy button is present
       expect(find.text('Copy'), findsOneWidget);
 
-      // Verifies Queendom navigation tabs are rendered with Direct Message as first tab
+      // Verifies Queendom navigation tabs are rendered without 'My Groups'
       expect(find.text('Direct Message'), findsOneWidget);
-      expect(find.text('My Groups'), findsOneWidget);
+      expect(find.text('My Groups'), findsNothing);
       expect(find.text('Queen Pooja'), findsOneWidget);
       expect(find.text('Queen Rashmika'), findsOneWidget);
 
@@ -211,16 +211,72 @@ void main() {
       // Verifies title
       expect(find.text('QUEENDOM SHARE'), findsOneWidget);
 
-      // On initial tab (Direct Message), direct message banner is shown
+      // On initial tab (Direct Message), direct message banner and photo count are shown
       expect(find.text('Select a contact for direct message'), findsOneWidget);
+      expect(find.text('1 Photo'), findsOneWidget);
       expect(find.text('Share Destination:'), findsNothing);
 
-      // Switch to 'My Groups' tab
-      await tester.tap(find.text('My Groups'));
+      // Switch to 'Queen Pooja' tab
+      await tester.tap(find.text('Queen Pooja'));
       await tester.pumpAndSettle();
 
-      // Verifies Gallery destination toggle is shown for images in group tab
+      // Verifies Gallery destination toggle and photo count badge are shown
       expect(find.text('Share Destination:'), findsOneWidget);
+      expect(find.text('Gallery'), findsOneWidget);
+      expect(find.text('Chat'), findsOneWidget);
+      expect(find.text('1 photo'), findsOneWidget);
+    });
+
+    testWidgets('photo count and tabs fit without overflow on compact mobile width', (tester) async {
+      await tester.binding.setSurfaceSize(const Size(340, 720));
+      addTearDown(() => tester.binding.setSurfaceSize(null));
+
+      final multiPhotoPayload = SharedPayload(
+        files: List.generate(12, (i) => File('/mock/photo_$i.jpg')),
+        type: SharedPayloadType.image,
+      );
+
+      final mockGroup = _MockGroupController();
+      final mockChat = _MockChatController();
+
+      await tester.pumpWidget(
+        ProviderScope(
+          overrides: [
+            groupControllerProvider.overrideWithValue(mockGroup as dynamic),
+            chatControllerProvider.overrideWithValue(mockChat as dynamic),
+          ],
+          child: MediaQuery(
+            data: const MediaQueryData(
+              size: Size(340, 720),
+              textScaler: TextScaler.linear(1.2),
+            ),
+            child: MaterialApp(
+              home: ShareUploadScreen(
+                payload: multiPhotoPayload,
+              ),
+            ),
+          ),
+        ),
+      );
+
+      await tester.pumpAndSettle();
+      expect(tester.takeException(), isNull);
+      expect(find.text('My Groups'), findsNothing);
+      expect(tester.getRect(find.text('Queen Rashmika')).right <= 340, isTrue);
+
+      final directCountFinder = find.text('12 Photos');
+      expect(directCountFinder, findsOneWidget);
+      final directCountBox = tester.getRect(directCountFinder);
+      expect(directCountBox.right <= 340, isTrue);
+
+      await tester.tap(find.text('Queen Pooja'));
+      await tester.pumpAndSettle();
+      expect(tester.takeException(), isNull);
+
+      final galleryCountFinder = find.text('12 photos');
+      expect(galleryCountFinder, findsOneWidget);
+      final galleryCountBox = tester.getRect(galleryCountFinder);
+      expect(galleryCountBox.right <= 340, isTrue);
       expect(find.text('Gallery'), findsOneWidget);
       expect(find.text('Chat'), findsOneWidget);
     });
@@ -265,8 +321,8 @@ void main() {
 
       await tester.pump();
 
-      // Switch to 'My Groups' tab
-      await tester.tap(find.text('My Groups'));
+      // Switch to 'Queen Pooja' tab
+      await tester.tap(find.text('Queen Pooja'));
       await tester.pumpAndSettle();
 
       // Should display formatted name: Wife of Queen Pooja - Samantha
@@ -316,8 +372,8 @@ void main() {
 
       await tester.pump();
 
-      // Switch to 'My Groups' tab
-      await tester.tap(find.text('My Groups'));
+      // Switch to 'Queen Pooja' tab
+      await tester.tap(find.text('Queen Pooja'));
       await tester.pumpAndSettle();
 
       // Search by position prefix "Queen"
@@ -394,8 +450,8 @@ void main() {
       // Verify text in TextField is 'Sreeleela'
       expect(find.text('Sreeleela'), findsOneWidget);
 
-      // Switch to 'My Groups' tab
-      await tester.tap(find.text('My Groups'));
+      // Switch to 'Queen Pooja' tab
+      await tester.tap(find.text('Queen Pooja'));
       await tester.pumpAndSettle();
 
       // Verify search query did NOT disappear on tab switch
@@ -406,8 +462,8 @@ void main() {
       expect(find.textContaining('Sreeleela', findRichText: true), findsWidgets);
       expect(find.textContaining('Preity', findRichText: true), findsNothing);
 
-      // Switch to 'Queen Pooja' tab
-      await tester.tap(find.text('Queen Pooja'));
+      // Switch to 'Queen Rashmika' tab
+      await tester.tap(find.text('Queen Rashmika'));
       await tester.pumpAndSettle();
 
       // Verify search query is STILL preserved
@@ -466,8 +522,8 @@ void main() {
 
       await tester.pump();
 
-      // Switch to 'My Groups' tab
-      await tester.tap(find.text('My Groups'));
+      // Switch to 'Queen Pooja' tab
+      await tester.tap(find.text('Queen Pooja'));
       await tester.pumpAndSettle();
 
       // Initially no destination is selected

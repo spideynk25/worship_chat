@@ -368,10 +368,30 @@ class _ViewStatusesScreenState extends ConsumerState<ViewStatusesScreen>
             '';
         if (fcmToken.isEmpty) return;
 
+        final storyMediaType = (status['mediaType'] as String?) ?? 'image';
+        final storyUrl = status['statusUrl'] as String?;
+
         await sendNotification(
           fcmToken,
           '❤️ $_currentUserName liked your story',
           'Tap to view your story',
+          data: {
+            'type': 'story',
+            'uid': _currentUserUid,
+            'senderUid': _currentUserUid,
+            'name': _currentUserName,
+            if (_currentUserProfilePic.isNotEmpty)
+              'profilePic': _currentUserProfilePic,
+            if (status['statusId'] != null)
+              'statusId': status['statusId'].toString(),
+            if (storyMediaType != 'video' &&
+                storyUrl != null &&
+                storyUrl.isNotEmpty) ...{
+              'messageType': 'image',
+              'statusUrl': storyUrl,
+            },
+            'tag': 'story_like_$statusOwnerUid',
+          },
         );
       } catch (e) {
         log('Like notification error: $e');

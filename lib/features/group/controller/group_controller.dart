@@ -33,6 +33,7 @@ class GroupController {
     String selectedPosition,
     File? groupProfilePic,
     String type, {
+    String? groupProfilePicUrl,
     String? livingPlace,
     int? priority,
     String? parentGroupId,
@@ -50,6 +51,7 @@ class GroupController {
       selectedPosition,
       groupProfilePic,
       type,
+      groupProfilePicUrl: groupProfilePicUrl,
       livingPlace: livingPlace,
       priority: priority,
       parentGroupId: parentGroupId,
@@ -59,6 +61,24 @@ class GroupController {
     );
   }
 
+  Future<bool> updateGroupProfilePic({
+    required String groupId,
+    File? imageFile,
+    String? imageUrl,
+    String type = 'group',
+  }) {
+    return groupRepository.updateGroupProfilePic(
+      groupId: groupId,
+      imageFile: imageFile,
+      imageUrl: imageUrl,
+      type: type,
+    );
+  }
+
+  Future<List<GroupModel>> getAllGroupsForPicker() {
+    return groupRepository.getAllGroupsForPicker();
+  }
+
   void createGroup(
     BuildContext context,
     String name,
@@ -66,9 +86,10 @@ class GroupController {
     String selectedQueendom,
     String selectedFamily,
     String selectedPosition,
-    File groupProfilePic,
+    File? groupProfilePic,
     List<ChatContact> selectedContact,
     String type, {
+    String? groupProfilePicUrl,
     String? livingPlace,
     int? priority,
     String? parentGroupId,
@@ -86,6 +107,7 @@ class GroupController {
       groupProfilePic,
       selectedContact,
       type,
+      groupProfilePicUrl: groupProfilePicUrl,
       livingPlace: livingPlace,
       priority: priority,
       parentGroupId: parentGroupId,

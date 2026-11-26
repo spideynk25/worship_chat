@@ -26,6 +26,7 @@ class _FakeAuthController implements AuthController {
     String name,
     File? profilePic, {
     String? userName,
+    String? profilePicUrlOverride,
     bool navigateHomeOnComplete = true,
     bool removeProfilePic = false,
   }) async {
@@ -36,6 +37,14 @@ class _FakeAuthController implements AuthController {
     lastRemoveProfilePic = removeProfilePic;
     return saveResult;
   }
+
+  @override
+  Future<bool> updateCurrentUserProfilePic({
+    BuildContext? context,
+    File? imageFile,
+    String? imageUrl,
+  }) async =>
+      saveResult;
 
   @override
   void resetPassword(BuildContext context, String email) {

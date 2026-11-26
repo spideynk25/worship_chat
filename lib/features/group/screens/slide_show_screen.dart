@@ -7,6 +7,7 @@ import 'package:flutter/services.dart';
 import 'package:photo_view/photo_view.dart';
 import 'package:worship_chat/common/utils/google_lens_service.dart';
 import 'package:worship_chat/common/utils/utils.dart';
+import 'package:worship_chat/common/widgets/set_as_profile_pic_sheet.dart';
 import 'package:worship_chat/common/widgets/wallpaper_widget_sheet.dart';
 import 'package:worship_chat/features/group/services/gallery_media_service.dart';
 import 'package:worship_chat/features/group/utils/multi_gallery_shuffler_helper.dart';
@@ -30,6 +31,28 @@ Widget _buildSlideshowWallpaperButton({
           ? photo.caption!.trim()
           : (groupName.isNotEmpty ? groupName : 'Worship Slideshow'),
       subtitle: 'Slideshow',
+    ),
+  );
+}
+
+Widget _buildSlideshowProfilePicButton({
+  required BuildContext context,
+  required GroupGalleryImage photo,
+  required bool isNetwork,
+  required String groupName,
+}) {
+  return IconButton(
+    icon: const Icon(Icons.account_circle_outlined, color: Colors.white),
+    tooltip: 'Set as Profile Pic',
+    onPressed: () => SetAsProfilePicSheet.show(
+      context,
+      imageUrl: isNetwork ? photo.imageUrl : null,
+      localPath: isNetwork ? null : photo.imageUrl,
+      sourceGroupId: photo.groupId,
+      sourceGroupName: groupName,
+      title: (photo.caption?.trim().isNotEmpty ?? false)
+          ? photo.caption!.trim()
+          : (groupName.isNotEmpty ? groupName : 'Worship Slideshow'),
     ),
   );
 }
@@ -849,6 +872,12 @@ class _SlideshowScreenState extends State<SlideshowScreen>
                       isNetwork: isNetwork,
                       groupName: groupName,
                     ),
+                    _buildSlideshowProfilePicButton(
+                      context: context,
+                      photo: photo,
+                      isNetwork: isNetwork,
+                      groupName: groupName,
+                    ),
                     IconButton(
                       icon: const Icon(Icons.download_rounded,
                           color: Colors.white),
@@ -1319,6 +1348,12 @@ class PhotoLightboxViewer extends StatelessWidget {
                         ),
                       ),
                       _buildSlideshowWallpaperButton(
+                        context: context,
+                        photo: photo,
+                        isNetwork: isNetwork,
+                        groupName: groupName,
+                      ),
+                      _buildSlideshowProfilePicButton(
                         context: context,
                         photo: photo,
                         isNetwork: isNetwork,

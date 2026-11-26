@@ -9,6 +9,8 @@ import 'package:image/image.dart' as img;
 
 import 'package:worship_chat/colors.dart';
 import 'package:worship_chat/common/utils/utils.dart';
+import 'package:worship_chat/common/widgets/app_media_picker_sheet.dart';
+import 'package:worship_chat/common/widgets/user_avatar.dart';
 import 'package:worship_chat/features/group/controller/group_controller.dart';
 import 'package:worship_chat/features/group/utils/group_template_helper.dart';
 import 'package:worship_chat/features/group/utils/queendom_emblem_helper.dart';
@@ -202,6 +204,7 @@ class CreateSubGroupScreen extends ConsumerStatefulWidget {
 class _CreateSubGroupScreenState extends ConsumerState<CreateSubGroupScreen> {
   final TextEditingController nameController = TextEditingController();
   File? image;
+  String? selectedImageUrl;
   bool isCreating = false;
   late String _selectedSubGroupType;
 
@@ -235,22 +238,34 @@ class _CreateSubGroupScreenState extends ConsumerState<CreateSubGroupScreen> {
     super.dispose();
   }
 
-  void selectImage() async {
-    final picked = await pickImageFromGallery(context);
-    if (picked == null) return;
-
-    if (!mounted) return;
-    await Navigator.of(context).push(
-      MaterialPageRoute(
-        builder: (context) => _SubGroupImageCropScreen(
-          file: picked,
-          onCropped: (croppedFile) {
-            setState(() {
-              image = croppedFile;
-            });
-          },
-        ),
-      ),
+  void selectImage() {
+    showProfilePicSourceSheet(
+      context: context,
+      initialGroupId: widget.parentGroup.groupId,
+      initialGroupName: widget.parentGroup.name,
+      onLocalFileSelected: (picked) async {
+        if (!mounted) return;
+        await Navigator.of(context).push(
+          MaterialPageRoute(
+            builder: (context) => _SubGroupImageCropScreen(
+              file: picked,
+              onCropped: (croppedFile) {
+                setState(() {
+                  image = croppedFile;
+                  selectedImageUrl = null;
+                });
+              },
+            ),
+          ),
+        );
+      },
+      onRemoteUrlSelected: (url) async {
+        if (!mounted) return;
+        setState(() {
+          image = null;
+          selectedImageUrl = url;
+        });
+      },
     );
   }
 
@@ -262,7 +277,7 @@ class _CreateSubGroupScreenState extends ConsumerState<CreateSubGroupScreen> {
       return;
     }
 
-    if (image == null) {
+    if (image == null && selectedImageUrl == null) {
       AppSnackBar.warning(
         context,
         'Please select a profile picture for the $_categoryTitle',
@@ -291,9 +306,10 @@ class _CreateSubGroupScreenState extends ConsumerState<CreateSubGroupScreen> {
             widget.parentGroup.queendom ?? 'None',
             widget.parentGroup.family ?? 'None',
             '$_categoryTitle of $parentName',
-            image!,
+            image,
             selectedContacts,
             type,
+            groupProfilePicUrl: selectedImageUrl,
             livingPlace: widget.parentGroup.effectiveLivingPlace,
             priority: null,
             parentGroupId: widget.parentGroup.groupId,
@@ -564,22 +580,29 @@ class _CreateSubGroupScreenState extends ConsumerState<CreateSubGroupScreen> {
                           ),
                         ],
                       ),
-                      child: CircleAvatar(
-                        radius: 54,
-                        backgroundImage: image != null
-                            ? FileImage(image!)
-                            : null,
-                        backgroundColor: Colors.grey[850],
-                        child: image == null
-                            ? Icon(
-                                _isFuckToy
-                                    ? Icons.local_fire_department_rounded
-                                    : Icons.person_add_alt_1_rounded,
-                                size: 48,
-                                color: categoryColor,
-                              )
-                            : null,
-                      ),
+                      child: image != null
+                          ? CircleAvatar(
+                              radius: 54,
+                              backgroundImage: FileImage(image!),
+                              backgroundColor: Colors.grey[850],
+                            )
+                          : (selectedImageUrl != null
+                              ? UserAvatar(
+                                  url: selectedImageUrl,
+                                  radius: 54,
+                                  backgroundColor: Colors.grey[850],
+                                )
+                              : CircleAvatar(
+                                  radius: 54,
+                                  backgroundColor: Colors.grey[850],
+                                  child: Icon(
+                                    _isFuckToy
+                                        ? Icons.local_fire_department_rounded
+                                        : Icons.person_add_alt_1_rounded,
+                                    size: 48,
+                                    color: categoryColor,
+                                  ),
+                                )),
                     ),
                     Positioned(
                       bottom: 0,

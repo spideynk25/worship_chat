@@ -2,7 +2,9 @@ import 'package:flutter/material.dart';
 import 'package:hive_flutter/hive_flutter.dart';
 import 'package:worship_chat/colors.dart';
 import 'package:worship_chat/common/utils/app_update_service.dart';
+import 'package:worship_chat/common/utils/diagnostics_service.dart';
 import 'package:worship_chat/common/widgets/user_avatar.dart';
+import 'package:worship_chat/features/settings/screens/development_screen.dart';
 import 'package:worship_chat/features/settings/screens/display_settings_screen.dart';
 import 'package:worship_chat/features/settings/screens/home_widget_settings_screen.dart';
 import 'package:worship_chat/features/settings/screens/queendom_management_screen.dart';
@@ -129,7 +131,71 @@ class SettingsScreen extends StatelessWidget {
 
                 const SizedBox(height: 24),
 
-                // ── Section 4: App Information ───────────────────────────────
+                // ── Section 4: Development & Diagnostics ─────────────────────
+                _buildSectionTitle('DEVELOPMENT'),
+                const SizedBox(height: 10),
+                _buildSettingsCard([
+                  ValueListenableBuilder<List<DiagnosticReport>>(
+                    valueListenable: DiagnosticsService.instance.reportsNotifier,
+                    builder: (context, reports, _) {
+                      final unresolvedCount = reports
+                          .where(
+                            (r) =>
+                                !r.isResolved &&
+                                (r.kind == DiagnosticReportKind.crash ||
+                                    r.kind == DiagnosticReportKind.error),
+                          )
+                          .length;
+                      return _buildSettingsRow(
+                        icon: Icons.developer_mode_rounded,
+                        iconColor: const Color(0xFF00E5FF),
+                        title: 'Development',
+                        subtitle:
+                            'Crash reports, performance metrics & error logs',
+                        trailing: unresolvedCount > 0
+                            ? Container(
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 8,
+                                  vertical: 3,
+                                ),
+                                decoration: BoxDecoration(
+                                  color: const Color(0xFFFF4D6D)
+                                      .withValues(alpha: 0.18),
+                                  borderRadius: BorderRadius.circular(12),
+                                  border: Border.all(
+                                    color: const Color(0xFFFF4D6D)
+                                        .withValues(alpha: 0.55),
+                                  ),
+                                ),
+                                child: Text(
+                                  '$unresolvedCount',
+                                  style: const TextStyle(
+                                    color: Color(0xFFFF4D6D),
+                                    fontSize: 11,
+                                    fontWeight: FontWeight.bold,
+                                  ),
+                                ),
+                              )
+                            : null,
+                        onTap: () {
+                          Navigator.push(
+                            context,
+                            MaterialPageRoute(
+                              settings: const RouteSettings(
+                                name: DevelopmentScreen.routeName,
+                              ),
+                              builder: (_) => const DevelopmentScreen(),
+                            ),
+                          );
+                        },
+                      );
+                    },
+                  ),
+                ]),
+
+                const SizedBox(height: 24),
+
+                // ── Section 5: App Information ───────────────────────────────
                 _buildSectionTitle('ABOUT & VERSION'),
                 const SizedBox(height: 10),
                 _buildSettingsCard([

@@ -37,6 +37,46 @@ class GroupGalleryRepository {
         });
   }
 
+  /// Fetches gallery images across multiple group IDs in parallel chunks for
+  /// picker UIs, excluding videos and sorting newest-first.
+  Future<List<GroupGalleryImage>> getAllGalleryImagesForPicker(
+    List<String> groupIds, {
+    int maxPerGroup = 60,
+  }) async {
+    final allImages = <GroupGalleryImage>[];
+    for (int i = 0; i < groupIds.length; i += 8) {
+      final chunk = groupIds.sublist(
+        i,
+        i + 8 > groupIds.length ? groupIds.length : i + 8,
+      );
+      final chunkResults = await Future.wait(
+        chunk.map((id) async {
+          try {
+            final snapshot = await firestore
+                .collection('groups')
+                .doc(id)
+                .collection('gallery')
+                .orderBy('uploadedAt', descending: true)
+                .limit(maxPerGroup)
+                .get();
+            return snapshot.docs
+                .map((doc) => GroupGalleryImage.fromMap(doc.data()))
+                .where((img) => !img.isVideo && img.imageUrl.trim().isNotEmpty)
+                .toList();
+          } catch (e) {
+            log('Error fetching picker gallery for group $id: $e');
+            return const <GroupGalleryImage>[];
+          }
+        }),
+      );
+      for (final list in chunkResults) {
+        allImages.addAll(list);
+      }
+    }
+    allImages.sort((a, b) => b.uploadedAt.compareTo(a.uploadedAt));
+    return allImages;
+  }
+
   /// Fetches gallery images across multiple group IDs for multi-gallery shuffling
   Future<List<GroupGalleryImage>> getMultiGalleryImages(List<String> groupIds) async {
     final allImages = <GroupGalleryImage>[];

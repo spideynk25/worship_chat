@@ -13,6 +13,7 @@ import 'package:uuid/uuid.dart';
 import 'package:worship_chat/common/utils/active_chat_notifier.dart';
 import 'package:worship_chat/common/utils/app_capabilities.dart';
 import 'package:worship_chat/common/utils/fcm_token_manager.dart';
+import 'package:worship_chat/common/utils/notification_media_helper.dart';
 import 'package:worship_chat/common/utils/wish_helper.dart';
 import 'package:worship_chat/features/chat/screens/one_to_one_chat_screen.dart';
 import 'package:worship_chat/features/group/screens/group_chat_screen.dart';
@@ -1236,21 +1237,68 @@ class FirebaseNotificationService {
       final senderName = (message.data['name'] ?? '').toString().trim();
       final isGroup = (groupId != null && groupId.isNotEmpty);
 
+      final isWish = (message.data['isWish'] == 'true') ||
+          WishHelper.isWish(text: safeBody) ||
+          WishHelper.isWish(text: rawBody?.toString());
+
+      final notificationMessageType =
+          message.data['messageType']?.toString().trim();
+      final rawFileData = message.data['fileMessageData']?.toString();
+      final rawStatusUrl = message.data['statusUrl']?.toString();
+      final hasPhotoPreview = !isWish &&
+          NotificationMediaHelper.supportsPhotoPreview(
+            messageType: notificationMessageType,
+            notificationType: msgType,
+            rawFileData: rawFileData,
+            statusUrl: rawStatusUrl,
+          );
+      final mediaPreviewUrl = hasPhotoPreview
+          ? (NotificationMediaHelper.extractMediaUrl(rawFileData) ??
+              NotificationMediaHelper.normalizeHttpUrl(rawStatusUrl))
+          : null;
+      final isGif = (notificationMessageType ?? '').toLowerCase() == 'gif';
+
+      final resolvedMeta = await Future.wait<dynamic>([
+        _getPersistedNotificationMessages(chatId),
+        SharedPreferences.getInstance(),
+        NotificationMediaHelper.resolveUserAvatarUrl(
+          directProfilePic: message.data['profilePic']?.toString(),
+          uid: senderUid,
+        ),
+        isGroup
+            ? NotificationMediaHelper.resolveGroupAvatarUrl(
+                directGroupPic: message.data['groupPic']?.toString(),
+                groupId: groupId,
+              )
+            : Future<String?>.value(null),
+      ]);
+
+      final existingMessages =
+          List<Map<String, dynamic>>.from(resolvedMeta[0] as List);
+      final prefs = resolvedMeta[1] as SharedPreferences;
+      final resolvedSenderPicUrl = resolvedMeta[2] as String?;
+      final resolvedGroupPicUrl = resolvedMeta[3] as String?;
+
+      final primaryAvatarUrl = isGroup
+          ? (resolvedGroupPicUrl ?? resolvedSenderPicUrl)
+          : resolvedSenderPicUrl;
+
       // 3. Append new message to existing conversation thread in SharedPreferences
       // Persisted so that messages from the same conversation tile append sequentially!
-      final existingMessages = await _getPersistedNotificationMessages(chatId);
       final isDuplicate = existingMessages.isNotEmpty &&
           existingMessages.last['text'] == safeBody &&
           (existingMessages.last['senderKey'] == (senderUid ?? chatId)) &&
           (DateTime.now().millisecondsSinceEpoch -
                   ((existingMessages.last['timestamp'] as int?) ?? 0))
-              .abs() < 2500;
+              .abs() <
+              2500;
       if (!isDuplicate) {
         existingMessages.add({
           'text': safeBody,
           'timestamp': DateTime.now().millisecondsSinceEpoch,
           'senderName': senderName.isNotEmpty ? senderName : safeTitle,
           'senderKey': senderUid ?? chatId,
+          if (resolvedSenderPicUrl != null) 'senderPic': resolvedSenderPicUrl,
         });
       }
       List<Map<String, dynamic>> trimmedMessages = existingMessages;
@@ -1261,22 +1309,79 @@ class FirebaseNotificationService {
 
       final notifId = chatId.hashCode.abs() % 2147483647;
 
-      final prefs = await SharedPreferences.getInstance();
       final currentUserId = FirebaseAuth.instance.currentUser?.uid ??
           prefs.getString('cached_current_user_id') ??
           'me';
       final currentUserName =
           prefs.getString('cached_current_user_name') ?? 'Me';
+      final currentUserPicUrl = NotificationMediaHelper.normalizeHttpUrl(
+        prefs.getString('cached_current_user_pic'),
+      );
+
+      final assets = await NotificationMediaHelper.fetchNotificationAssets(
+        primaryAvatarUrl: primaryAvatarUrl,
+        senderAvatarUrl: resolvedSenderPicUrl,
+        mediaPreviewUrl: mediaPreviewUrl,
+        isGif: isGif,
+      );
+
+      final Map<String, BitmapFilePathAndroidIcon> avatarIconByUrl = {};
+      if (resolvedSenderPicUrl != null && assets.senderAvatarFile != null) {
+        avatarIconByUrl[resolvedSenderPicUrl] =
+            BitmapFilePathAndroidIcon(assets.senderAvatarFile!.path);
+      }
+
+      // Resolve cached circular avatars for any prior group participants or me.
+      final extraAvatarUrls = <String>{};
+      if (currentUserPicUrl != null &&
+          !avatarIconByUrl.containsKey(currentUserPicUrl)) {
+        extraAvatarUrls.add(currentUserPicUrl);
+      }
+      for (final m in trimmedMessages.reversed) {
+        final sPic = NotificationMediaHelper.normalizeHttpUrl(
+          m['senderPic']?.toString(),
+        );
+        if (sPic != null && !avatarIconByUrl.containsKey(sPic)) {
+          extraAvatarUrls.add(sPic);
+          if (extraAvatarUrls.length >= 4) break;
+        }
+      }
+      if (extraAvatarUrls.isNotEmpty) {
+        final extraList = extraAvatarUrls.toList();
+        final extraFiles = await Future.wait(
+          extraList.map(
+            (u) => NotificationMediaHelper.downloadCircularAvatar(url: u),
+          ),
+        );
+        for (int i = 0; i < extraList.length; i++) {
+          final f = extraFiles[i];
+          if (f != null) {
+            avatarIconByUrl[extraList[i]] =
+                BitmapFilePathAndroidIcon(f.path);
+          }
+        }
+      }
 
       final mePerson = Person(
         name: currentUserName,
         key: currentUserId,
+        icon: currentUserPicUrl != null
+            ? avatarIconByUrl[currentUserPicUrl]
+            : null,
       );
 
       final styleMessages = trimmedMessages.map((m) {
         final sName = m['senderName'] as String?;
         final sKey = m['senderKey'] as String?;
+        final sPic = NotificationMediaHelper.normalizeHttpUrl(
+          m['senderPic']?.toString(),
+        );
         final isMe = (sKey != null && sKey == currentUserId) || sName == 'Me';
+        final personIcon = sPic != null
+            ? avatarIconByUrl[sPic]
+            : (resolvedSenderPicUrl != null
+                ? avatarIconByUrl[resolvedSenderPicUrl]
+                : null);
         return Message(
           m['text'] as String? ?? '',
           DateTime.fromMillisecondsSinceEpoch(
@@ -1287,6 +1392,7 @@ class FirebaseNotificationService {
               : Person(
                   name: (sName != null && sName.isNotEmpty) ? sName : safeTitle,
                   key: sKey ?? chatId,
+                  icon: personIcon,
                 ),
         );
       }).toList();
@@ -1298,9 +1404,21 @@ class FirebaseNotificationService {
         messages: styleMessages,
       );
 
-      final isWish = (message.data['isWish'] == 'true') ||
-          WishHelper.isWish(text: safeBody) ||
-          WishHelper.isWish(text: rawBody?.toString());
+      final AndroidBitmap<Object>? largeIconBitmap =
+          assets.primaryAvatarFile != null
+              ? FilePathAndroidBitmap(assets.primaryAvatarFile!.path)
+              : null;
+
+      final BigPictureStyleInformation? bigPictureStyle =
+          (!isWish && assets.mediaPreviewFile != null)
+              ? BigPictureStyleInformation(
+                  FilePathAndroidBitmap(assets.mediaPreviewFile!.path),
+                  largeIcon: largeIconBitmap,
+                  contentTitle: safeTitle,
+                  summaryText: safeBody,
+                  hideExpandedLargeIcon: false,
+                )
+              : null;
 
       final channelId = isWish
           ? _wishNotificationChannel.id
@@ -1318,6 +1436,10 @@ class FirebaseNotificationService {
         stylizedWishBody,
         contentTitle: safeTitle,
       );
+
+      final StyleInformation resolvedStyle = isWish
+          ? wishBigTextStyle
+          : (bigPictureStyle ?? messagingStyle);
 
       final standardActions = <AndroidNotificationAction>[
         const AndroidNotificationAction(
@@ -1361,8 +1483,9 @@ class FirebaseNotificationService {
         ledOffMs: isWish ? 500 : null,
         color: isWish ? const Color(0xFFD4AF37) : null, // Metallic Royal Gold
         icon: '@mipmap/launcher_icon',
+        largeIcon: largeIconBitmap,
         tag: chatId,
-        styleInformation: isWish ? wishBigTextStyle : messagingStyle,
+        styleInformation: resolvedStyle,
         visibility: NotificationVisibility.public,
         category: isWish
             ? AndroidNotificationCategory.event
@@ -1370,13 +1493,23 @@ class FirebaseNotificationService {
         actions: actions,
       );
 
+      final List<DarwinNotificationAttachment> darwinAttachments = [
+        if (!isWish && assets.mediaPreviewFile != null)
+          DarwinNotificationAttachment(assets.mediaPreviewFile!.path)
+        else if (assets.primaryAvatarFile != null)
+          DarwinNotificationAttachment(assets.primaryAvatarFile!.path),
+      ];
+
+      final darwinDetails = DarwinNotificationDetails(
+        presentSound: true,
+        presentBadge: true,
+        presentAlert: true,
+        attachments: darwinAttachments,
+      );
+
       final details = NotificationDetails(
         android: androidDetails,
-        iOS: const DarwinNotificationDetails(
-          presentSound: true,
-          presentBadge: true,
-          presentAlert: true,
-        ),
+        iOS: darwinDetails,
       );
 
       // Encode the entire FCM data map as JSON so action and tap handlers can read it
@@ -1398,7 +1531,10 @@ class FirebaseNotificationService {
           details,
           payload: payloadJson,
         );
-        log('✅ Notification posted (${isWish ? "WishStyle" : "MessagingStyle"}) for $chatId (id: $notifId)');
+        final activeStyleName = isWish
+            ? 'WishStyle'
+            : (bigPictureStyle != null ? 'BigPictureStyle' : 'MessagingStyle');
+        log('✅ Notification posted ($activeStyleName) for $chatId (id: $notifId)');
       } catch (styleErr) {
         log('⚠️ Notification style failed, falling back to BigTextStyle: $styleErr');
         final fallbackAndroidDetails = AndroidNotificationDetails(
@@ -1414,6 +1550,7 @@ class FirebaseNotificationService {
           ledColor: isWish ? const Color(0xFFFFD700) : null,
           color: isWish ? const Color(0xFFD4AF37) : null,
           icon: '@mipmap/launcher_icon',
+          largeIcon: largeIconBitmap,
           tag: chatId,
           styleInformation: BigTextStyleInformation(
             isWish ? WishHelper.toRoyalScript(safeBody) : safeBody,
@@ -1431,10 +1568,17 @@ class FirebaseNotificationService {
           isWish ? WishHelper.toRoyalScript(safeBody) : safeBody,
           NotificationDetails(
             android: fallbackAndroidDetails,
-            iOS: const DarwinNotificationDetails(
+            iOS: DarwinNotificationDetails(
               presentSound: true,
               presentBadge: true,
               presentAlert: true,
+              attachments: assets.primaryAvatarFile != null
+                  ? [
+                      DarwinNotificationAttachment(
+                        assets.primaryAvatarFile!.path,
+                      ),
+                    ]
+                  : const [],
             ),
           ),
           payload: payloadJson,
@@ -2157,6 +2301,9 @@ class FirebaseNotificationService {
 
         // 2. Fetch latest group metadata and sync to Firestore
         List<String> memberUids = [];
+        String? groupPic = NotificationMediaHelper.normalizeHttpUrl(
+          data['groupPic']?.toString(),
+        );
         try {
           final groupDoc = await FirebaseFirestore.instance
               .collection('groups')
@@ -2165,6 +2312,9 @@ class FirebaseNotificationService {
           if (groupDoc.exists && groupDoc.data() != null) {
             final gData = groupDoc.data()!;
             memberUids = List<String>.from(gData['membersUid'] ?? []);
+            groupPic ??= NotificationMediaHelper.normalizeHttpUrl(
+              gData['groupPic']?.toString(),
+            );
           }
         } catch (_) {}
 
@@ -2209,6 +2359,10 @@ class FirebaseNotificationService {
               'type': 'group',
               'groupId': groupId,
               'groupName': groupName,
+              if (groupPic != null && groupPic.isNotEmpty)
+                'groupPic': groupPic,
+              if (senderProfilePic.isNotEmpty)
+                'profilePic': senderProfilePic,
               'tag': groupId,
               'name': senderName,
               'senderId': currentUserId,

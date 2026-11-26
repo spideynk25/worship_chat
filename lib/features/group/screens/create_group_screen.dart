@@ -9,6 +9,8 @@ import 'package:image/image.dart' as img;
 
 import 'package:worship_chat/colors.dart';
 import 'package:worship_chat/common/utils/utils.dart';
+import 'package:worship_chat/common/widgets/app_media_picker_sheet.dart';
+import 'package:worship_chat/common/widgets/user_avatar.dart';
 import 'package:worship_chat/features/group/controller/group_controller.dart';
 import 'package:worship_chat/features/group/utils/group_template_helper.dart';
 import 'package:worship_chat/features/group/utils/queendom_emblem_helper.dart';
@@ -42,6 +44,7 @@ class _CreateGroupScreenState extends ConsumerState<CreateGroupScreen> {
   bool _isLoadingPriorities = false;
 
   File? image;
+  String? selectedImageUrl;
 
   bool get _requiresPriority =>
       selectedPosition != 'None' &&
@@ -50,23 +53,33 @@ class _CreateGroupScreenState extends ConsumerState<CreateGroupScreen> {
   bool get _hasOtherFamilies =>
       GroupTemplateHelper.categoryHasOtherFamilies(selectedPosition);
 
-  /// Pick image then crop it before setting
-  void selectImage() async {
-    final picked = await pickImageFromGallery(context);
-    if (picked == null) return;
-
-    // open crop screen
-    await Navigator.of(context).push(
-      MaterialPageRoute(
-        builder: (context) => _ImageCropScreen(
-          file: picked,
-          onCropped: (croppedFile) {
-            setState(() {
-              image = croppedFile;
-            });
-          },
-        ),
-      ),
+  /// Pick image from device gallery/camera, App Gallery, or Bookmarks, then crop if local.
+  void selectImage() {
+    showProfilePicSourceSheet(
+      context: context,
+      onLocalFileSelected: (picked) async {
+        if (!mounted) return;
+        await Navigator.of(context).push(
+          MaterialPageRoute(
+            builder: (context) => _ImageCropScreen(
+              file: picked,
+              onCropped: (croppedFile) {
+                setState(() {
+                  image = croppedFile;
+                  selectedImageUrl = null;
+                });
+              },
+            ),
+          ),
+        );
+      },
+      onRemoteUrlSelected: (url) async {
+        if (!mounted) return;
+        setState(() {
+          image = null;
+          selectedImageUrl = url;
+        });
+      },
     );
   }
 
@@ -138,7 +151,7 @@ class _CreateGroupScreenState extends ConsumerState<CreateGroupScreen> {
       return;
     }
 
-    if (image == null) {
+    if (image == null && selectedImageUrl == null) {
       AppSnackBar.warning(context, 'Please select a group profile picture');
       return;
     }
@@ -176,13 +189,14 @@ class _CreateGroupScreenState extends ConsumerState<CreateGroupScreen> {
           selectedQueendom,
           selectedFamily,
           selectedPosition,
-          image!,
+          image,
           ref.read(selectedGroupContacts),
           selectedQueendom == 'Queen Pooja'
               ? 'queenPooja'
               : selectedQueendom == 'Queen Rashmika'
                   ? 'queenRashmika'
                   : 'others',
+          groupProfilePicUrl: selectedImageUrl,
           livingPlace: livingPlace.isNotEmpty ? livingPlace : null,
           priority: priority,
         );
@@ -216,15 +230,21 @@ class _CreateGroupScreenState extends ConsumerState<CreateGroupScreen> {
               child: Stack(
                 children: [
                   image == null
-                      ? const CircleAvatar(
-                          backgroundColor: greyColor,
-                          radius: 64,
-                          child: Icon(
-                            Icons.person,
-                            color: blackColor,
-                            size: 70,
-                          ),
-                        )
+                      ? (selectedImageUrl != null
+                          ? UserAvatar(
+                              url: selectedImageUrl,
+                              radius: 64,
+                              backgroundColor: greyColor,
+                            )
+                          : const CircleAvatar(
+                              backgroundColor: greyColor,
+                              radius: 64,
+                              child: Icon(
+                                Icons.person,
+                                color: blackColor,
+                                size: 70,
+                              ),
+                            ))
                       : CircleAvatar(
                           radius: 64,
                           backgroundImage: FileImage(image!),

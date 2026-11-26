@@ -53,12 +53,11 @@ class _ShareUploadScreenState extends ConsumerState<ShareUploadScreen>
   late TabController _tabController;
 
   // Cached streams to prevent stream recreation and UI rebuilding on progress updates
-  late final Stream<List<GroupModel>> _myGroupsStream;
   late final Stream<List<GroupModel>> _poojaGroupsStream;
   late final Stream<List<GroupModel>> _rashmikaGroupsStream;
   late final Stream<List<ChatContact>> _directContactsStream;
 
-  // Tab indices: 0 = Direct Message, 1 = My Groups, 2 = Queen Pooja, 3 = Queen Rashmika
+  // Tab indices: 0 = Direct Message, 1 = Queen Pooja, 2 = Queen Rashmika
   static const int _kDirectTabIndex = 0;
 
   @override
@@ -76,13 +75,12 @@ class _ShareUploadScreenState extends ConsumerState<ShareUploadScreen>
     _target = _ShareTarget.directChat;
 
     // Initialize stable streams once in initState so setState() doesn't recreate them
-    _myGroupsStream = ref.read(groupControllerProvider).chatGroups();
     _poojaGroupsStream = ref.read(groupControllerProvider).getQueenPoojaStream();
     _rashmikaGroupsStream =
         ref.read(groupControllerProvider).getQueenRashmikaStream();
     _directContactsStream = ref.read(chatControllerProvider).chatContacts();
 
-    _tabController = TabController(length: 4, vsync: this);
+    _tabController = TabController(length: 3, vsync: this);
     _tabController.addListener(() {
       if (_tabController.indexIsChanging) return;
       setState(() {
@@ -574,21 +572,25 @@ class _ShareUploadScreenState extends ConsumerState<ShareUploadScreen>
             children: [
               const Icon(Icons.auto_awesome, color: Color(0xFFFFD700), size: 18),
               const SizedBox(width: 8),
-              ShaderMask(
-                shaderCallback: (bounds) => const LinearGradient(
-                  colors: [
-                    Color(0xFFFFDF7D),
-                    Color(0xFFFFB300),
-                    Color(0xFFFFA000),
-                  ],
-                ).createShader(bounds),
-                child: const Text(
-                  'QUEENDOM SHARE',
-                  style: TextStyle(
-                    color: Colors.white,
-                    fontWeight: FontWeight.w900,
-                    letterSpacing: 1.5,
-                    fontSize: 15,
+              Flexible(
+                child: ShaderMask(
+                  shaderCallback: (bounds) => const LinearGradient(
+                    colors: [
+                      Color(0xFFFFDF7D),
+                      Color(0xFFFFB300),
+                      Color(0xFFFFA000),
+                    ],
+                  ).createShader(bounds),
+                  child: const Text(
+                    'QUEENDOM SHARE',
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                      color: Colors.white,
+                      fontWeight: FontWeight.w900,
+                      letterSpacing: 1.5,
+                      fontSize: 15,
+                    ),
                   ),
                 ),
               ),
@@ -608,24 +610,52 @@ class _ShareUploadScreenState extends ConsumerState<ShareUploadScreen>
                 controller: _tabController,
                 indicatorColor: const Color(0xFFFFD700),
                 indicatorWeight: 3,
+                indicatorSize: TabBarIndicatorSize.tab,
                 labelColor: const Color(0xFFFFD700),
                 unselectedLabelColor: Colors.grey[400],
                 labelStyle: const TextStyle(
                   fontWeight: FontWeight.bold,
                   fontSize: 13,
-                  letterSpacing: 0.3,
+                  letterSpacing: 0.2,
                 ),
                 unselectedLabelStyle: const TextStyle(
                   fontWeight: FontWeight.normal,
                   fontSize: 13,
                 ),
-                isScrollable: true,
-                tabAlignment: TabAlignment.start,
+                isScrollable: false,
+                tabAlignment: TabAlignment.fill,
+                labelPadding: const EdgeInsets.symmetric(horizontal: 6),
                 tabs: const [
-                  Tab(text: 'Direct Message'),
-                  Tab(text: 'My Groups'),
-                  Tab(text: 'Queen Pooja'),
-                  Tab(text: 'Queen Rashmika'),
+                  Tab(
+                    child: FittedBox(
+                      fit: BoxFit.scaleDown,
+                      child: Text(
+                        'Direct Message',
+                        maxLines: 1,
+                        softWrap: false,
+                      ),
+                    ),
+                  ),
+                  Tab(
+                    child: FittedBox(
+                      fit: BoxFit.scaleDown,
+                      child: Text(
+                        'Queen Pooja',
+                        maxLines: 1,
+                        softWrap: false,
+                      ),
+                    ),
+                  ),
+                  Tab(
+                    child: FittedBox(
+                      fit: BoxFit.scaleDown,
+                      child: Text(
+                        'Queen Rashmika',
+                        maxLines: 1,
+                        softWrap: false,
+                      ),
+                    ),
+                  ),
                 ],
               ),
             ),
@@ -672,15 +702,7 @@ class _ShareUploadScreenState extends ConsumerState<ShareUploadScreen>
                       onSelect: _selectContact,
                       emptyLabel: 'No conversations yet',
                     ),
-                    // My Groups (Tab 1)
-                    _GroupList(
-                      stream: _myGroupsStream,
-                      selectedGroupIds: _selectedGroups.keys.toSet(),
-                      searchQuery: _searchQuery,
-                      onToggleGroup: _toggleGroup,
-                      emptyLabel: 'No groups available in Queendom',
-                    ),
-                    // Queen Pooja (Tab 2)
+                    // Queen Pooja (Tab 1)
                     _GroupList(
                       stream: _poojaGroupsStream,
                       selectedGroupIds: _selectedGroups.keys.toSet(),
@@ -688,7 +710,7 @@ class _ShareUploadScreenState extends ConsumerState<ShareUploadScreen>
                       onToggleGroup: _toggleGroup,
                       emptyLabel: 'No Queen Pooja groups available',
                     ),
-                    // Queen Rashmika (Tab 3)
+                    // Queen Rashmika (Tab 2)
                     _GroupList(
                       stream: _rashmikaGroupsStream,
                       selectedGroupIds: _selectedGroups.keys.toSet(),
@@ -757,11 +779,14 @@ class _ShareUploadScreenState extends ConsumerState<ShareUploadScreen>
                                 ),
                               ),
                               const SizedBox(width: 12),
-                              Text(
-                                _submitLabel,
-                                style: const TextStyle(
-                                  fontSize: 15,
-                                  fontWeight: FontWeight.bold,
+                              Flexible(
+                                child: Text(
+                                  _submitLabel,
+                                  style: const TextStyle(
+                                    fontSize: 15,
+                                    fontWeight: FontWeight.bold,
+                                  ),
+                                  overflow: TextOverflow.ellipsis,
                                 ),
                               ),
                             ],
@@ -916,9 +941,13 @@ class _ShareUploadScreenState extends ConsumerState<ShareUploadScreen>
                         ),
                       ),
                       const SizedBox(width: 8),
-                      Text(
-                        '${_payload.files.length} file${_payload.files.length == 1 ? '' : 's'}',
-                        style: TextStyle(color: Colors.grey[400], fontSize: 12),
+                      Flexible(
+                        child: Text(
+                          '${_payload.files.length} file${_payload.files.length == 1 ? '' : 's'}',
+                          style: TextStyle(color: Colors.grey[400], fontSize: 12),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                        ),
                       ),
                     ],
                   ),
@@ -943,8 +972,8 @@ class _ShareUploadScreenState extends ConsumerState<ShareUploadScreen>
 
     // Photo carousel preview
     return Container(
-      height: 96,
-      margin: const EdgeInsets.only(top: 8, bottom: 4),
+      height: 86,
+      margin: const EdgeInsets.only(top: 6, bottom: 2),
       child: ListView.builder(
         scrollDirection: Axis.horizontal,
         padding: const EdgeInsets.symmetric(horizontal: 16),
@@ -964,9 +993,20 @@ class _ShareUploadScreenState extends ConsumerState<ShareUploadScreen>
                 borderRadius: BorderRadius.circular(13),
                 child: Image.file(
                   _payload.files[i],
-                  width: 80,
-                  height: 80,
+                  width: 74,
+                  height: 74,
                   fit: BoxFit.cover,
+                  errorBuilder: (_, __, ___) => Container(
+                    width: 74,
+                    height: 74,
+                    color: const Color(0xFF1E1A2E),
+                    alignment: Alignment.center,
+                    child: Icon(
+                      Icons.photo_rounded,
+                      color: Colors.white.withValues(alpha: 0.45),
+                      size: 26,
+                    ),
+                  ),
                 ),
               ),
             ),
@@ -1115,54 +1155,107 @@ class _ShareUploadScreenState extends ConsumerState<ShareUploadScreen>
     );
   }
 
-  Widget _buildTargetToggleBar() {
+  Widget _buildPayloadCountBadge(String text) {
     return Container(
-      margin: const EdgeInsets.fromLTRB(16, 6, 16, 6),
-      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+      padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 4),
+      decoration: BoxDecoration(
+        color: Colors.white.withValues(alpha: 0.08),
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: Text(
+        text,
+        maxLines: 1,
+        softWrap: false,
+        style: const TextStyle(
+          color: Color(0xFFFFD700),
+          fontSize: 11,
+          fontWeight: FontWeight.bold,
+        ),
+      ),
+    );
+  }
+
+  Widget _buildTargetToggleBar() {
+    final photoCount = _payload.files.length;
+    final countLabel = '$photoCount photo${photoCount == 1 ? '' : 's'}';
+    final galleryChip = _TargetChip(
+      label: 'Gallery',
+      icon: Icons.photo_library_rounded,
+      selected: _target == _ShareTarget.gallery,
+      color: const Color(0xFFFFD700),
+      onTap: () => setState(() => _target = _ShareTarget.gallery),
+    );
+    final chatChip = _TargetChip(
+      label: 'Chat',
+      icon: Icons.chat_bubble_rounded,
+      selected: _target == _ShareTarget.groupChat,
+      color: const Color(0xFF9D4EDD),
+      onTap: () => setState(() => _target = _ShareTarget.groupChat),
+    );
+
+    return Container(
+      margin: const EdgeInsets.fromLTRB(16, 4, 16, 4),
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
       decoration: BoxDecoration(
         color: const Color(0xFF141122),
         borderRadius: BorderRadius.circular(14),
         border: Border.all(color: Colors.white.withValues(alpha: 0.07)),
       ),
-      child: Row(
-        children: [
-          Text(
-            'Share Destination:',
-            style: TextStyle(color: Colors.grey[400], fontSize: 12),
-          ),
-          const SizedBox(width: 12),
-          _TargetChip(
-            label: 'Gallery',
-            icon: Icons.photo_library_rounded,
-            selected: _target == _ShareTarget.gallery,
-            color: const Color(0xFFFFD700),
-            onTap: () => setState(() => _target = _ShareTarget.gallery),
-          ),
-          const SizedBox(width: 8),
-          _TargetChip(
-            label: 'Chat',
-            icon: Icons.chat_bubble_rounded,
-            selected: _target == _ShareTarget.groupChat,
-            color: const Color(0xFF9D4EDD),
-            onTap: () => setState(() => _target = _ShareTarget.groupChat),
-          ),
-          const Spacer(),
-          Container(
-            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-            decoration: BoxDecoration(
-              color: Colors.white.withValues(alpha: 0.08),
-              borderRadius: BorderRadius.circular(8),
-            ),
-            child: Text(
-              '${_payload.files.length} photo${_payload.files.length == 1 ? '' : 's'}',
-              style: const TextStyle(
-                color: Color(0xFFFFD700),
-                fontSize: 11,
-                fontWeight: FontWeight.bold,
+      child: LayoutBuilder(
+        builder: (context, constraints) {
+          final textScale = MediaQuery.textScalerOf(context).scale(1.0);
+          final fitsSingleRow = constraints.maxWidth >= (348 * textScale);
+
+          if (fitsSingleRow) {
+            return Row(
+              children: [
+                Text(
+                  'Share Destination:',
+                  style: TextStyle(color: Colors.grey[400], fontSize: 12),
+                ),
+                const SizedBox(width: 10),
+                galleryChip,
+                const SizedBox(width: 8),
+                chatChip,
+                const Spacer(),
+                _buildPayloadCountBadge(countLabel),
+              ],
+            );
+          }
+
+          return Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Row(
+                children: [
+                  Expanded(
+                    child: Text(
+                      'Share Destination:',
+                      style: TextStyle(
+                        color: Colors.grey[400],
+                        fontSize: 12,
+                        fontWeight: FontWeight.w500,
+                      ),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  _buildPayloadCountBadge(countLabel),
+                ],
               ),
-            ),
-          ),
-        ],
+              const SizedBox(height: 8),
+              Row(
+                children: [
+                  Expanded(child: galleryChip),
+                  const SizedBox(width: 10),
+                  Expanded(child: chatChip),
+                ],
+              ),
+            ],
+          );
+        },
       ),
     );
   }
@@ -1184,28 +1277,18 @@ class _ShareUploadScreenState extends ConsumerState<ShareUploadScreen>
             color: const Color(0xFFC77DFF),
           ),
           const SizedBox(width: 8),
-          Text(
-            _isDirectTab
-                ? 'Select a contact for direct message'
-                : 'Select a group to send message',
-            style: TextStyle(color: Colors.grey[300], fontSize: 12),
-          ),
-          const Spacer(),
-          Container(
-            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-            decoration: BoxDecoration(
-              color: Colors.white.withValues(alpha: 0.08),
-              borderRadius: BorderRadius.circular(8),
-            ),
+          Expanded(
             child: Text(
-              _payload.displayTitle,
-              style: const TextStyle(
-                color: Color(0xFFFFD700),
-                fontSize: 11,
-                fontWeight: FontWeight.bold,
-              ),
+              _isDirectTab
+                  ? 'Select a contact for direct message'
+                  : 'Select a group to send message',
+              style: TextStyle(color: Colors.grey[300], fontSize: 12),
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
             ),
           ),
+          const SizedBox(width: 8),
+          _buildPayloadCountBadge(_payload.displayTitle),
         ],
       ),
     );
@@ -2079,7 +2162,7 @@ class _TargetChip extends StatelessWidget {
       onTap: onTap,
       child: AnimatedContainer(
         duration: const Duration(milliseconds: 200),
-        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
         decoration: BoxDecoration(
           color: selected
               ? color.withValues(alpha: 0.18)
@@ -2091,16 +2174,21 @@ class _TargetChip extends StatelessWidget {
           ),
         ),
         child: Row(
+          mainAxisAlignment: MainAxisAlignment.center,
           mainAxisSize: MainAxisSize.min,
           children: [
-            Icon(icon, size: 14, color: selected ? color : Colors.grey[400]),
+            Icon(icon, size: 15, color: selected ? color : Colors.grey[400]),
             const SizedBox(width: 6),
-            Text(
-              label,
-              style: TextStyle(
-                color: selected ? color : Colors.grey[400],
-                fontSize: 12,
-                fontWeight: selected ? FontWeight.bold : FontWeight.normal,
+            Flexible(
+              child: Text(
+                label,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(
+                  color: selected ? color : Colors.grey[400],
+                  fontSize: 12.5,
+                  fontWeight: selected ? FontWeight.bold : FontWeight.normal,
+                ),
               ),
             ),
           ],

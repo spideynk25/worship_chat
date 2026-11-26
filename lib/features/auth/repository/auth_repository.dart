@@ -10,6 +10,7 @@ import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:hive_flutter/adapters.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:worship_chat/common/utils/fcm_token_manager.dart';
 import 'package:worship_chat/common/utils/app_capabilities.dart';
 import 'package:worship_chat/common/utils/utils.dart';
@@ -30,9 +31,24 @@ class AuthRepository {
   final FirebaseFirestore firestore;
   AuthRepository({required this.auth, required this.firestore});
 
+  String? _normalizeHttpsUrl(String? raw) {
+    final trimmed = raw?.trim();
+    if (trimmed == null || trimmed.isEmpty) return null;
+    if (trimmed.startsWith('http://')) {
+      return trimmed.replaceFirst('http://', 'https://');
+    }
+    return trimmed;
+  }
+
   Future<void> _saveUserToHive(UserModel user) async {
-    final userBox = Hive.box<UserModel>('userBox');
-    await userBox.put('currentUser', user);
+    if (Hive.isBoxOpen('userBox')) {
+      final userBox = Hive.box<UserModel>('userBox');
+      await userBox.put('currentUser', user);
+    }
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString('cached_current_user_pic', user.profilePic ?? '');
+    } catch (_) {}
   }
 
   Future<UserModel?> getCurrentUserData() async {
@@ -252,15 +268,16 @@ class AuthRepository {
     required String name,
     required File? profilePic,
     String? userName, // Added userName parameter
+    String? profilePicUrlOverride,
     required Ref ref,
-    required BuildContext context,
+    required BuildContext? context,
     bool navigateHomeOnComplete = true,
     bool removeProfilePic = false,
   }) async {
     try {
       final currentUserData = auth.currentUser;
       if (currentUserData == null) {
-        if (context.mounted) {
+        if (context != null && context.mounted) {
           AppSnackBar.error(context, 'Not signed in. Please log in again.');
         }
         return false;
@@ -270,7 +287,7 @@ class AuthRepository {
       final cleanUserName = userName?.trim();
 
       if (cleanName.isEmpty) {
-        if (context.mounted) {
+        if (context != null && context.mounted) {
           AppSnackBar.warning(context, 'Display name cannot be empty.');
         }
         return false;
@@ -279,13 +296,13 @@ class AuthRepository {
       // Validate username format & uniqueness BEFORE uploading any new photo.
       if (cleanUserName != null) {
         if (cleanUserName.isEmpty) {
-          if (context.mounted) {
+          if (context != null && context.mounted) {
             AppSnackBar.warning(context, 'Username cannot be empty.');
           }
           return false;
         }
         if (RegExp(r'\s').hasMatch(cleanUserName)) {
-          if (context.mounted) {
+          if (context != null && context.mounted) {
             AppSnackBar.warning(context, 'Username cannot contain spaces.');
           }
           return false;
@@ -297,7 +314,7 @@ class AuthRepository {
               .get();
           if (usernameQuery.docs.isNotEmpty &&
               usernameQuery.docs.first.id != currentUserData.uid) {
-            if (context.mounted) {
+            if (context != null && context.mounted) {
               AppSnackBar.error(
                 context,
                 'Username is already taken. Please choose another.',
@@ -312,7 +329,7 @@ class AuthRepository {
       if (!removeProfilePic && profilePic != null) {
         final uploadedUrl = await uploadImageToCloudinary(profilePic);
         if (uploadedUrl == null || uploadedUrl.isEmpty) {
-          if (context.mounted) {
+          if (context != null && context.mounted) {
             AppSnackBar.error(
               context,
               'Failed to upload profile photo. Please try again.',
@@ -321,9 +338,13 @@ class AuthRepository {
           return false;
         }
         photoUrl = uploadedUrl;
+      } else if (!removeProfilePic &&
+          profilePicUrlOverride != null &&
+          profilePicUrlOverride.trim().isNotEmpty) {
+        photoUrl = _normalizeHttpsUrl(profilePicUrlOverride);
       }
-      if (photoUrl != null && photoUrl.startsWith('http://')) {
-        photoUrl = photoUrl.replaceFirst('http://', 'https://');
+      if (photoUrl != null && photoUrl.isNotEmpty) {
+        photoUrl = _normalizeHttpsUrl(photoUrl);
       }
 
       await currentUserData.updateProfile(
@@ -332,8 +353,11 @@ class AuthRepository {
       );
 
       // Preserve existing user fields like fcmToken and groupId
-      final cachedUser = Hive.box<UserModel>('userBox').get('currentUser');
-      final currentCache = cachedUser?.uid == currentUserData.uid ? cachedUser : null;
+      final cachedUser = Hive.isBoxOpen('userBox')
+          ? Hive.box<UserModel>('userBox').get('currentUser')
+          : null;
+      final currentCache =
+          cachedUser?.uid == currentUserData.uid ? cachedUser : null;
       String existingFcm = currentCache?.fcmToken ?? "";
       List<String> existingGroup = currentCache?.groupId ?? [];
       bool existingOnline = currentCache?.isOnline ?? false;
@@ -426,7 +450,7 @@ class AuthRepository {
         log('⚠️ Could not batch update bookmarks on profile pic change: $e');
       }
 
-      if (navigateHomeOnComplete && context.mounted) {
+      if (navigateHomeOnComplete && context != null && context.mounted) {
         Navigator.pushAndRemoveUntil(
           context,
           MaterialPageRoute(builder: (context) => const HomeScreen()),
@@ -436,11 +460,78 @@ class AuthRepository {
       return true;
     } catch (e) {
       log("Error saving user data: $e");
-      if (context.mounted) {
+      if (context != null && context.mounted) {
         AppSnackBar.error(context, e.toString());
       }
       return false;
     }
+  }
+
+  /// Updates only the current user's profile picture from either a local/cropped
+  /// [imageFile] (uploads to Cloudinary) or an already-hosted [imageUrl] (applies directly).
+  Future<bool> updateCurrentUserProfilePic({
+    required Ref ref,
+    BuildContext? context,
+    File? imageFile,
+    String? imageUrl,
+  }) async {
+    if (imageFile == null && (imageUrl == null || imageUrl.trim().isEmpty)) {
+      return false;
+    }
+
+    final currentUserData = auth.currentUser;
+    if (currentUserData == null) {
+      if (context != null && context.mounted) {
+        AppSnackBar.error(context, 'Not signed in. Please log in again.');
+      }
+      return false;
+    }
+
+    UserModel? cachedUser = Hive.isBoxOpen('userBox')
+        ? Hive.box<UserModel>('userBox').get('currentUser')
+        : null;
+    if (cachedUser?.uid != currentUserData.uid) {
+      cachedUser = null;
+    }
+
+    String resolvedName = cachedUser?.name?.trim() ?? '';
+    String? resolvedUserName = cachedUser?.userName?.trim();
+
+    if (resolvedName.isEmpty) {
+      try {
+        final doc =
+            await firestore.collection('users').doc(currentUserData.uid).get();
+        final data = doc.data();
+        if (data != null) {
+          resolvedName = data['name']?.toString().trim() ?? '';
+          final docUserName = data['userName']?.toString().trim();
+          if (docUserName != null && docUserName.isNotEmpty) {
+            resolvedUserName = docUserName;
+          }
+        }
+      } catch (_) {}
+    }
+
+    if (resolvedName.isEmpty) {
+      resolvedName = currentUserData.displayName?.trim() ?? '';
+    }
+    if (resolvedName.isEmpty) {
+      resolvedName = 'Devotee';
+    }
+
+    return saveUserDataToFirebase(
+      name: resolvedName,
+      profilePic: imageFile,
+      userName:
+          (resolvedUserName != null && resolvedUserName.isNotEmpty)
+              ? resolvedUserName
+              : null,
+      profilePicUrlOverride: imageFile == null ? imageUrl : null,
+      ref: ref,
+      context: context,
+      navigateHomeOnComplete: false,
+      removeProfilePic: false,
+    );
   }
 
   Stream<UserModel> userData(String userId) {

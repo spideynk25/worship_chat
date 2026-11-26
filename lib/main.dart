@@ -8,6 +8,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:hive_flutter/hive_flutter.dart';
 import 'package:worship_chat/colors.dart';
 import 'package:worship_chat/common/utils/app_capabilities.dart';
+import 'package:worship_chat/common/utils/diagnostics_service.dart';
 import 'package:worship_chat/firebase_options.dart';
 import 'package:worship_chat/common/utils/fcm_token_manager.dart';
 import 'package:worship_chat/common/utils/firebase_notification_service.dart';
@@ -31,127 +32,160 @@ import 'package:worship_chat/splash_screen.dart';
 /// Global navigator key — used by FirebaseNotificationService to navigate
 /// when a notification is tapped from background/killed state.
 final GlobalKey<NavigatorState> navigatorKey = GlobalKey<NavigatorState>();
+final DateTime _appProcessStartTime = DateTime.now();
 
 Future<void> main() async {
-  WidgetsFlutterBinding.ensureInitialized();
+  await runZonedGuarded<Future<void>>(
+    () async {
+      WidgetsFlutterBinding.ensureInitialized();
+      DiagnosticsService.instance.installGlobalHandlers();
 
-  // Graceful dark-themed error widget fallback to prevent red screens of death
-  ErrorWidget.builder = (FlutterErrorDetails details) {
-    debugPrint(
-      '⚠️ UI Error caught by ErrorWidget.builder: ${details.exception}',
-    );
-    return Material(
-      color: Colors.transparent,
-      child: Center(
-        child: Container(
-          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-          margin: const EdgeInsets.all(12),
-          decoration: BoxDecoration(
-            color: const Color(0xFF1E1B2E),
-            borderRadius: BorderRadius.circular(12),
-            border: Border.all(color: Colors.white12),
+      // Graceful dark-themed error widget fallback to prevent red screens of death
+      ErrorWidget.builder = (FlutterErrorDetails details) {
+        debugPrint(
+          '⚠️ UI Error caught by ErrorWidget.builder: ${details.exception}',
+        );
+        unawaited(
+          DiagnosticsService.instance.recordError(
+            details.exception,
+            stackTrace: details.stack,
+            context: details.context?.toDescription(),
+            source: 'ErrorWidget',
           ),
-          child: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              const Icon(
-                Icons.warning_amber_rounded,
-                color: Colors.amber,
-                size: 18,
+        );
+        return Material(
+          color: Colors.transparent,
+          child: Center(
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+              margin: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: const Color(0xFF1E1B2E),
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(color: Colors.white12),
               ),
-              const SizedBox(width: 8),
-              Flexible(
-                child: Text(
-                  'Content temporarily unavailable',
-                  style: TextStyle(
-                    color: Colors.white.withValues(alpha: 0.8),
-                    fontSize: 12,
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const Icon(
+                    Icons.warning_amber_rounded,
+                    color: Colors.amber,
+                    size: 18,
                   ),
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                ),
+                  const SizedBox(width: 8),
+                  Flexible(
+                    child: Text(
+                      'Content temporarily unavailable',
+                      style: TextStyle(
+                        color: Colors.white.withValues(alpha: 0.8),
+                        fontSize: 12,
+                      ),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
+                ],
               ),
-            ],
+            ),
           ),
-        ),
-      ),
-    );
-  };
+        );
+      };
 
-  await AppCapabilities.initialize();
-  await Firebase.initializeApp(options: DefaultFirebaseOptions.currentPlatform);
+      await AppCapabilities.initialize();
+      await Firebase.initializeApp(
+        options: DefaultFirebaseOptions.currentPlatform,
+      );
 
-  try {
-    FirebaseFirestore.instance.settings = const Settings(
-      persistenceEnabled: true,
-      cacheSizeBytes: Settings.CACHE_SIZE_UNLIMITED,
-    );
-  } catch (e) {
-    debugPrint('⚠️ Could not set Firestore persistence: $e');
-  }
+      try {
+        FirebaseFirestore.instance.settings = const Settings(
+          persistenceEnabled: true,
+          cacheSizeBytes: Settings.CACHE_SIZE_UNLIMITED,
+        );
+      } catch (e) {
+        debugPrint('⚠️ Could not set Firestore persistence: $e');
+      }
 
-  if (AppCapabilities.current.notificationsEnabled) {
-    await createDefaultNotificationChannels();
-    FirebaseMessaging.onBackgroundMessage(_firebaseMessagingBackgroundHandler);
-  } else {
-    // Revoke any token from an older tablet installation without changing
-    // the account's phone token in Firestore.
-    await FCMTokenManager.disableForGalleryDevice();
-  }
+      unawaited(DiagnosticsService.instance.initialize());
 
-  // Local cache & storage
-  await MediaCacheService().init();
+      if (AppCapabilities.current.notificationsEnabled) {
+        await createDefaultNotificationChannels();
+        FirebaseMessaging.onBackgroundMessage(
+          _firebaseMessagingBackgroundHandler,
+        );
+      } else {
+        // Revoke any token from an older tablet installation without changing
+        // the account's phone token in Firestore.
+        await FCMTokenManager.disableForGalleryDevice();
+      }
 
-  await Hive.initFlutter('worship_chat');
-  Hive.registerAdapter(UserModelAdapter());
-  Hive.registerAdapter(OneToOneMessageModelAdapter());
-  Hive.registerAdapter(GroupChatMessageModelAdapter());
-  Hive.registerAdapter(GroupGalleryImageAdapter());
-  await _safeOpenHiveBox<UserModel>('userBox');
-  if (AppCapabilities.current.chatEnabled) {
-    await _safeOpenHiveBox('messages');
-    await _safeOpenHiveBox('contacts_cache');
-    await _safeOpenHiveBox('roleplay_settings');
-    await _safeOpenHiveBox('displayImage');
-    await _safeOpenHiveBox('status_cache');
-    unawaited(LocationService.instance.resumeActiveLiveLocationTracking());
-    unawaited(RoleplayService.instance.restoreActiveSessions());
-  }
-  await _safeOpenHiveBox('groups_cache');
+      // Local cache & storage
+      await MediaCacheService().init();
 
-  if (AppCapabilities.current.notificationsEnabled) {
-    unawaited(FCMTokenManager.initializeFCM());
-    if (AppCapabilities.current.chatEnabled) {
-      WishReminderService.instance.start();
-    }
-  }
+      await Hive.initFlutter('worship_chat');
+      Hive.registerAdapter(UserModelAdapter());
+      Hive.registerAdapter(OneToOneMessageModelAdapter());
+      Hive.registerAdapter(GroupChatMessageModelAdapter());
+      Hive.registerAdapter(GroupGalleryImageAdapter());
+      await _safeOpenHiveBox<UserModel>('userBox');
+      if (AppCapabilities.current.chatEnabled) {
+        await _safeOpenHiveBox('messages');
+        await _safeOpenHiveBox('contacts_cache');
+        await _safeOpenHiveBox('roleplay_settings');
+        await _safeOpenHiveBox('displayImage');
+        await _safeOpenHiveBox('status_cache');
+        unawaited(
+          LocationService.instance.resumeActiveLiveLocationTracking(),
+        );
+        unawaited(RoleplayService.instance.restoreActiveSessions());
+      }
+      await _safeOpenHiveBox('groups_cache');
 
-  // Check if launched directly from a notification on cold start
-  Widget? initialChatScreen;
-  if (AppCapabilities.current.notificationsEnabled &&
-      AppCapabilities.current.chatEnabled) {
-    try {
-      final user = FirebaseAuth.instance.currentUser;
-      if (user != null && user.emailVerified) {
-        final notifData =
-            await FirebaseNotificationService.getInitialNotificationData();
-        if (notifData != null) {
-          initialChatScreen =
-              await FirebaseNotificationService.buildChatScreenFromNotificationData(
-                notifData,
-              );
-          if (initialChatScreen != null) {
-            FirebaseNotificationService.clearPendingNotification();
-            FirebaseNotificationService.isAppReady = true;
-          }
+      if (AppCapabilities.current.notificationsEnabled) {
+        unawaited(FCMTokenManager.initializeFCM());
+        if (AppCapabilities.current.chatEnabled) {
+          WishReminderService.instance.start();
         }
       }
-    } catch (e) {
-      debugPrint('⚠️ Error resolving initial notification in main: $e');
-    }
-  }
 
-  runApp(ProviderScope(child: MyApp(initialChatScreen: initialChatScreen)));
+      // Check if launched directly from a notification on cold start
+      Widget? initialChatScreen;
+      if (AppCapabilities.current.notificationsEnabled &&
+          AppCapabilities.current.chatEnabled) {
+        try {
+          final user = FirebaseAuth.instance.currentUser;
+          if (user != null && user.emailVerified) {
+            final notifData =
+                await FirebaseNotificationService.getInitialNotificationData();
+            if (notifData != null) {
+              initialChatScreen =
+                  await FirebaseNotificationService.buildChatScreenFromNotificationData(
+                    notifData,
+                  );
+              if (initialChatScreen != null) {
+                FirebaseNotificationService.clearPendingNotification();
+                FirebaseNotificationService.isAppReady = true;
+              }
+            }
+          }
+        } catch (e) {
+          debugPrint('⚠️ Error resolving initial notification in main: $e');
+        }
+      }
+
+      runApp(ProviderScope(child: MyApp(initialChatScreen: initialChatScreen)));
+    },
+    (Object error, StackTrace stack) {
+      debugPrint('🔥 Uncaught zoned error: $error');
+      unawaited(
+        DiagnosticsService.instance.recordCrash(
+          error,
+          stack,
+          fatal: true,
+          source: 'runZonedGuarded',
+        ),
+      );
+    },
+  );
 }
 
 /// Safely opens a Hive box, handling potential lock contention on desktop/mobile
@@ -282,6 +316,9 @@ class _MyAppState extends ConsumerState<MyApp> with WidgetsBindingObserver {
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed) {
+      unawaited(
+        DiagnosticsService.instance.syncPendingReports(pullRemote: false),
+      );
       if (AppCapabilities.current.notificationsEnabled &&
           AppCapabilities.current.chatEnabled) {
         WishReminderService.instance.checkReminders();
@@ -302,6 +339,7 @@ class _MyAppState extends ConsumerState<MyApp> with WidgetsBindingObserver {
       title: 'Worship Chat',
       debugShowCheckedModeBanner: false,
       navigatorKey: navigatorKey,
+      navigatorObservers: [DiagnosticsNavigatorObserver()],
       theme: MyApp.theme,
       onGenerateRoute: (settings) => generateRoute(settings),
       home: RootGate(initialChatScreen: widget.initialChatScreen),
@@ -373,6 +411,11 @@ class _RootGateState extends State<RootGate> {
     _hasNavigated = true;
     _watchdogTimer?.cancel();
     FirebaseNotificationService.isAppReady = true;
+    unawaited(
+      DiagnosticsService.instance.recordStartupDuration(
+        DateTime.now().difference(_appProcessStartTime).inMilliseconds,
+      ),
+    );
 
     // Fail-safe 1: Set destination screen for widget-tree fallback
     if (mounted) {

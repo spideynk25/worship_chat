@@ -16,6 +16,7 @@ import 'package:worship_chat/common/utils/fcm_token_manager.dart';
 import 'package:worship_chat/common/utils/file_messages.dart';
 import 'package:worship_chat/common/utils/firebase_notification_service.dart';
 import 'package:worship_chat/common/utils/media_cache_service.dart';
+import 'package:worship_chat/common/utils/notification_media_helper.dart';
 import 'package:worship_chat/common/utils/utils.dart';
 import 'package:worship_chat/common/utils/wish_helper.dart';
 import 'package:worship_chat/models/chat_contact.dart';
@@ -56,6 +57,44 @@ class GroupRepository {
     required this.ref,
   });
 
+  String? _normalizeHttpsUrl(String? raw) {
+    final trimmed = raw?.trim();
+    if (trimmed == null || trimmed.isEmpty) return null;
+    if (trimmed.startsWith('http://')) {
+      return trimmed.replaceFirst('http://', 'https://');
+    }
+    return trimmed;
+  }
+
+  Future<void> _updateGroupFieldsInHiveCache(
+    String groupId,
+    Map<String, dynamic> fields,
+  ) async {
+    try {
+      if (!Hive.isBoxOpen('groups_cache')) return;
+      final box = Hive.box('groups_cache');
+      for (final key in box.keys.toList()) {
+        final rawList = box.get(key);
+        if (rawList is! List || rawList.isEmpty) continue;
+        bool modified = false;
+        final updated = rawList.map((item) {
+          if (item is Map && item['groupId'] == groupId) {
+            modified = true;
+            final copy = Map<String, dynamic>.from(item);
+            copy.addAll(fields);
+            return copy;
+          }
+          return item;
+        }).toList();
+        if (modified) {
+          await box.put(key, updated);
+        }
+      }
+    } catch (e) {
+      log('❌ Error updating groups_cache in Hive: $e');
+    }
+  }
+
   void updateGroup(
     BuildContext context,
     String groupId,
@@ -66,6 +105,7 @@ class GroupRepository {
     String selectedPosition,
     File? groupProfilePic,
     String type, {
+    String? groupProfilePicUrl,
     String? livingPlace,
     int? priority,
     String? parentGroupId,
@@ -95,16 +135,95 @@ class GroupRepository {
           type,
         );
         if (groupProfileUrl != null) {
-          updateData['groupPic'] = groupProfileUrl;
+          updateData['groupPic'] = _normalizeHttpsUrl(groupProfileUrl);
+        }
+      } else {
+        final normalizedUrl = _normalizeHttpsUrl(groupProfilePicUrl);
+        if (normalizedUrl != null) {
+          updateData['groupPic'] = normalizedUrl;
         }
       }
 
       await firestore.collection('groups').doc(groupId).update(updateData);
+      await _updateGroupFieldsInHiveCache(groupId, updateData);
       log('✅ Group updated successfully');
     } catch (e) {
       log('❌ Error updating group: $e');
       if (context.mounted) showSnackBar(context: context, content: e.toString());
     }
+  }
+
+  /// Updates only a group's profile picture (`groupPic`) from a local/cropped
+  /// [imageFile] or directly from an already-hosted [imageUrl], keeping Firestore
+  /// and Hive `'groups_cache'` in sync.
+  Future<bool> updateGroupProfilePic({
+    required String groupId,
+    File? imageFile,
+    String? imageUrl,
+    String type = 'group',
+  }) async {
+    try {
+      String? resolvedUrl;
+      if (imageFile != null) {
+        resolvedUrl = _normalizeHttpsUrl(
+          await uploadImageToCloudinary(imageFile, type),
+        );
+      } else {
+        resolvedUrl = _normalizeHttpsUrl(imageUrl);
+      }
+      if (resolvedUrl == null || resolvedUrl.isEmpty) {
+        return false;
+      }
+
+      await firestore.collection('groups').doc(groupId).update({
+        'groupPic': resolvedUrl,
+      });
+      await _updateGroupFieldsInHiveCache(groupId, {'groupPic': resolvedUrl});
+      log('✅ Updated groupPic for $groupId');
+      return true;
+    } catch (e) {
+      log('❌ Error updating groupPic for $groupId: $e');
+      return false;
+    }
+  }
+
+  /// Fetches all groups (including main Queendoms, Others, and sub-groups) for
+  /// picker UIs, merging Hive cache and live Firestore results.
+  Future<List<GroupModel>> getAllGroupsForPicker() async {
+    final uid = _getEffectiveUserId();
+    final Map<String, GroupModel> byId = {};
+
+    for (final cacheKey in ['groups_pooja', 'groups_rashmika', 'groups_all']) {
+      for (final g in getCachedGroups(cacheKey)) {
+        byId[g.groupId] = g;
+      }
+    }
+
+    if (uid != null) {
+      try {
+        final snap = await firestore
+            .collection('groups')
+            .where('membersUid', arrayContains: uid)
+            .get();
+        for (final doc in snap.docs) {
+          try {
+            final group = GroupModel.fromMap({...doc.data(), 'groupId': doc.id});
+            byId[group.groupId] = group;
+          } catch (_) {}
+        }
+      } catch (e) {
+        log('⚠️ Could not fetch groups for picker from Firestore: $e');
+      }
+    }
+
+    final list = byId.values.toList()
+      ..sort((a, b) {
+        if (a.isSubGroup != b.isSubGroup) {
+          return a.isSubGroup ? 1 : -1;
+        }
+        return a.name.toLowerCase().compareTo(b.name.toLowerCase());
+      });
+    return list;
   }
 
   Future<List<int>> getTakenPriorities({
@@ -144,9 +263,10 @@ class GroupRepository {
     String selectedQueendom,
     String selectedFamily,
     String selectedPosition,
-    File groupProfilePic,
+    File? groupProfilePic,
     List<ChatContact> selectedContact,
     String type, {
+    String? groupProfilePicUrl,
     String? livingPlace,
     int? priority,
     String? parentGroupId,
@@ -196,10 +316,14 @@ class GroupRepository {
       }
 
       var groupId = const Uuid().v1();
-      final groupProfileUrl = await uploadImageToCloudinary(
-        groupProfilePic,
-        type,
-      );
+      final String? groupProfileUrl;
+      if (groupProfilePic != null) {
+        groupProfileUrl = _normalizeHttpsUrl(
+          await uploadImageToCloudinary(groupProfilePic, type),
+        );
+      } else {
+        groupProfileUrl = _normalizeHttpsUrl(groupProfilePicUrl);
+      }
       String currentUserFcmToken =
           await FirebaseMessaging.instance.getToken() ?? "";
 
@@ -980,6 +1104,7 @@ class GroupRepository {
   }
 
   Future<void> _saveMessageToMessageSubcollection({
+    required String senderId,
     required List<String> receiverIds,
     required String groupId,
     required String text,
@@ -995,9 +1120,10 @@ class GroupRepository {
     required String messageReplyType,
     required List<String> fcmToken,
     required String groupName,
+    String senderProfilePic = '',
   }) async {
     final message = GroupChatMessageModel(
-      senderId: auth.currentUser!.uid,
+      senderId: senderId,
       groupId: groupId,
       receiverIds: receiverIds,
       text: text,
@@ -1005,6 +1131,7 @@ class GroupRepository {
       timeSent: timeSent,
       messageId: messageId,
       isSeen: false,
+      isSending: false,
       fileMessageData: fileMessageData,
       repliedMessage: messageReply == null
           ? ''
@@ -1029,6 +1156,8 @@ class GroupRepository {
           .doc(messageId)
           .set(message.toMap());
 
+      await saveGroupMessageToHive(groupId, message);
+
       _sendGroupNotificationAsync(
         fcmToken: fcmToken,
         name: name,
@@ -1037,7 +1166,7 @@ class GroupRepository {
         messageType: messageType,
         text: text,
         messageReply: messageReply,
-        senderId: auth.currentUser!.uid,
+        senderId: senderId,
         messageId: messageId,
         timeSent: timeSent,
         fileMessageData: fileMessageData,
@@ -1045,6 +1174,7 @@ class GroupRepository {
         senderUsername: senderUsername,
         receiverUserName: receiverUserName,
         messageReplyType: messageReplyType,
+        senderProfilePic: senderProfilePic,
       );
     } catch (e) {
       log('❌ Error saving message: $e');
@@ -1067,6 +1197,7 @@ class GroupRepository {
     String? senderUsername,
     String? receiverUserName,
     String? messageReplyType,
+    String senderProfilePic = '',
   }) {
     Future.microtask(() async {
       try {
@@ -1078,6 +1209,8 @@ class GroupRepository {
             .toSet()
             .toList();
 
+        String? fetchedGroupPic;
+
         // If candidate tokens empty, attempt emergency fallback from group document in Firestore
         if (validTokens.isEmpty) {
           log('⚠️ Candidate tokens empty/filtered, checking group document in Firestore as emergency fallback...');
@@ -1085,6 +1218,7 @@ class GroupRepository {
             final groupDoc =
                 await firestore.collection('groups').doc(groupId).get();
             if (groupDoc.exists && groupDoc.data() != null) {
+              fetchedGroupPic = groupDoc.data()!['groupPic']?.toString();
               final storedTokens =
                   List<String>.from(groupDoc.data()!['fcmTokens'] ?? []);
               validTokens = storedTokens
@@ -1104,6 +1238,21 @@ class GroupRepository {
         }
 
         log('🚀 Sending group notification to ${validTokens.length} recipients for group: "$groupName"');
+
+        final resolvedAvatars = await Future.wait<String?>([
+          NotificationMediaHelper.resolveGroupAvatarUrl(
+            directGroupPic: fetchedGroupPic,
+            groupId: groupId,
+            firestoreOverride: firestore,
+          ),
+          NotificationMediaHelper.resolveUserAvatarUrl(
+            directProfilePic: senderProfilePic,
+            uid: senderId,
+            firestoreOverride: firestore,
+          ),
+        ]);
+        final resolvedGroupPic = resolvedAvatars[0];
+        final resolvedSenderPic = resolvedAvatars[1];
 
         String body;
         if (messageReply != null) {
@@ -1168,6 +1317,10 @@ class GroupRepository {
             'type': 'group',
             'groupId': groupId,
             'groupName': groupName,
+            if (resolvedGroupPic != null && resolvedGroupPic.isNotEmpty)
+              'groupPic': resolvedGroupPic,
+            if (resolvedSenderPic != null && resolvedSenderPic.isNotEmpty)
+              'profilePic': resolvedSenderPic,
             'tag': groupId,
             'name': name,
             'senderId': senderId,
@@ -1226,8 +1379,15 @@ class GroupRepository {
           lastMessage = text;
       }
 
-      final currentUserId = auth.currentUser?.uid;
-      if (currentUserId == null) return;
+      final currentUserId = auth.currentUser?.uid ?? senderUserData.uid;
+      if (currentUserId == null || currentUserId.isEmpty) return;
+
+      await updateGroupCacheSummaryInHive(
+        groupId: groupId,
+        senderId: currentUserId,
+        lastMessage: lastMessage,
+        timeSent: timeSent,
+      );
 
       final groupDoc = await firestore.collection('groups').doc(groupId).get();
       if (!groupDoc.exists) return;
@@ -1264,10 +1424,18 @@ class GroupRepository {
         unseenMessages[uid] = (uid != currentUserId);
       }
 
+      await updateGroupCacheSummaryInHive(
+        groupId: groupId,
+        senderId: currentUserId,
+        lastMessage: lastMessage,
+        timeSent: timeSent,
+        unseenMessages: unseenMessages,
+      );
+
       await firestore.collection('groups').doc(groupId).update({
         'senderId': currentUserId,
         'lastMessage': lastMessage,
-        'timeSent': DateTime.now().millisecondsSinceEpoch,
+        'timeSent': timeSent.millisecondsSinceEpoch,
         'unseenMessages': unseenMessages,
         'fcmTokens': updatedFcmTokens,
       });
@@ -1277,7 +1445,7 @@ class GroupRepository {
   }
 
   Future<void> sendTextMessage({
-    required BuildContext context,
+    BuildContext? context,
     required String text,
     required List<String> receiverIds,
     required String groupId,
@@ -1338,7 +1506,7 @@ class GroupRepository {
             : '',
         repliedMessageType: messageReply == null ? 'text' : messageReply.messageType,
       );
-      _saveOptimisticGroupMessageToHive(groupId, optimisticMessage);
+      await saveGroupMessageToHive(groupId, optimisticMessage);
 
       Future<void> performSend(
         void Function(String message, {int? progress, int? maxProgress}) updateProgress,
@@ -1457,6 +1625,7 @@ class GroupRepository {
             freshFcmTokens,
           ),
           _saveMessageToMessageSubcollection(
+            senderId: currentUserId,
             groupId: groupId,
             text: text,
             timeSent: timeSent,
@@ -1474,6 +1643,7 @@ class GroupRepository {
             fcmToken: freshFcmTokens,
             receiverIds: receiverIds,
             groupName: groupName,
+            senderProfilePic: senderUser.profilePic ?? '',
           ),
         ]);
       }
@@ -1492,9 +1662,11 @@ class GroupRepository {
     } catch (e) {
       log("❌ Error sending message: $e");
       _removeOptimisticGroupMessageFromHive(groupId);
-      if (context.mounted) {
-        showSnackBar(context: context, content: e.toString());
-      }
+      try {
+        if (context != null && context.mounted) {
+          showSnackBar(context: context, content: e.toString());
+        }
+      } catch (_) {}
     }
   }
 
@@ -1524,7 +1696,7 @@ class GroupRepository {
         repliedMessageType: 'text',
       );
 
-      _saveOptimisticGroupMessageToHive(groupId, message);
+      await saveGroupMessageToHive(groupId, message);
 
       await firestore
           .collection('groups')
@@ -1542,7 +1714,8 @@ class GroupRepository {
     }
   }
 
-  void _saveOptimisticGroupMessageToHive(
+  /// Persists or updates a group message in Hive `'messages'` storage and notifies listeners.
+  Future<void> saveGroupMessageToHive(
     String groupId,
     GroupChatMessageModel message,
   ) async {
@@ -1552,29 +1725,40 @@ class GroupRepository {
           : await Hive.openBox('messages');
 
       final cachedData = box.get(groupId, defaultValue: []);
-      List<GroupChatMessageModel> messages = [];
-      if (cachedData is List) {
-        messages = cachedData.cast<GroupChatMessageModel>().toList();
-      }
-      final existingIndex = messages.indexWhere((m) => m.messageId == message.messageId);
+      final messages = _safeCastGroupMessages(cachedData);
+      final existingIndex =
+          messages.indexWhere((m) => m.messageId == message.messageId);
       if (existingIndex >= 0) {
         messages[existingIndex] = message;
       } else {
         messages.add(message);
+        messages.sort((a, b) => a.timeSent.compareTo(b.timeSent));
       }
       await box.put(groupId, messages);
-      log('🕒 Saved optimistic sending group message to Hive: ${message.messageId}');
+      log(
+        '💾 Saved group message to Hive: ${message.messageId} (isSending=${message.isSending})',
+      );
 
-      final listeners = _activeGroupChatListeners[groupId];
-      if (listeners != null) {
-        final msgsCopy = List<GroupChatMessageModel>.from(messages);
-        for (final listener in List.from(listeners)) {
-          listener(msgsCopy);
-        }
-      }
+      notifyGroupChatListeners(groupId, messages);
     } catch (e) {
-      log('❌ Error saving optimistic group message to Hive: $e');
+      log('❌ Error saving group message to Hive: $e');
     }
+  }
+
+  /// Updates the cached preview (`lastMessage`, `timeSent`, `unseenMessages`) in `'groups_cache'`.
+  Future<void> updateGroupCacheSummaryInHive({
+    required String groupId,
+    required String senderId,
+    required String lastMessage,
+    required DateTime timeSent,
+    Map<String, bool>? unseenMessages,
+  }) async {
+    await _updateGroupFieldsInHiveCache(groupId, {
+      'senderId': senderId,
+      'lastMessage': lastMessage,
+      'timeSent': timeSent.millisecondsSinceEpoch,
+      if (unseenMessages != null) 'unseenMessages': unseenMessages,
+    });
   }
 
   void _removeOptimisticGroupMessageFromHive(String groupId) async {
@@ -1583,17 +1767,11 @@ class GroupRepository {
         final box = Hive.box('messages');
         final cachedData = box.get(groupId, defaultValue: []);
         if (cachedData is List) {
-          final messages = cachedData.cast<GroupChatMessageModel>().toList();
+          final messages = _safeCastGroupMessages(cachedData);
           messages.removeWhere((m) => m.isSending);
           await box.put(groupId, messages);
 
-          final listeners = _activeGroupChatListeners[groupId];
-          if (listeners != null) {
-            final msgsCopy = List<GroupChatMessageModel>.from(messages);
-            for (final listener in List.from(listeners)) {
-              listener(msgsCopy);
-            }
-          }
+          notifyGroupChatListeners(groupId, messages);
         }
       }
     } catch (_) {}

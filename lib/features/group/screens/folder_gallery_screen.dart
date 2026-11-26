@@ -13,6 +13,7 @@ import 'package:worship_chat/colors.dart';
 import 'package:worship_chat/common/utils/app_capabilities.dart';
 import 'package:worship_chat/common/utils/google_lens_service.dart';
 import 'package:worship_chat/common/utils/utils.dart';
+import 'package:worship_chat/common/widgets/set_as_profile_pic_sheet.dart';
 import 'package:worship_chat/common/widgets/wallpaper_widget_sheet.dart';
 import 'package:worship_chat/features/chat/widgets/forward_message_sheet.dart';
 import 'package:worship_chat/features/group/screens/slide_show_screen.dart';
@@ -691,6 +692,25 @@ class _FolderGalleryScreenState extends ConsumerState<FolderGalleryScreen> {
                 maxLines: 2,
                 overflow: TextOverflow.ellipsis,
               ),
+            ),
+            ListTile(
+              leading: const Icon(Icons.account_circle_outlined, color: tabColor),
+              title: const Text(
+                'Set as Profile Pic',
+                style: TextStyle(color: Colors.white),
+              ),
+              subtitle: const Text(
+                'Use for your profile or any group',
+                style: TextStyle(color: Colors.white54, fontSize: 12),
+              ),
+              onTap: () {
+                Navigator.pop(ctx);
+                SetAsProfilePicSheet.show(
+                  context,
+                  localPath: file.path,
+                  title: fileName,
+                );
+              },
             ),
             ListTile(
               leading: const Icon(Icons.delete_outline_rounded,
@@ -2034,10 +2054,17 @@ class _LocalFullscreenViewerState extends State<_LocalFullscreenViewer> {
                             Padding(
                               padding: const EdgeInsets.symmetric(
                                   horizontal: 16, vertical: 2),
-                              child: Row(
-                                mainAxisAlignment:
-                                    MainAxisAlignment.spaceEvenly,
-                                children: [
+                              child: SingleChildScrollView(
+                                scrollDirection: Axis.horizontal,
+                                child: ConstrainedBox(
+                                  constraints: BoxConstraints(
+                                    minWidth:
+                                        MediaQuery.sizeOf(context).width - 32,
+                                  ),
+                                  child: Row(
+                                    mainAxisAlignment:
+                                        MainAxisAlignment.spaceEvenly,
+                                    children: [
                                   // ── Slideshow ──────────────────────────
                                   IconButton(
                                     icon: const Icon(
@@ -2103,6 +2130,20 @@ class _LocalFullscreenViewerState extends State<_LocalFullscreenViewer> {
                                     ),
                                   ),
 
+                                  // ── Set as Profile Pic ─────────────────
+                                  IconButton(
+                                    icon: const Icon(
+                                      Icons.account_circle_outlined,
+                                      color: Colors.white,
+                                    ),
+                                    tooltip: 'Set as Profile Pic',
+                                    onPressed: () => SetAsProfilePicSheet.show(
+                                      context,
+                                      localPath: currentFile.path,
+                                      title: fileName,
+                                    ),
+                                  ),
+
                                   // ── Delete photo ───────────────────────
                                   IconButton(
                                     icon: const Icon(
@@ -2113,6 +2154,8 @@ class _LocalFullscreenViewerState extends State<_LocalFullscreenViewer> {
                                     onPressed: _confirmAndDeleteCurrentPhoto,
                                   ),
                                 ],
+                              ),
+                                ),
                               ),
                             ),
                           ],

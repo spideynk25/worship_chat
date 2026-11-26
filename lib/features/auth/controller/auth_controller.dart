@@ -150,6 +150,7 @@ class AuthController {
     String name,
     File? profilePic, {
     String? userName, // Added userName parameter
+    String? profilePicUrlOverride,
     bool navigateHomeOnComplete = true,
     bool removeProfilePic = false,
   }) {
@@ -157,10 +158,24 @@ class AuthController {
       name: name,
       profilePic: profilePic,
       userName: userName, // Pass userName
+      profilePicUrlOverride: profilePicUrlOverride,
       ref: ref,
       context: context,
       navigateHomeOnComplete: navigateHomeOnComplete,
       removeProfilePic: removeProfilePic,
+    );
+  }
+
+  Future<bool> updateCurrentUserProfilePic({
+    BuildContext? context,
+    File? imageFile,
+    String? imageUrl,
+  }) {
+    return authRepository.updateCurrentUserProfilePic(
+      ref: ref,
+      context: context,
+      imageFile: imageFile,
+      imageUrl: imageUrl,
     );
   }
 

@@ -22,6 +22,16 @@ class GroupGalleryController {
     return repository.getMultiGalleryImages(groupIds);
   }
 
+  Future<List<GroupGalleryImage>> getAllGalleryImagesForPicker(
+    List<String> groupIds, {
+    int maxPerGroup = 60,
+  }) {
+    return repository.getAllGalleryImagesForPicker(
+      groupIds,
+      maxPerGroup: maxPerGroup,
+    );
+  }
+
   Future<int> uploadImages({
     required String groupId,
     required List<File> imageFiles,

@@ -6,6 +6,7 @@ import 'package:worship_chat/common/utils/app_capabilities.dart';
 import 'package:worship_chat/common/utils/google_lens_service.dart';
 import 'package:worship_chat/common/utils/home_widget_service.dart';
 import 'package:worship_chat/common/utils/utils.dart';
+import 'package:worship_chat/common/widgets/set_as_profile_pic_sheet.dart';
 import 'package:worship_chat/common/widgets/wallpaper_widget_sheet.dart';
 import 'package:worship_chat/features/bookmark/controller/bookmark_controller.dart';
 import 'package:worship_chat/features/bookmark/screens/bookmark_screen.dart';
@@ -263,13 +264,15 @@ class _CollectionDetailScreenState
     showModalBottomSheet(
       context: context,
       backgroundColor: const Color(0xFF1B1728),
+      isScrollControlled: true,
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
       ),
       builder: (ctx) => SafeArea(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
+        child: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
             Container(
               margin: const EdgeInsets.only(top: 8, bottom: 4),
               width: 36,
@@ -424,6 +427,32 @@ class _CollectionDetailScreenState
             ),
             ListTile(
               leading: const Icon(
+                Icons.account_circle_outlined,
+                color: tabColor,
+              ),
+              title: const Text(
+                'Set as Profile Pic',
+                style: TextStyle(color: Colors.white),
+              ),
+              subtitle: const Text(
+                'Use for your profile or any group',
+                style: TextStyle(color: Colors.white54, fontSize: 12),
+              ),
+              onTap: () {
+                Navigator.pop(ctx);
+                SetAsProfilePicSheet.show(
+                  context,
+                  imageUrl: bm.imageUrl,
+                  sourceGroupId: bm.groupId,
+                  sourceGroupName: bm.groupName,
+                  title: bm.groupName.isNotEmpty
+                      ? bm.groupName
+                      : _collection.name,
+                );
+              },
+            ),
+            ListTile(
+              leading: const Icon(
                 Icons.download_rounded,
                 color: Colors.white70,
               ),
@@ -489,6 +518,7 @@ class _CollectionDetailScreenState
                 },
               ),
           ],
+          ),
         ),
       ),
     );
