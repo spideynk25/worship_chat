@@ -282,4 +282,147 @@ void main() {
       findsOneWidget,
     );
   });
+
+  testWidgets(
+      'HomeScreen wraps long AppBar birthday wish cleanly on small 320dp screen without truncation or clipping',
+      (tester) async {
+    AppCapabilities.debugOverride = const AppCapabilities(
+      platform: TargetPlatform.macOS,
+      isTablet: false,
+    );
+    tester.view.physicalSize = const Size(320, 720);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    final now = DateTime.now();
+    final longBirthdayEvent = Event(
+      id: 'bday_anikha_long',
+      title: "Second Born Eternal Princess Anikha Surendran's Birthday",
+      description: 'Annual Royal Birthday celebration',
+      date: now,
+      time: const TimeOfDay(hour: 0, minute: 0),
+      createdBy: 'admin',
+      userId: 'admin',
+      isRecurring: true,
+      connectedGroupId: 'group_anikha',
+      connectedGroupName: 'Second Born Eternal Princess Anikha Surendran',
+      connectedGroupPic: 'assets/auth_images/queen_priyanka.png',
+    );
+
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [
+          galleryGroupsProvider.overrideWith((_) => Stream.value(<GroupModel>[])),
+          eventRepositoryProvider.overrideWithValue(
+            _FakeEventRepository([longBirthdayEvent]),
+          ),
+        ],
+        child: const MaterialApp(
+          home: HomeScreen(initialIndex: 0),
+        ),
+      ),
+    );
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 800));
+
+    expect(tester.takeException(), isNull);
+
+    final dynamicWidget =
+        tester.widget<DynamicTextWidget>(find.byType(DynamicTextWidget));
+    expect(dynamicWidget.maxLines, 2);
+
+    const expectedWish =
+        'Happy Birthday Second Born Eternal Princess Anikha Surendran';
+    final wishTextFinder = find.descendant(
+      of: find.byType(DynamicTextWidget),
+      matching: find.text(expectedWish),
+    );
+    expect(wishTextFinder, findsOneWidget);
+
+    final wishTextWidget = tester.widget<Text>(wishTextFinder);
+    expect(wishTextWidget.maxLines, 2);
+    expect(wishTextWidget.softWrap, isTrue);
+
+    final appBarRect = tester.getRect(find.byType(AppBar));
+    final wishRect = tester.getRect(wishTextFinder);
+    expect(appBarRect.height, greaterThan(92.0));
+    expect(wishRect.height, greaterThan(20.0));
+    expect(wishRect.bottom, lessThanOrEqualTo(appBarRect.bottom));
+    expect(wishRect.right, lessThanOrEqualTo(appBarRect.right));
+  });
+
+  testWidgets(
+      'HomeScreen expands AppBar height under 1.3x font scale on narrow mobile so 2-line wishes never clip',
+      (tester) async {
+    AppCapabilities.debugOverride = const AppCapabilities(
+      platform: TargetPlatform.macOS,
+      isTablet: false,
+    );
+    tester.view.physicalSize = const Size(360, 760);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    final now = DateTime.now();
+    final longBirthdayEvent = Event(
+      id: 'bday_anikha_scaled',
+      title: "Second Born Eternal Princess Anikha Surendran's Birthday",
+      description: 'Annual Royal Birthday celebration',
+      date: now,
+      time: const TimeOfDay(hour: 0, minute: 0),
+      createdBy: 'admin',
+      userId: 'admin',
+      isRecurring: true,
+      connectedGroupId: 'group_anikha',
+      connectedGroupName: 'Second Born Eternal Princess Anikha Surendran',
+      connectedGroupPic: 'assets/auth_images/queen_priyanka.png',
+    );
+
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [
+          galleryGroupsProvider.overrideWith((_) => Stream.value(<GroupModel>[])),
+          eventRepositoryProvider.overrideWithValue(
+            _FakeEventRepository([longBirthdayEvent]),
+          ),
+        ],
+        child: MaterialApp(
+          builder: (context, child) {
+            return MediaQuery(
+              data: MediaQuery.of(context).copyWith(
+                textScaler: const TextScaler.linear(1.3),
+              ),
+              child: child!,
+            );
+          },
+          home: const HomeScreen(initialIndex: 0),
+        ),
+      ),
+    );
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 800));
+
+    expect(tester.takeException(), isNull);
+
+    final appBarFinder = find.byType(AppBar);
+    final appBarRect = tester.getRect(appBarFinder);
+    final wishFinder = find.descendant(
+      of: find.byType(DynamicTextWidget),
+      matching: find.text(
+        'Happy Birthday Second Born Eternal Princess Anikha Surendran',
+      ),
+    );
+    expect(wishFinder, findsOneWidget);
+    final wishRect = tester.getRect(wishFinder);
+    final cakeBottom = tester
+        .getBottomLeft(
+          find.descendant(of: appBarFinder, matching: find.text('🎂')).first,
+        )
+        .dy;
+
+    expect(appBarRect.height, greaterThan(102.0));
+    expect(wishRect.top, greaterThanOrEqualTo(cakeBottom));
+    expect(wishRect.bottom, lessThanOrEqualTo(appBarRect.bottom));
+  });
 }

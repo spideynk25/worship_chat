@@ -183,11 +183,14 @@ class _EditGroupScreenState extends ConsumerState<EditGroupScreen> {
             birthdayDate = foundEvent.date;
             isRecurringBirthday = foundEvent.isRecurring;
           } else {
+            final defaultName = widget.group.nameWithPosition.isNotEmpty
+                ? widget.group.nameWithPosition
+                : widget.group.name;
             birthdayTitleController.text = selectedQueendom == 'Queen Pooja'
                 ? "Queen Pooja's Birthday"
                 : selectedQueendom == 'Queen Rashmika'
                     ? "Queen Rashmika's Birthday"
-                    : "${widget.group.name} Birthday";
+                    : "$defaultName Birthday";
           }
           isLoadingBirthday = false;
         });
@@ -205,7 +208,9 @@ class _EditGroupScreenState extends ConsumerState<EditGroupScreen> {
     showProfilePicSourceSheet(
       context: context,
       initialGroupId: widget.group.groupId,
-      initialGroupName: widget.group.name,
+      initialGroupName: widget.group.nameWithPosition.isNotEmpty
+          ? widget.group.nameWithPosition
+          : widget.group.name,
       onLocalFileSelected: (picked) async {
         if (!mounted) return;
         await Navigator.of(context).push(
@@ -238,6 +243,9 @@ class _EditGroupScreenState extends ConsumerState<EditGroupScreen> {
     final name = nameController.text.trim();
     final livingPlace = livingPlaceController.text.trim();
     final wish = wishController.text.trim();
+    final groupController = ref.read(groupControllerProvider);
+    final eventRepository = ref.read(eventRepositoryProvider);
+    final eventController = ref.read(eventControllerProvider.notifier);
 
     if (name.isEmpty) {
       AppSnackBar.warning(context, 'Please enter deity or member name');
@@ -261,11 +269,12 @@ class _EditGroupScreenState extends ConsumerState<EditGroupScreen> {
       }
 
       // Check taken priorities excluding this group
-      final taken = await ref.read(groupControllerProvider).getTakenPriorities(
-            queendom: selectedQueendom,
-            position: selectedPosition,
-            excludeGroupId: widget.group.groupId,
-          );
+      final taken = await groupController.getTakenPriorities(
+        queendom: selectedQueendom,
+        position: selectedPosition,
+        excludeGroupId: widget.group.groupId,
+      );
+      if (!mounted) return;
       if (taken.contains(pVal)) {
         AppSnackBar.warning(
           context,
@@ -276,26 +285,24 @@ class _EditGroupScreenState extends ConsumerState<EditGroupScreen> {
       priority = pVal;
     }
 
-    await ref
-        .read(groupControllerProvider)
-        .updateGroup(
-          context,
-          widget.group.groupId,
-          name,
-          wish.isEmpty ? null : wish,
-          selectedQueendom,
-          selectedFamily,
-          selectedPosition,
-          imageChanged ? image : null,
-          widget.type,
-          groupProfilePicUrl: imageChanged ? selectedImageUrl : null,
-          livingPlace: livingPlace.isNotEmpty ? livingPlace : null,
-          priority: priority,
-          parentGroupId: widget.group.parentGroupId,
-          parentGroupName: widget.group.parentGroupName,
-          isSubGroup: widget.group.isSubGroup,
-          subGroupType: widget.group.subGroupType,
-        );
+    await groupController.updateGroup(
+      context,
+      widget.group.groupId,
+      name,
+      wish.isEmpty ? null : wish,
+      selectedQueendom,
+      selectedFamily,
+      selectedPosition,
+      imageChanged ? image : null,
+      widget.type,
+      groupProfilePicUrl: imageChanged ? selectedImageUrl : null,
+      livingPlace: livingPlace.isNotEmpty ? livingPlace : null,
+      priority: priority,
+      parentGroupId: widget.group.parentGroupId,
+      parentGroupName: widget.group.parentGroupName,
+      isSubGroup: widget.group.isSubGroup,
+      subGroupType: widget.group.subGroupType,
+    );
 
     // Persist Birthday / Event changes
     try {
@@ -304,7 +311,7 @@ class _EditGroupScreenState extends ConsumerState<EditGroupScreen> {
           final cleared = originalConnectedEvent!.copyWith(
             clearConnectedGroup: true,
           );
-          await ref.read(eventRepositoryProvider).updateEvent(cleared);
+          await eventRepository.updateEvent(cleared);
           log('✅ Birthday disconnected from group ${widget.group.groupId}');
         }
       } else if (selectedBirthdayEvent != null) {
@@ -314,7 +321,17 @@ class _EditGroupScreenState extends ConsumerState<EditGroupScreen> {
         final cleanDate = birthdayDate ?? selectedBirthdayEvent!.date;
 
         final queendomVal = selectedQueendom != 'None' ? selectedQueendom : null;
-        final displayName = livingPlace.isNotEmpty ? livingPlace : name;
+        final fullGroupName = GroupTemplateHelper.getNameWithPosition(
+          name: name,
+          position: selectedPosition,
+          family: selectedFamily,
+          isSubGroup: widget.group.isSubGroup,
+          parentGroupName: widget.group.parentGroupName,
+          subGroupType: widget.group.subGroupType,
+        );
+        final displayName = livingPlace.isNotEmpty
+            ? livingPlace
+            : (fullGroupName.isNotEmpty ? fullGroupName : name);
 
         if (selectedBirthdayEvent!.id.isNotEmpty) {
           // Existing event updated/connected
@@ -327,7 +344,7 @@ class _EditGroupScreenState extends ConsumerState<EditGroupScreen> {
             connectedGroupPic: widget.group.groupPic,
             connectedQueendom: queendomVal,
           );
-          await ref.read(eventRepositoryProvider).updateEvent(updated);
+          await eventRepository.updateEvent(updated);
 
           // If user swapped from another event, unlink the old one
           if (originalConnectedEvent != null &&
@@ -335,22 +352,22 @@ class _EditGroupScreenState extends ConsumerState<EditGroupScreen> {
             final cleared = originalConnectedEvent!.copyWith(
               clearConnectedGroup: true,
             );
-            await ref.read(eventRepositoryProvider).updateEvent(cleared);
+            await eventRepository.updateEvent(cleared);
           }
           log('✅ Connected birthday updated: $cleanTitle');
         } else {
           // Create a brand new event connected to this group
-          await ref.read(eventControllerProvider.notifier).createEvent(
-                title: cleanTitle,
-                description: 'Celebration for $displayName',
-                date: cleanDate,
-                time: const TimeOfDay(hour: 0, minute: 0),
-                isRecurring: isRecurringBirthday,
-                connectedGroupId: widget.group.groupId,
-                connectedGroupName: displayName,
-                connectedGroupPic: widget.group.groupPic,
-                connectedQueendom: queendomVal,
-              );
+          await eventController.createEvent(
+            title: cleanTitle,
+            description: 'Celebration for $displayName',
+            date: cleanDate,
+            time: const TimeOfDay(hour: 0, minute: 0),
+            isRecurring: isRecurringBirthday,
+            connectedGroupId: widget.group.groupId,
+            connectedGroupName: displayName,
+            connectedGroupPic: widget.group.groupPic,
+            connectedQueendom: queendomVal,
+          );
           log('✅ New connected birthday created: $cleanTitle');
         }
       }
@@ -932,7 +949,10 @@ class _EditGroupScreenState extends ConsumerState<EditGroupScreen> {
                           userId: '',
                           isRecurring: true,
                           connectedGroupId: widget.group.groupId,
-                          connectedGroupName: widget.group.name,
+                          connectedGroupName:
+                              widget.group.nameWithPosition.isNotEmpty
+                                  ? widget.group.nameWithPosition
+                                  : widget.group.name,
                           connectedGroupPic: widget.group.groupPic,
                           connectedQueendom: selectedQueendom,
                         );
@@ -1039,7 +1059,10 @@ class _EditGroupScreenState extends ConsumerState<EditGroupScreen> {
                               userId: '',
                               isRecurring: true,
                               connectedGroupId: widget.group.groupId,
-                              connectedGroupName: widget.group.name,
+                              connectedGroupName:
+                                  widget.group.nameWithPosition.isNotEmpty
+                                      ? widget.group.nameWithPosition
+                                      : widget.group.name,
                               connectedGroupPic: widget.group.groupPic,
                               connectedQueendom: selectedQueendom,
                             );

@@ -787,7 +787,9 @@ class _QueendomGroupCardState extends State<QueendomGroupCard>
             const SizedBox(width: 12),
             Expanded(
               child: Text(
-                widget.group.name,
+                widget.group.nameWithPosition.isNotEmpty
+                    ? widget.group.nameWithPosition
+                    : widget.group.name,
                 style: const TextStyle(color: Colors.white, fontSize: 14),
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,

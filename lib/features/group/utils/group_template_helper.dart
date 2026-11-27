@@ -50,11 +50,26 @@ class GroupTemplateHelper {
     }).join(' ');
   }
 
-  /// Extracts deity name and position title if the given string represents a living place
+  /// Extracts deity name and position title if the given string represents a living place.
   static ({String deityName, String? position}) parseLivingPlace(String text) {
+    final parsed = parseLivingPlaceWithFamily(text);
+    return (deityName: parsed.deityName, position: parsed.position);
+  }
+
+  static String? _normalizeParsedFamily(String rawFamily) {
+    final trimmed = rawFamily.trim();
+    if (trimmed.isEmpty) return null;
+    final lower = trimmed.toLowerCase();
+    if (lower == 'none' || lower == 'main') return null;
+    return toTitleCase(trimmed);
+  }
+
+  /// Extracts deity name, position title, and optional family qualifier from a living place or prefixed title.
+  static ({String deityName, String? position, String? family})
+      parseLivingPlaceWithFamily(String text) {
     final trimmed = text.trim();
     if (trimmed.isEmpty) {
-      return (deityName: '', position: null);
+      return (deityName: '', position: null, family: null);
     }
 
     // Clean any legacy emoji markers from text if present
@@ -79,63 +94,69 @@ class GroupTemplateHelper {
       final idx = upper.indexOf('AURA ELIXIRIA GODDESS ');
       return (
         deityName: toTitleCase(cleanAfter.substring(idx + 22).trim()),
-        position: 'Aura Elixiria Goddess'
+        position: 'Aura Elixiria Goddess',
+        family: null,
       );
     }
     if (upper.contains('CORE SUPREME GODDESS ')) {
       final idx = upper.indexOf('CORE SUPREME GODDESS ');
       return (
         deityName: toTitleCase(cleanAfter.substring(idx + 21).trim()),
-        position: 'Core Supreme Goddess'
+        position: 'Core Supreme Goddess',
+        family: null,
       );
     }
     if (upper.contains('GOLDEN BLOSSOM GODDESS ')) {
       final idx = upper.indexOf('GOLDEN BLOSSOM GODDESS ');
       return (
         deityName: toTitleCase(cleanAfter.substring(idx + 23).trim()),
-        position: 'Golden Blossom Goddess'
+        position: 'Golden Blossom Goddess',
+        family: null,
       );
     }
     if (upper.contains('DEMI GODDESS ')) {
       final idx = upper.indexOf('DEMI GODDESS ');
       return (
         deityName: toTitleCase(cleanAfter.substring(idx + 13).trim()),
-        position: 'Demi Goddess'
+        position: 'Demi Goddess',
+        family: null,
       );
     }
     if (upper.contains('DARK ANGEL ')) {
       final idx = upper.indexOf('DARK ANGEL ');
       return (
         deityName: toTitleCase(cleanAfter.substring(idx + 11).trim()),
-        position: 'Dark Angel'
+        position: 'Dark Angel',
+        family: null,
       );
     }
-    if (upper.contains('FIRST BORN') && upper.contains('PRINCESS ')) {
-      final princessIdx = upper.lastIndexOf('PRINCESS ');
-      return (
-        deityName: toTitleCase(cleanAfter.substring(princessIdx + 9).trim()),
-        position: 'First Born Princess'
-      );
-    }
-    if (upper.contains('SECOND BORN') && upper.contains('PRINCESS ')) {
-      final princessIdx = upper.lastIndexOf('PRINCESS ');
-      return (
-        deityName: toTitleCase(cleanAfter.substring(princessIdx + 9).trim()),
-        position: 'Second Born Princess'
-      );
-    }
-    if (upper.contains('THIRD BORN') && upper.contains('PRINCESS ')) {
-      final princessIdx = upper.lastIndexOf('PRINCESS ');
-      return (
-        deityName: toTitleCase(cleanAfter.substring(princessIdx + 9).trim()),
-        position: 'Third Born Princess'
-      );
+    for (final entry in const [
+      ('FIRST BORN ', 'First Born Princess'),
+      ('SECOND BORN ', 'Second Born Princess'),
+      ('THIRD BORN ', 'Third Born Princess'),
+    ]) {
+      if (upper.contains(entry.$1) && upper.contains('PRINCESS ')) {
+        final bornIdx = upper.indexOf(entry.$1);
+        final princessIdx = upper.lastIndexOf('PRINCESS ');
+        if (princessIdx >= bornIdx + entry.$1.length) {
+          final familySegment = cleanAfter
+              .substring(bornIdx + entry.$1.length, princessIdx)
+              .trim();
+          return (
+            deityName: toTitleCase(cleanAfter.substring(princessIdx + 9).trim()),
+            position: entry.$2,
+            family: _normalizeParsedFamily(familySegment),
+          );
+        }
+      }
     }
     if (upper.contains('PRINCESS ')) {
       final princessIdx = upper.lastIndexOf('PRINCESS ');
+      final familySegment = cleanAfter.substring(0, princessIdx).trim();
       return (
         deityName: toTitleCase(cleanAfter.substring(princessIdx + 9).trim()),
-        position: 'Princess'
+        position: 'Princess',
+        family: _normalizeParsedFamily(familySegment),
       );
     }
     if (upper.contains('SUPREME GODDESS ')) {
@@ -146,46 +167,64 @@ class GroupTemplateHelper {
         final gIdx = remUpper.lastIndexOf(' GODDESS ');
         return (
           deityName: toTitleCase(rem.substring(gIdx + 9).trim()),
-          position: 'Supreme Goddess'
+          position: 'Supreme Goddess',
+          family: _normalizeParsedFamily(rem.substring(0, gIdx)),
         );
       }
       return (
         deityName: toTitleCase(rem),
-        position: 'Supreme Goddess'
+        position: 'Supreme Goddess',
+        family: null,
       );
+    }
+    if (upper.contains('SUPREME ') && upper.contains(' GODDESS ')) {
+      final supIdx = upper.indexOf('SUPREME ');
+      final gIdx = upper.lastIndexOf(' GODDESS ');
+      if (gIdx > supIdx + 8) {
+        return (
+          deityName: toTitleCase(cleanAfter.substring(gIdx + 9).trim()),
+          position: 'Supreme Goddess',
+          family: _normalizeParsedFamily(cleanAfter.substring(supIdx + 8, gIdx)),
+        );
+      }
     }
     if (upper.contains('ELFWITCH ')) {
       final idx = upper.lastIndexOf('ELFWITCH ');
       return (
         deityName: toTitleCase(cleanAfter.substring(idx + 9).trim()),
-        position: 'Elfwitch'
+        position: 'Elfwitch',
+        family: _normalizeParsedFamily(cleanAfter.substring(0, idx)),
       );
     }
     if (upper.contains('ENCHANTRESS ')) {
       final idx = upper.lastIndexOf('ENCHANTRESS ');
       return (
         deityName: toTitleCase(cleanAfter.substring(idx + 12).trim()),
-        position: 'Enchantress'
+        position: 'Enchantress',
+        family: _normalizeParsedFamily(cleanAfter.substring(0, idx)),
       );
     }
     if (upper.contains('QUEEN ')) {
       final idx = upper.lastIndexOf('QUEEN ');
       return (
         deityName: toTitleCase(cleanAfter.substring(idx + 6).trim()),
-        position: 'Queen'
+        position: 'Queen',
+        family: null,
       );
     }
     if (upper.contains('GODDESS ')) {
       final idx = upper.lastIndexOf('GODDESS ');
       return (
         deityName: toTitleCase(cleanAfter.substring(idx + 8).trim()),
-        position: 'Goddess'
+        position: 'Goddess',
+        family: _normalizeParsedFamily(cleanAfter.substring(0, idx)),
       );
     }
 
     return (
       deityName: toTitleCase(cleanAfter),
       position: null,
+      family: null,
     );
   }
 
@@ -272,8 +311,8 @@ class GroupTemplateHelper {
             ? position
             : null;
 
-    // If name is a full living place string, extract the deity name and position
-    final parsed = parseLivingPlace(cleanName);
+    // If name is a full living place string, extract the deity name, position, and family
+    final parsed = parseLivingPlaceWithFamily(cleanName);
     if (parsed.position != null) {
       cleanName = parsed.deityName;
       effectivePosition ??= parsed.position;
@@ -290,7 +329,7 @@ class GroupTemplateHelper {
             family.isNotEmpty &&
             family.toLowerCase() != 'main')
         ? toTitleCase(family)
-        : null;
+        : parsed.family;
 
     switch (effectivePosition) {
       case 'Queen':
@@ -303,17 +342,51 @@ class GroupTemplateHelper {
       case 'Second Born Princess':
       case 'Third Born Princess':
       case 'Princess':
-        final lower = cleanName.toLowerCase();
-        if (lower.startsWith('first born princess ')) {
-          cleanName = cleanName.substring(20).trim();
-        } else if (lower.startsWith('second born princess ')) {
-          cleanName = cleanName.substring(21).trim();
-        } else if (lower.startsWith('third born princess ')) {
-          cleanName = cleanName.substring(20).trim();
-        } else if (lower.startsWith('princess ')) {
-          cleanName = cleanName.substring(9).trim();
+        var stripped = cleanName;
+        for (final bornPrefix in const [
+          'first born ',
+          'second born ',
+          'third born ',
+        ]) {
+          if (stripped.toLowerCase().startsWith(bornPrefix)) {
+            stripped = stripped.substring(bornPrefix.length).trim();
+            break;
+          }
         }
-        return 'Princess $cleanName';
+        if (cleanFamily != null &&
+            stripped.toLowerCase().startsWith('${cleanFamily.toLowerCase()} ')) {
+          stripped = stripped.substring(cleanFamily.length).trim();
+        }
+        if (stripped.toLowerCase().startsWith('princess ')) {
+          stripped = stripped.substring(9).trim();
+        }
+        if (stripped.isNotEmpty) {
+          cleanName = stripped;
+        }
+
+        final String rolePrefix;
+        switch (effectivePosition) {
+          case 'First Born Princess':
+            rolePrefix = cleanFamily != null
+                ? 'First Born $cleanFamily Princess'
+                : 'First Born Princess';
+            break;
+          case 'Second Born Princess':
+            rolePrefix = cleanFamily != null
+                ? 'Second Born $cleanFamily Princess'
+                : 'Second Born Princess';
+            break;
+          case 'Third Born Princess':
+            rolePrefix = cleanFamily != null
+                ? 'Third Born $cleanFamily Princess'
+                : 'Third Born Princess';
+            break;
+          default:
+            rolePrefix =
+                cleanFamily != null ? '$cleanFamily Princess' : 'Princess';
+            break;
+        }
+        return '$rolePrefix $cleanName';
 
       case 'Aura Elixiria':
       case 'Aura Elixiria Goddess':

@@ -21,6 +21,7 @@ class GroupModel {
   final String? wish;
   final String? livingPlace;
   final int galleryCount;
+  final DateTime? lastGalleryUpdate;
   final String? parentGroupId;
   final String? parentGroupName;
   final bool isSubGroup;
@@ -49,6 +50,7 @@ class GroupModel {
     this.wish,
     this.livingPlace,
     this.galleryCount = 0,
+    this.lastGalleryUpdate,
     this.parentGroupId,
     this.parentGroupName,
     this.isSubGroup = false,
@@ -135,6 +137,9 @@ class GroupModel {
       'roleplayIntervalSeconds': roleplayIntervalSeconds,
       'roleplayMode': roleplayMode,
     };
+    if (lastGalleryUpdate != null) {
+      map['lastGalleryUpdate'] = lastGalleryUpdate!.millisecondsSinceEpoch;
+    }
     if (chatBackgroundUrl != null && chatBackgroundUrl!.trim().isNotEmpty) {
       map['chatBackgroundUrl'] = chatBackgroundUrl!.trim();
     }
@@ -165,6 +170,7 @@ class GroupModel {
     String? wish,
     String? livingPlace,
     int? galleryCount,
+    DateTime? lastGalleryUpdate,
     String? parentGroupId,
     String? parentGroupName,
     bool? isSubGroup,
@@ -193,6 +199,7 @@ class GroupModel {
       wish: wish ?? this.wish,
       livingPlace: livingPlace ?? this.livingPlace,
       galleryCount: galleryCount ?? this.galleryCount,
+      lastGalleryUpdate: lastGalleryUpdate ?? this.lastGalleryUpdate,
       parentGroupId: parentGroupId ?? this.parentGroupId,
       parentGroupName: parentGroupName ?? this.parentGroupName,
       isSubGroup: isSubGroup ?? this.isSubGroup,
@@ -259,6 +266,7 @@ class GroupModel {
       wish: map['wish'],
       livingPlace: map['livingPlace'] as String?,
       galleryCount: (map['galleryCount'] as num?)?.toInt() ?? 0,
+      lastGalleryUpdate: _parseOptionalEpoch(map['lastGalleryUpdate']),
       parentGroupId: parentGrpId,
       parentGroupName: map['parentGroupName'] as String?,
       isSubGroup: isSubGrp,
@@ -269,5 +277,18 @@ class GroupModel {
           (map['roleplayIntervalSeconds'] as num?)?.toInt() ?? 15,
       roleplayMode: (map['roleplayMode'] as String?) ?? 'automatic',
     );
+  }
+
+  static DateTime? _parseOptionalEpoch(dynamic raw) {
+    if (raw == null) return null;
+    if (raw is num) {
+      return DateTime.fromMillisecondsSinceEpoch(raw.toInt());
+    }
+    if (raw is DateTime) return raw;
+    try {
+      final dynamic converted = (raw as dynamic).toDate();
+      if (converted is DateTime) return converted;
+    } catch (_) {}
+    return null;
   }
 }

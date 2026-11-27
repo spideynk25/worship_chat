@@ -422,35 +422,51 @@ void main() {
           name: 'Krithi',
           position: 'First Born Princess',
         ),
-        'Princess Krithi',
+        'First Born Princess Krithi',
       );
       expect(
         GroupTemplateHelper.getNameWithPosition(
           name: 'Princess Krithi',
           position: 'First Born Princess',
         ),
-        'Princess Krithi',
+        'First Born Princess Krithi',
       );
       expect(
         GroupTemplateHelper.getNameWithPosition(
           name: 'First Born Princess Krithi',
           position: 'First Born Princess',
         ),
-        'Princess Krithi',
+        'First Born Princess Krithi',
       );
       expect(
         GroupTemplateHelper.getNameWithPosition(
           name: 'Mamitha',
           position: 'Second Born Princess',
         ),
-        'Princess Mamitha',
+        'Second Born Princess Mamitha',
       );
       expect(
         GroupTemplateHelper.getNameWithPosition(
           name: 'Ananya',
           position: 'Third Born Princess',
         ),
-        'Princess Ananya',
+        'Third Born Princess Ananya',
+      );
+      expect(
+        GroupTemplateHelper.getNameWithPosition(
+          name: 'Ananya',
+          position: 'First Born Princess',
+          family: 'Eternal',
+        ),
+        'First Born Eternal Princess Ananya',
+      );
+      expect(
+        GroupTemplateHelper.getNameWithPosition(
+          name: 'Anikha',
+          position: 'Second Born Princess',
+          family: 'Eternal',
+        ),
+        'Second Born Eternal Princess Anikha',
       );
     });
 
@@ -506,6 +522,22 @@ void main() {
         ),
         'Golden Blossom Goddess Anu',
       );
+      expect(
+        GroupTemplateHelper.getNameWithPosition(
+          name: 'Keerthy',
+          position: 'Goddess',
+          family: 'Eternal',
+        ),
+        'Eternal Goddess Keerthy',
+      );
+      expect(
+        GroupTemplateHelper.getNameWithPosition(
+          name: 'Samantha',
+          position: 'Goddess',
+          family: 'Main',
+        ),
+        'Goddess Samantha',
+      );
     });
 
     test('nameWithPosition parses legacy full living place names', () {
@@ -525,7 +557,19 @@ void main() {
         GroupTemplateHelper.getNameWithPosition(
           name: 'PALACE OF 🌺 FIRST BORN PRINCESS KRITHI',
         ),
-        'Princess Krithi',
+        'First Born Princess Krithi',
+      );
+      expect(
+        GroupTemplateHelper.getNameWithPosition(
+          name: 'PALACE OF FIRST BORN ETERNAL PRINCESS ANANYA',
+        ),
+        'First Born Eternal Princess Ananya',
+      );
+      expect(
+        GroupTemplateHelper.getNameWithPosition(
+          name: 'TEMPLE OF ETERNAL GODDESS KEERTHY',
+        ),
+        'Eternal Goddess Keerthy',
       );
     });
 
@@ -561,7 +605,7 @@ void main() {
         princessGroup.effectiveLivingPlace,
         'PALACE OF 🌺 FIRST BORN PRINCESS KRITHI',
       );
-      expect(princessGroup.nameWithPosition, 'Princess Krithi');
+      expect(princessGroup.nameWithPosition, 'First Born Princess Krithi');
     });
   });
 

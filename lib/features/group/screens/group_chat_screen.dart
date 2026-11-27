@@ -78,6 +78,8 @@ class _GroupChatScreenState extends ConsumerState<GroupChatScreen>
   StreamSubscription<GroupModel>? _groupSubscription;
   String? _currentChatBackgroundUrl;
   final ChatPowerUpController _powerUpController = ChatPowerUpController();
+  late final GroupController _groupController;
+  bool _isActiveInTree = true;
   bool get _isRoleplayMode =>
       RoleplayService.instance.isRoleplayActive(widget.groupId);
   bool get _isManualRoleplay =>
@@ -624,8 +626,8 @@ class _GroupChatScreenState extends ConsumerState<GroupChatScreen>
     } catch (_) {}
     _currentChatBackgroundUrl = widget.chatBackgroundUrl;
     _loadCachedBackground();
-    _groupTypingStream =
-        ref.read(groupControllerProvider).getGroupTypingStatus(widget.groupId);
+    _groupController = ref.read(groupControllerProvider);
+    _groupTypingStream = _groupController.getGroupTypingStatus(widget.groupId);
     WidgetsBinding.instance.addObserver(this);
     RoleplayService.instance.addListener(_onRoleplayServiceUpdated);
     _groupStream = FirebaseFirestore.instance
@@ -664,14 +666,25 @@ class _GroupChatScreenState extends ConsumerState<GroupChatScreen>
         .where((uid) => uid != currentUserUid)
         .toList();
     WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || !_isActiveInTree) return;
       FirebaseNotificationService.cancelNotificationsForChat(
         widget.groupId,
         chatName: widget.name,
       );
-      if (mounted) {
-        ref.read(groupControllerProvider).markGroupAsSeen(widget.groupId);
-      }
+      _groupController.markGroupAsSeen(widget.groupId);
     });
+  }
+
+  @override
+  void activate() {
+    super.activate();
+    _isActiveInTree = true;
+  }
+
+  @override
+  void deactivate() {
+    _isActiveInTree = false;
+    super.deactivate();
   }
 
   Future<void> _loadCachedBackground() async {
@@ -695,15 +708,14 @@ class _GroupChatScreenState extends ConsumerState<GroupChatScreen>
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     super.didChangeAppLifecycleState(state);
+    if (!mounted || !_isActiveInTree) return;
     if (state == AppLifecycleState.resumed) {
       ActiveChatNotifier.instance.enter(widget.groupId, chatName: widget.name);
       FirebaseNotificationService.cancelNotificationsForChat(
         widget.groupId,
         chatName: widget.name,
       );
-      if (mounted) {
-        ref.read(groupControllerProvider).markGroupAsSeen(widget.groupId);
-      }
+      _groupController.markGroupAsSeen(widget.groupId);
     }
   }
 

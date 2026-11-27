@@ -1,10 +1,13 @@
 import 'dart:async';
+import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:hive/hive.dart';
 import 'package:worship_chat/features/dashboard/repositories/event_repository.dart';
 import 'package:worship_chat/features/dashboard/widgets/today_birthdays_slideshow_widget.dart';
 import 'package:worship_chat/models/event.dart';
+import 'package:worship_chat/models/group.dart';
 
 class FakeEventRepository extends EventRepository {
   final Stream<List<Event>> _stream;
@@ -585,6 +588,89 @@ void main() {
       expect(find.text('Happy Birthday, ETERNAL ENCHANTRESS PRIYANKA JAWALKAR! 🎂✨'), findsOneWidget);
 
       await controller.close();
+    });
+
+    test('Enriches bare connectedGroupName & birthday event title from groups_cache with deity role', () async {
+      final tempDir = await Directory.systemTemp.createTemp('bday_role_cache_');
+      try {
+        Hive.init(tempDir.path);
+        final cacheBox = await Hive.openBox('groups_cache');
+        final eternalGoddess = GroupModel(
+          senderId: 'u1',
+          name: 'Keerthy',
+          groupId: 'grp_keerthy',
+          lastMessage: '',
+          groupPic: '',
+          membersUid: const [],
+          fcmTokens: const [],
+          unseenMessages: const {},
+          position: 'Goddess',
+          family: 'Eternal',
+        );
+        final firstBornPrincess = GroupModel(
+          senderId: 'u1',
+          name: 'Krithi',
+          groupId: 'grp_krithi',
+          lastMessage: '',
+          groupPic: '',
+          membersUid: const [],
+          fcmTokens: const [],
+          unseenMessages: const {},
+          position: 'First Born Princess',
+          family: 'Main',
+        );
+        await cacheBox.put('groups_all', [
+          eternalGoddess.toMap(),
+          firstBornPrincess.toMap(),
+        ]);
+
+        final bareKeerthyEvent = Event(
+          id: 'ev_keerthy',
+          title: "Keerthy's Birthday",
+          description: '',
+          date: now,
+          time: const TimeOfDay(hour: 0, minute: 0),
+          createdBy: 'Admin',
+          userId: 'u1',
+          isRecurring: true,
+          connectedGroupId: 'grp_keerthy',
+          connectedGroupName: 'Keerthy',
+        );
+        expect(
+          TodayBirthdaysSlideshowWidget.extractCelebrantName(
+            bareKeerthyEvent.title,
+            connectedGroupName: bareKeerthyEvent.connectedGroupName,
+            connectedGroupId: bareKeerthyEvent.connectedGroupId,
+          ),
+          'Eternal Goddess Keerthy',
+        );
+        expect(
+          TodayBirthdaysSlideshowWidget.formatBirthdayEventTitle(bareKeerthyEvent),
+          "Eternal Goddess Keerthy's Birthday",
+        );
+
+        final bareKrithiEvent = Event(
+          id: 'ev_krithi',
+          title: "Krithi's Birthday",
+          description: '',
+          date: now,
+          time: const TimeOfDay(hour: 0, minute: 0),
+          createdBy: 'Admin',
+          userId: 'u1',
+          isRecurring: true,
+          connectedGroupId: 'grp_krithi',
+          connectedGroupName: 'Krithi',
+        );
+        expect(
+          TodayBirthdaysSlideshowWidget.formatBirthdayEventTitle(bareKrithiEvent),
+          "First Born Princess Krithi's Birthday",
+        );
+      } finally {
+        await Hive.close();
+        if (tempDir.existsSync()) {
+          tempDir.deleteSync(recursive: true);
+        }
+      }
     });
   });
 }

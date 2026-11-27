@@ -259,7 +259,7 @@ class _DynamicTextWidgetState extends State<DynamicTextWidget> {
       duration: const Duration(milliseconds: 700),
       layoutBuilder: (Widget? currentChild, List<Widget> previousChildren) {
         return Stack(
-          alignment: Alignment.centerLeft,
+          alignment: Alignment.topLeft,
           children: <Widget>[
             ...previousChildren,
             if (currentChild != null) currentChild,
@@ -283,6 +283,7 @@ class _DynamicTextWidgetState extends State<DynamicTextWidget> {
         text,
         key: ValueKey<String>(text),
         textAlign: TextAlign.left,
+        softWrap: true,
         maxLines: widget.maxLines,
         overflow: TextOverflow.ellipsis,
         style: widget.style ??

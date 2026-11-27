@@ -7,6 +7,7 @@ import 'package:worship_chat/colors.dart';
 import 'package:worship_chat/common/utils/utils.dart';
 import 'package:worship_chat/common/widgets/skeleton_loader.dart';
 import 'package:worship_chat/features/dashboard/controller/event_controller.dart';
+import 'package:worship_chat/features/dashboard/widgets/today_birthdays_slideshow_widget.dart';
 import 'package:worship_chat/features/group/controller/group_controller.dart';
 import 'package:worship_chat/features/group/utils/queendom_group_helper.dart';
 import 'package:worship_chat/features/group/widgets/queendom_badge_widget.dart';
@@ -1933,7 +1934,8 @@ class _EventsCalendarPageState extends ConsumerState<EventsCalendarPage> {
                         children: [
                           // Event Name: Full horizontal width, multi-line wrapping
                           Text(
-                            event.title,
+                            TodayBirthdaysSlideshowWidget
+                                .formatBirthdayEventTitle(event),
                             style: const TextStyle(
                               fontSize: 16,
                               fontWeight: FontWeight.bold,
@@ -2056,10 +2058,15 @@ class _EventsCalendarPageState extends ConsumerState<EventsCalendarPage> {
                     if (event.connectedGroupId != null) ...[
                       InkWell(
                         onTap: () {
+                          final resolvedName = TodayBirthdaysSlideshowWidget
+                              .resolveConnectedGroupName(
+                            connectedGroupName: event.connectedGroupName,
+                            connectedGroupId: event.connectedGroupId,
+                          );
                           navigateToQueendomGroup(
                             context,
                             groupId: event.connectedGroupId!,
-                            name: event.connectedGroupName ?? 'Queendom Group',
+                            name: resolvedName ?? 'Queendom Group',
                             groupPic: event.connectedGroupPic,
                             queendom: event.connectedQueendom,
                           );

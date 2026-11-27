@@ -3,6 +3,7 @@ import 'dart:developer';
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:firebase_core/firebase_core.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -50,9 +51,13 @@ class _GroupShortcutsGridState extends ConsumerState<GroupShortcutsGrid> {
     if (widget.currentUserId.trim().isNotEmpty) {
       return widget.currentUserId.trim();
     }
-    final authUid = FirebaseAuth.instance.currentUser?.uid;
-    if (authUid != null && authUid.isNotEmpty) {
-      return authUid;
+    if (Firebase.apps.isNotEmpty) {
+      try {
+        final authUid = FirebaseAuth.instance.currentUser?.uid;
+        if (authUid != null && authUid.isNotEmpty) {
+          return authUid;
+        }
+      } catch (_) {}
     }
     try {
       if (Hive.isBoxOpen('userBox')) {
@@ -164,7 +169,7 @@ class _GroupShortcutsGridState extends ConsumerState<GroupShortcutsGrid> {
 
   void _listenToFirestoreShortcuts() {
     final uid = _effectiveUid;
-    if (uid.isEmpty) {
+    if (uid.isEmpty || Firebase.apps.isEmpty) {
       if (mounted) {
         setState(() {
           _isSyncingCloud = false;
@@ -944,7 +949,9 @@ class _ManageShortcutsSheetState extends State<_ManageShortcutsSheet> {
   Widget build(BuildContext context) {
     final filteredGroups = widget.allGroups.where((g) {
       if (_searchQuery.trim().isEmpty) return true;
-      return g.name.toLowerCase().contains(_searchQuery.toLowerCase());
+      final q = _searchQuery.toLowerCase();
+      return g.nameWithPosition.toLowerCase().contains(q) ||
+          g.name.toLowerCase().contains(q);
     }).toList();
 
     return Container(
@@ -1167,7 +1174,9 @@ class _ManageShortcutsSheetState extends State<_ManageShortcutsSheet> {
                                   crossAxisAlignment: CrossAxisAlignment.start,
                                   children: [
                                     Text(
-                                      group.name,
+                                      group.nameWithPosition.isNotEmpty
+                                          ? group.nameWithPosition
+                                          : group.name,
                                       style: TextStyle(
                                         color: Colors.white,
                                         fontSize: 14,

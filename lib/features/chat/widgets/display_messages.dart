@@ -155,7 +155,9 @@ class _MediaPreviewWidgetState extends State<MediaPreviewWidget> {
         }
       } else {
         // Image or GIF
-        setState(() => _isLoading = false);
+        if (mounted) {
+          setState(() => _isLoading = false);
+        }
         _prefetchLocalMedia();
       }
     } catch (e) {
@@ -378,6 +380,7 @@ class _MediaPreviewWidgetState extends State<MediaPreviewWidget> {
         DeviceOrientation.portraitDown,
       ]);
     }
+    if (!mounted) return;
     setState(() => _isFullscreen = true);
   }
 
@@ -390,6 +393,7 @@ class _MediaPreviewWidgetState extends State<MediaPreviewWidget> {
       DeviceOrientation.portraitUp,
       DeviceOrientation.portraitDown,
     ]);
+    if (!mounted) return;
     setState(() => _isFullscreen = false);
   }
 

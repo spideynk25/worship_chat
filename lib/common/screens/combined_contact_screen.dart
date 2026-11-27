@@ -1,9 +1,12 @@
+import 'dart:async';
 import 'dart:developer';
 import 'dart:io';
 import 'dart:math' as math;
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:firebase_core/firebase_core.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:intl/intl.dart';
@@ -22,6 +25,7 @@ import 'package:worship_chat/models/chat_contact.dart';
 import 'package:worship_chat/models/user_model.dart';
 import 'package:worship_chat/common/widgets/user_avatar.dart';
 import 'package:worship_chat/features/dashboard/widgets/group_shortcuts_grid.dart';
+import 'package:worship_chat/features/dashboard/widgets/recent_gallery_photos_section.dart';
 
 class CombinedContactsScreen extends ConsumerStatefulWidget {
   final bool isAllChats;
@@ -34,7 +38,10 @@ class CombinedContactsScreen extends ConsumerStatefulWidget {
 
 class _CombinedContactsScreenState
     extends ConsumerState<CombinedContactsScreen> {
+  final GlobalKey<RecentGalleryPhotosSectionState> _recentGalleryKey =
+      GlobalKey<RecentGalleryPhotosSectionState>();
   Stream<List<ChatContact>>? _contactsStream;
+  Completer<void>? _contactsRefreshCompleter;
 
   @override
   void initState() {
@@ -56,6 +63,62 @@ class _CombinedContactsScreenState
         : ref.read(chatControllerProvider).chatContacts();
   }
 
+  Future<void> _handleRefresh() async {
+    try {
+      HapticFeedback.lightImpact();
+
+      // Reload statuses and 1:1 chats stream cleanly without double-subscribing.
+      ref.invalidate(statusStreamProvider);
+      final completer = Completer<void>();
+      _contactsRefreshCompleter = completer;
+      if (mounted) {
+        setState(() => _initStream());
+      } else {
+        completer.complete();
+      }
+
+      final contactsRefreshFuture = completer.future.timeout(
+        const Duration(milliseconds: 1500),
+        onTimeout: () {
+          if (identical(_contactsRefreshCompleter, completer)) {
+            _contactsRefreshCompleter = null;
+          }
+        },
+      );
+
+      final galleryRefreshFuture =
+          _recentGalleryKey.currentState?.refresh() ?? Future<void>.value();
+
+      await Future.wait([
+        contactsRefreshFuture,
+        galleryRefreshFuture,
+      ]);
+    } catch (e) {
+      log('❌ Error refreshing chats & recent gallery: $e');
+    }
+  }
+
+  String _safeResolveCurrentUid() {
+    final fromHive = safeCurrentUserId();
+    if (fromHive != null && fromHive.isNotEmpty) return fromHive;
+    if (Firebase.apps.isNotEmpty) {
+      try {
+        return FirebaseAuth.instance.currentUser?.uid ?? '';
+      } catch (_) {}
+    }
+    return '';
+  }
+
+  String _safeResolveProfilePic() {
+    try {
+      if (Hive.isBoxOpen('userBox')) {
+        return Hive.box<UserModel>('userBox').get('currentUser')?.profilePic ??
+            '';
+      }
+    } catch (_) {}
+    return '';
+  }
+
   /// Returns the index of the first status in [statuses] that the current
   /// user has NOT seen yet. Falls back to 0 if all are seen.
   int _firstUnseenIndex(
@@ -75,11 +138,10 @@ class _CombinedContactsScreenState
   @override
   Widget build(BuildContext context) {
     final statusAsync = ref.watch(statusStreamProvider);
-    final currentUserUid = safeCurrentUserId() ?? FirebaseAuth.instance.currentUser?.uid ?? '';
+    final currentUserUid = _safeResolveCurrentUid();
 
     // Read current user's profile pic from Hive (same source as HomeScreen)
-    final currentUserProfilePic =
-        Hive.box<UserModel>('userBox').get('currentUser')?.profilePic ?? '';
+    final currentUserProfilePic = _safeResolveProfilePic();
 
     // Cache-first: prioritize stream data, or fallback instantly to memory/Hive cache
     final List<Map<String, dynamic>> statuses =
@@ -123,9 +185,15 @@ class _CombinedContactsScreenState
     final int extraItems =
         otherStatuses.isNotEmpty ? otherStatuses.length : 1;
 
-    return Padding(
-      padding: const EdgeInsets.only(top: 10),
+    return RefreshIndicator(
+      color: tabColor,
+      backgroundColor: const Color(0xFF1B1528),
+      onRefresh: _handleRefresh,
       child: SingleChildScrollView(
+        physics: const AlwaysScrollableScrollPhysics(
+          parent: BouncingScrollPhysics(),
+        ),
+        padding: const EdgeInsets.only(top: 10),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
@@ -224,6 +292,15 @@ class _CombinedContactsScreenState
                   .getCachedContacts(isAllChats: widget.isAllChats),
               stream: _contactsStream,
               builder: (context, snapshot) {
+                if (snapshot.connectionState == ConnectionState.active ||
+                    (snapshot.connectionState == ConnectionState.done &&
+                        snapshot.hasData)) {
+                  final pending = _contactsRefreshCompleter;
+                  if (pending != null && !pending.isCompleted) {
+                    _contactsRefreshCompleter = null;
+                    pending.complete();
+                  }
+                }
                 if (snapshot.connectionState == ConnectionState.waiting &&
                     (!snapshot.hasData || snapshot.data!.isEmpty)) {
                   return const ContactListSkeleton();
@@ -357,8 +434,17 @@ class _CombinedContactsScreenState
 
             // ── Group Shortcuts (Down the one to one chats) ───────────────────
             Padding(
-              padding: const EdgeInsets.only(top: 14, bottom: 32),
+              padding: const EdgeInsets.only(top: 14, bottom: 18),
               child: GroupShortcutsGrid(currentUserId: currentUserUid),
+            ),
+
+            // ── Recently Added Photos in Gallery ─────────────────────────────
+            Padding(
+              padding: const EdgeInsets.only(top: 2, bottom: 32),
+              child: RecentGalleryPhotosSection(
+                key: _recentGalleryKey,
+                currentUserId: currentUserUid,
+              ),
             ),
           ],
         ),

@@ -120,6 +120,7 @@ class HomeBirthdayDeitiesAppBarBottom extends StatelessWidget
                             TodayBirthdaysSlideshowWidget.extractCelebrantName(
                           celebrant.title,
                           connectedGroupName: celebrant.connectedGroupName,
+                          connectedGroupId: celebrant.connectedGroupId,
                         );
 
                         return ListTile(
@@ -173,6 +174,7 @@ class HomeBirthdayDeitiesAppBarBottom extends StatelessWidget
     final cleanName = TodayBirthdaysSlideshowWidget.extractCelebrantName(
       celebrant.title,
       connectedGroupName: celebrant.connectedGroupName,
+      connectedGroupId: celebrant.connectedGroupId,
     );
     final pic = resolveCelebrantPic(celebrant);
     final imageProvider = getImageProvider(pic);
@@ -374,6 +376,7 @@ class HomeBirthdayDeitiesAppBarBottom extends StatelessWidget
     final cleanName = TodayBirthdaysSlideshowWidget.extractCelebrantName(
       celebrant.title,
       connectedGroupName: celebrant.connectedGroupName,
+      connectedGroupId: celebrant.connectedGroupId,
     );
 
     List<GroupGalleryImage> galleryImages = [];
@@ -429,14 +432,19 @@ class HomeBirthdayDeitiesAppBarBottom extends StatelessWidget
 
   static void openGroupChat(BuildContext context, Event celebrant) {
     if (celebrant.connectedGroupId == null) return;
+    final resolvedName = TodayBirthdaysSlideshowWidget.resolveConnectedGroupName(
+      connectedGroupName: celebrant.connectedGroupName,
+      connectedGroupId: celebrant.connectedGroupId,
+    );
     Navigator.push(
       context,
       MaterialPageRoute(
         builder: (_) => GroupChatScreen(
-          name: celebrant.connectedGroupName ??
+          name: resolvedName ??
               TodayBirthdaysSlideshowWidget.extractCelebrantName(
                 celebrant.title,
                 connectedGroupName: celebrant.connectedGroupName,
+                connectedGroupId: celebrant.connectedGroupId,
               ),
           groupId: celebrant.connectedGroupId!,
           fcmToken: const [],
@@ -544,6 +552,7 @@ class HomeBirthdayDeitiesAppBarBottom extends StatelessWidget
     final cleanName = TodayBirthdaysSlideshowWidget.extractCelebrantName(
       celebrant.title,
       connectedGroupName: celebrant.connectedGroupName,
+      connectedGroupId: celebrant.connectedGroupId,
     );
 
     return InkWell(
@@ -650,6 +659,7 @@ class HomeBirthdayDeitiesAppBarBottom extends StatelessWidget
         final cleanName = TodayBirthdaysSlideshowWidget.extractCelebrantName(
           celebrant.title,
           connectedGroupName: celebrant.connectedGroupName,
+          connectedGroupId: celebrant.connectedGroupId,
         );
 
         return InkWell(
@@ -772,6 +782,7 @@ class _AnimatedBirthdayDeityAvatarState
     final cleanName = TodayBirthdaysSlideshowWidget.extractCelebrantName(
       widget.celebrant.title,
       connectedGroupName: widget.celebrant.connectedGroupName,
+      connectedGroupId: widget.celebrant.connectedGroupId,
     );
 
     final avatarDiameter = widget.radius * 2;
@@ -796,56 +807,50 @@ class _AnimatedBirthdayDeityAvatarState
       ),
     );
 
-    Widget content = SizedBox(
-      width: outerSize,
-      height: outerSize,
-      child: AnimatedBuilder(
-        animation: _controller,
-        child: avatarChild,
-        builder: (context, cachedAvatar) {
-          final t = (_controller.value + widget.phaseOffset) % 1.0;
-          final angle = t * 2 * math.pi;
-          final pulse = 0.5 + 0.5 * math.sin(angle);
-          final sweepActive = t <= 0.36;
-          final sweepProgress = sweepActive ? (t / 0.36) : -1.0;
+    Widget content = RepaintBoundary(
+      child: SizedBox(
+        width: outerSize,
+        height: outerSize,
+        child: AnimatedBuilder(
+          animation: _controller,
+          child: avatarChild,
+          builder: (context, cachedAvatar) {
+            final t = (_controller.value + widget.phaseOffset) % 1.0;
+            final angle = t * 2 * math.pi;
+            final pulse = 0.5 + 0.5 * math.sin(angle);
+            final sweepActive = t <= 0.36;
+            final sweepProgress = sweepActive ? (t / 0.36) : -1.0;
 
-          return Stack(
-            clipBehavior: Clip.none,
-            alignment: Alignment.center,
-            children: [
-              // Rotating gold-rose-amber celebration ring with soft glow
-              Container(
-                width: outerSize,
-                height: outerSize,
-                padding: EdgeInsets.all(ringStroke),
-                decoration: BoxDecoration(
-                  shape: BoxShape.circle,
-                  gradient: SweepGradient(
-                    colors: const [
-                      Color(0xFFFFD700),
-                      Color(0xFFFF7EB3),
-                      Color(0xFFFFB26B),
-                      Color(0xFFFFF1B8),
-                      Color(0xFFFFD700),
+            return Stack(
+              clipBehavior: Clip.none,
+              alignment: Alignment.center,
+              children: [
+                // Subtle soft halo without heavy multi-pass Gaussian blur per frame
+                Container(
+                  width: outerSize,
+                  height: outerSize,
+                  padding: EdgeInsets.all(ringStroke),
+                  decoration: BoxDecoration(
+                    shape: BoxShape.circle,
+                    gradient: SweepGradient(
+                      colors: const [
+                        Color(0xFFFFD700),
+                        Color(0xFFFF7EB3),
+                        Color(0xFFFFB26B),
+                        Color(0xFFFFF1B8),
+                        Color(0xFFFFD700),
+                      ],
+                      transform: GradientRotation(angle),
+                    ),
+                    boxShadow: [
+                      BoxShadow(
+                        color: const Color(0xFFFFD700).withValues(
+                          alpha: 0.20 + 0.14 * pulse,
+                        ),
+                        blurRadius: 4.0,
+                      ),
                     ],
-                    transform: GradientRotation(angle),
                   ),
-                  boxShadow: [
-                    BoxShadow(
-                      color: const Color(0xFFFFD700).withValues(
-                        alpha: 0.26 + 0.22 * pulse,
-                      ),
-                      blurRadius: 6.5 + 4.5 * pulse,
-                      spreadRadius: 0.3 + 0.8 * pulse,
-                    ),
-                    BoxShadow(
-                      color: const Color(0xFFFF7EB3).withValues(
-                        alpha: 0.18 + 0.16 * (1.0 - pulse),
-                      ),
-                      blurRadius: 8.0,
-                    ),
-                  ],
-                ),
                 child: Container(
                   padding: EdgeInsets.all(bezelGap),
                   decoration: const BoxDecoration(
@@ -891,31 +896,32 @@ class _AnimatedBirthdayDeityAvatarState
                   ),
                 ),
               ),
-              if (widget.showCakeBadge)
-                Positioned(
-                  bottom: -1,
-                  right: -1,
-                  child: Container(
-                    padding: const EdgeInsets.all(0.8),
-                    decoration: BoxDecoration(
-                      color: appBarColor,
-                      shape: BoxShape.circle,
-                      border: Border.all(
-                        color: const Color(0xFFFFD700).withValues(alpha: 0.65),
-                        width: 0.7,
+                if (widget.showCakeBadge)
+                  Positioned(
+                    bottom: -1,
+                    right: -1,
+                    child: Container(
+                      padding: const EdgeInsets.all(0.8),
+                      decoration: BoxDecoration(
+                        color: appBarColor,
+                        shape: BoxShape.circle,
+                        border: Border.all(
+                          color: const Color(0xFFFFD700).withValues(alpha: 0.65),
+                          width: 0.7,
+                        ),
                       ),
-                    ),
-                    child: Text(
-                      '🎂',
-                      style: TextStyle(
-                        fontSize: (widget.radius * 0.44).clamp(7.5, 13.0),
+                      child: Text(
+                        '🎂',
+                        style: TextStyle(
+                          fontSize: (widget.radius * 0.44).clamp(7.5, 13.0),
+                        ),
                       ),
                     ),
                   ),
-                ),
-            ],
-          );
-        },
+              ],
+            );
+          },
+        ),
       ),
     );
 

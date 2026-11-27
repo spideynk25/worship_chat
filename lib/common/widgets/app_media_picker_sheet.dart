@@ -561,7 +561,11 @@ class _AppMediaPickerSheetState extends ConsumerState<AppMediaPickerSheet>
                   return Padding(
                     padding: const EdgeInsets.only(right: 6),
                     child: ChoiceChip(
-                      label: Text(g.name),
+                      label: Text(
+                        g.nameWithPosition.isNotEmpty
+                            ? g.nameWithPosition
+                            : g.name,
+                      ),
                       selected: selected,
                       selectedColor: tabColor,
                       backgroundColor: const Color(0xFF1F1B33),

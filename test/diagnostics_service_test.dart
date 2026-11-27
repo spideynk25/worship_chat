@@ -289,5 +289,102 @@ void main() {
       expect(copiedClipboard, contains('Index out of range'));
       expect(copiedClipboard, contains('chat.dart:12'));
     });
+
+    test('deleteReport, clearResolved, and clearAll sync deletions to remote hooks and storage', () async {
+      final deletedIds = <String>[];
+      var clearResolvedCalls = 0;
+      var clearAllCalls = 0;
+
+      DiagnosticsService.instance.configureForTests(
+        remoteDeleter: (id) async => deletedIds.add(id),
+        remoteClearResolved: () async => clearResolvedCalls++,
+        remoteClearAll: () async => clearAllCalls++,
+      );
+
+      final r1 = await DiagnosticsService.instance.recordReport(
+        kind: DiagnosticReportKind.crash,
+        title: 'Crash 1',
+        message: 'First crash',
+        stackTrace: 'a.dart:1',
+      );
+      final r2 = await DiagnosticsService.instance.recordReport(
+        kind: DiagnosticReportKind.error,
+        title: 'Error 2',
+        message: 'Second error',
+        stackTrace: 'b.dart:2',
+      );
+      final r3 = await DiagnosticsService.instance.recordReport(
+        kind: DiagnosticReportKind.performance,
+        title: 'Perf 3',
+        message: 'Third perf',
+        stackTrace: 'c.dart:3',
+      );
+
+      expect(r1, isNotNull);
+      expect(r2, isNotNull);
+      expect(r3, isNotNull);
+
+      await DiagnosticsService.instance.deleteReport(r1!.id);
+      expect(deletedIds, [r1.id]);
+      expect(
+        DiagnosticsService.instance.reportsNotifier.value.map((r) => r.id),
+        isNot(contains(r1.id)),
+      );
+
+      await DiagnosticsService.instance.markResolved(r2!.id);
+      await DiagnosticsService.instance.clearResolved();
+      expect(clearResolvedCalls, 1);
+      expect(
+        DiagnosticsService.instance.reportsNotifier.value.map((r) => r.id),
+        equals([r3!.id]),
+      );
+
+      await DiagnosticsService.instance.clearAll();
+      expect(clearAllCalls, 1);
+      expect(DiagnosticsService.instance.reportsNotifier.value, isEmpty);
+
+      // Re-initializing from SharedPreferences confirms cleared state stays empty.
+      DiagnosticsService.instance.resetForTests();
+      await DiagnosticsService.instance.initialize();
+      expect(DiagnosticsService.instance.reportsNotifier.value, isEmpty);
+    });
+
+    testWidgets('DevelopmentScreen fits 360px width without RenderFlex overflow and clears backend', (tester) async {
+      var clearAllCalls = 0;
+      DiagnosticsService.instance.configureForTests(
+        remoteClearAll: () async => clearAllCalls++,
+      );
+
+      await DiagnosticsService.instance.recordReport(
+        kind: DiagnosticReportKind.crash,
+        title: 'Overflow regression crash',
+        message: 'Sample crash',
+        stackTrace: 'screen.dart:10',
+      );
+
+      tester.view.physicalSize = const Size(360, 800);
+      tester.view.devicePixelRatio = 1.0;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+
+      await tester.pumpWidget(
+        const MaterialApp(home: DevelopmentScreen()),
+      );
+      await tester.pumpAndSettle();
+
+      expect(tester.takeException(), isNull);
+      expect(find.text('Development'), findsOneWidget);
+      expect(find.text('DIAGNOSTICS'), findsOneWidget);
+
+      await tester.tap(find.byIcon(Icons.more_vert_rounded));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Clear All Logs'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Clear All'));
+      await tester.pumpAndSettle();
+
+      expect(clearAllCalls, 1);
+      expect(DiagnosticsService.instance.reportsNotifier.value, isEmpty);
+    });
   });
 }

@@ -1,12 +1,16 @@
+import 'dart:convert';
 import 'dart:developer';
 import 'dart:io';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:uuid/uuid.dart';
 import 'package:worship_chat/common/utils/background_task_service.dart';
 import 'package:worship_chat/common/utils/file_messages.dart';
 import 'package:worship_chat/common/utils/utils.dart';
+import 'package:worship_chat/models/group.dart';
 import 'package:worship_chat/models/group_gallery_image.dart';
 
 final groupGalleryRepositoryProvider = Provider(
@@ -364,6 +368,188 @@ class GroupGalleryRepository {
     } catch (e) {
       log('❌ Error deleting gallery image: $e');
     }
+  }
+
+  static const String _recentCachePrefix = 'recent_gallery_photos_v1_';
+
+  /// Ranks user groups so recently updated / populated galleries are queried first.
+  @visibleForTesting
+  static List<GroupModel> selectGroupsForRecentFetch(
+    List<GroupModel> groups, {
+    int maxGroups = 16,
+  }) {
+    final seen = <String>{};
+    final unique = <GroupModel>[];
+    for (final g in groups) {
+      if (g.groupId.trim().isEmpty || !seen.add(g.groupId)) continue;
+      unique.add(g);
+    }
+
+    int compareGroups(GroupModel a, GroupModel b) {
+      final aHasGallery = a.galleryCount > 0 || a.lastGalleryUpdate != null;
+      final bHasGallery = b.galleryCount > 0 || b.lastGalleryUpdate != null;
+      if (aHasGallery != bHasGallery) return aHasGallery ? -1 : 1;
+
+      final aGalleryMs = a.lastGalleryUpdate?.millisecondsSinceEpoch ?? 0;
+      final bGalleryMs = b.lastGalleryUpdate?.millisecondsSinceEpoch ?? 0;
+      if (aGalleryMs != bGalleryMs) return bGalleryMs.compareTo(aGalleryMs);
+
+      final aMsgMs = a.timeSent?.millisecondsSinceEpoch ?? 0;
+      final bMsgMs = b.timeSent?.millisecondsSinceEpoch ?? 0;
+      if (aMsgMs != bMsgMs) return bMsgMs.compareTo(aMsgMs);
+
+      if (a.galleryCount != b.galleryCount) {
+        return b.galleryCount.compareTo(a.galleryCount);
+      }
+      return a.name.toLowerCase().compareTo(b.name.toLowerCase());
+    }
+
+    unique.sort(compareGroups);
+    return unique.take(maxGroups).toList();
+  }
+
+  /// Merges per-group gallery slices, removes duplicates, filters media if needed,
+  /// and returns newest-first entries capped to [maxItems].
+  @visibleForTesting
+  static List<GroupGalleryImage> mergeAndSortRecentPhotos(
+    List<List<GroupGalleryImage>> perGroupLists, {
+    int maxItems = 30,
+    bool photosOnly = true,
+  }) {
+    final seenIds = <String>{};
+    final merged = <GroupGalleryImage>[];
+    for (final list in perGroupLists) {
+      for (final img in list) {
+        final cleanUrl = img.imageUrl.trim();
+        if (cleanUrl.isEmpty) continue;
+        if (photosOnly && img.isVideo) continue;
+        final dedupeKey =
+            img.imageId.trim().isNotEmpty ? img.imageId.trim() : cleanUrl;
+        if (!seenIds.add(dedupeKey)) continue;
+        merged.add(img);
+      }
+    }
+    merged.sort((a, b) => b.uploadedAt.compareTo(a.uploadedAt));
+    if (merged.length > maxItems) {
+      return merged.sublist(0, maxItems);
+    }
+    return merged;
+  }
+
+  @visibleForTesting
+  static List<GroupGalleryImage> decodeRecentPhotosCache(String rawJson) {
+    if (rawJson.trim().isEmpty) return const [];
+    try {
+      final decoded = jsonDecode(rawJson);
+      if (decoded is! List) return const [];
+      final out = <GroupGalleryImage>[];
+      for (final item in decoded) {
+        if (item is Map) {
+          final img = GroupGalleryImage.fromMap(Map<String, dynamic>.from(item));
+          if (img.imageUrl.trim().isNotEmpty) {
+            out.add(img);
+          }
+        }
+      }
+      out.sort((a, b) => b.uploadedAt.compareTo(a.uploadedAt));
+      return out;
+    } catch (e) {
+      log('Error decoding recent gallery cache: $e');
+      return const [];
+    }
+  }
+
+  @visibleForTesting
+  static String encodeRecentPhotosCache(List<GroupGalleryImage> items) {
+    return jsonEncode(items.map((e) => e.toMap()).toList());
+  }
+
+  Future<List<GroupGalleryImage>> getCachedRecentGalleryPhotos(String uid) async {
+    if (uid.trim().isEmpty) return const [];
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final raw = prefs.getString('$_recentCachePrefix$uid');
+      if (raw == null || raw.isEmpty) return const [];
+      return decodeRecentPhotosCache(raw);
+    } catch (e) {
+      log('Error loading recent gallery cache: $e');
+      return const [];
+    }
+  }
+
+  Future<void> _saveRecentGalleryCache(
+    String uid,
+    List<GroupGalleryImage> items,
+  ) async {
+    if (uid.trim().isEmpty) return;
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString(
+        '$_recentCachePrefix$uid',
+        encodeRecentPhotosCache(items),
+      );
+    } catch (e) {
+      log('Error saving recent gallery cache: $e');
+    }
+  }
+
+  /// Fetches recently added gallery media across the user's groups, ordered
+  /// newest first, and optionally updates local cache for instant next-open display.
+  Future<List<GroupGalleryImage>> getRecentGalleryPhotos({
+    required List<GroupModel> groups,
+    int limit = 24,
+    int limitPerGroup = 8,
+    int maxGroupsToQuery = 16,
+    bool photosOnly = true,
+    bool saveCache = true,
+  }) async {
+    final prioritized = selectGroupsForRecentFetch(
+      groups,
+      maxGroups: maxGroupsToQuery,
+    );
+    if (prioritized.isEmpty) return const [];
+
+    final perGroupResults = <List<GroupGalleryImage>>[];
+    for (int i = 0; i < prioritized.length; i += 8) {
+      final chunk = prioritized.sublist(
+        i,
+        i + 8 > prioritized.length ? prioritized.length : i + 8,
+      );
+      final chunkLists = await Future.wait(
+        chunk.map((group) async {
+          try {
+            final snapshot = await firestore
+                .collection('groups')
+                .doc(group.groupId)
+                .collection('gallery')
+                .orderBy('uploadedAt', descending: true)
+                .limit(limitPerGroup)
+                .get();
+            return snapshot.docs
+                .map((doc) => GroupGalleryImage.fromMap(doc.data()))
+                .toList();
+          } catch (e) {
+            log('Error fetching recent photos for group ${group.groupId}: $e');
+            return const <GroupGalleryImage>[];
+          }
+        }),
+      );
+      perGroupResults.addAll(chunkLists);
+    }
+
+    final merged = mergeAndSortRecentPhotos(
+      perGroupResults,
+      maxItems: limit,
+      photosOnly: photosOnly,
+    );
+
+    if (saveCache && photosOnly) {
+      final uid = auth.currentUser?.uid ?? '';
+      if (uid.isNotEmpty) {
+        await _saveRecentGalleryCache(uid, merged.take(24).toList());
+      }
+    }
+    return merged;
   }
 
   // ── Get total image count ─────────────────────────────────────────────────

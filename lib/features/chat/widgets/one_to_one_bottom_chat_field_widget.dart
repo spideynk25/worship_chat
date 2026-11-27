@@ -55,10 +55,14 @@ class _BottomChatFieldState
   bool _isTyping = false;
   bool _hasText = false;
   bool _isSendPressed = false;
+  late final ChatController _chatController;
+  late final StateController<MessageEdit?> _messageEditController;
 
   @override
   void initState() {
     super.initState();
+    _chatController = ref.read(chatControllerProvider);
+    _messageEditController = ref.read(messageEditProvider.notifier);
     _messageController.addListener(_onTextChanged);
     _focusNode.addListener(() {
       if (mounted) setState(() {});
@@ -73,15 +77,20 @@ class _BottomChatFieldState
     _typingTimer?.cancel();
     // Set typing to false when leaving chat
     if (_isTyping) {
-      ref
-          .read(chatControllerProvider)
-          .setTypingStatus(widget.receiverUserId, false);
+      _chatController.setTypingStatus(widget.receiverUserId, false);
     }
-    final currentEdit = ref.read(messageEditProvider);
-    if (currentEdit != null &&
-        currentEdit.chatType == 'one_to_one' &&
-        currentEdit.receiverUserId == widget.receiverUserId) {
-      ref.read(messageEditProvider.notifier).state = null;
+    if (_messageEditController.mounted) {
+      final currentEdit = _messageEditController.state;
+      if (currentEdit != null &&
+          currentEdit.chatType == 'one_to_one' &&
+          currentEdit.receiverUserId == widget.receiverUserId) {
+        Future<void>.microtask(() {
+          if (!_messageEditController.mounted) return;
+          if (identical(_messageEditController.state, currentEdit)) {
+            _messageEditController.state = null;
+          }
+        });
+      }
     }
     super.dispose();
   }
@@ -98,9 +107,7 @@ class _BottomChatFieldState
     if (text.isNotEmpty && !_isTyping) {
       // User started typing
       _isTyping = true;
-      ref
-          .read(chatControllerProvider)
-          .setTypingStatus(widget.receiverUserId, true);
+      _chatController.setTypingStatus(widget.receiverUserId, true);
     }
 
     // Cancel existing timer
@@ -108,11 +115,10 @@ class _BottomChatFieldState
 
     // Set new timer - if user stops typing for 2 seconds, set typing to false
     _typingTimer = Timer(const Duration(seconds: 2), () {
+      if (!mounted) return;
       if (_isTyping) {
         _isTyping = false;
-        ref
-            .read(chatControllerProvider)
-            .setTypingStatus(widget.receiverUserId, false);
+        _chatController.setTypingStatus(widget.receiverUserId, false);
       }
     });
 
@@ -120,9 +126,7 @@ class _BottomChatFieldState
     if (text.isEmpty && _isTyping) {
       _isTyping = false;
       _typingTimer?.cancel();
-      ref
-          .read(chatControllerProvider)
-          .setTypingStatus(widget.receiverUserId, false);
+      _chatController.setTypingStatus(widget.receiverUserId, false);
     }
   }
 
@@ -248,6 +252,10 @@ class _BottomChatFieldState
         'longitude': result.longitude,
         'isLive': false,
         'accuracy': result.accuracy,
+        if (result.placeName != null && result.placeName!.isNotEmpty)
+          'placeName': result.placeName,
+        if (result.address != null && result.address!.isNotEmpty)
+          'address': result.address,
       });
 
       ref.read(chatControllerProvider).sendTextMessage(
@@ -271,6 +279,13 @@ class _BottomChatFieldState
         'liveUntil': liveUntil,
         'updatedAt': DateTime.now().millisecondsSinceEpoch,
         'sharerId': currentUserId,
+        if (result.accuracy != null) 'accuracy': result.accuracy,
+        if (result.heading != null) 'heading': result.heading,
+        if (result.speed != null) 'speed': result.speed,
+        if (result.placeName != null && result.placeName!.isNotEmpty)
+          'placeName': result.placeName,
+        if (result.address != null && result.address!.isNotEmpty)
+          'address': result.address,
       });
 
       ref.read(chatControllerProvider).sendTextMessage(

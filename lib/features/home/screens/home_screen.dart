@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:math' as math;
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
@@ -43,6 +44,12 @@ import 'package:worship_chat/models/group.dart';
 import 'package:worship_chat/models/user_model.dart';
 
 class HomeScreen extends ConsumerStatefulWidget {
+  static const String routeName = '/home';
+  static int _mountedCount = 0;
+
+  /// True while at least one [HomeScreen] instance is live in the navigation stack.
+  static bool get isMountedInTree => _mountedCount > 0;
+
   final int? initialIndex;
   const HomeScreen({super.key, this.initialIndex});
 
@@ -59,6 +66,8 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
   Stream<List<Event>>? _eventsStream;
   bool _initialShareProcessed = false;
   bool _isShareScreenOpen = false;
+  AuthController? _authController;
+  bool _isActiveInTree = true;
 
   static const List<Widget> _phoneScreens = [
     DashboardPage(),
@@ -92,6 +101,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
   @override
   void initState() {
     super.initState();
+    HomeScreen._mountedCount++;
     WidgetsBinding.instance.addObserver(this);
     final count = _screens.length;
     final defaultIndex = AppCapabilities.current.chatEnabled ? 1 : 0;
@@ -100,6 +110,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
     _eventsStream = ref.read(eventRepositoryProvider).eventsStream();
 
     if (AppCapabilities.current.chatEnabled) {
+      _authController = ref.read(authControllerProvider);
       final uid = _safeGetCurrentUserUid();
       if (uid.isNotEmpty) {
         try {
@@ -121,6 +132,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
 
     // Delay so widget tree is fully ready before pushing routes
     WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || !_isActiveInTree) return;
       if (AppCapabilities.current.chatEnabled) {
         _initShareHandler();
       }
@@ -130,27 +142,26 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
       if (AppCapabilities.current.chatEnabled) {
         FirebaseNotificationService.syncPendingBackgroundRepliesToHive();
         try {
-          ref.read(authControllerProvider).getUsetData();
-          ref.read(authControllerProvider).setUserState(true);
+          _authController?.getUsetData();
+          _authController?.setUserState(true);
         } catch (_) {}
       }
-      if (mounted) {
-        AppUpdateService.instance.setNativeUpdateTapHandler(() {
-          if (mounted) {
-            AppUpdateService.instance.openAvailableUpdateDialog(context);
-          }
-        });
-        FirebaseNotificationService.pendingUpdateNotificationNotifier
-            .addListener(_onPendingUpdateNotification);
-        _onPendingUpdateNotification();
-        AppUpdateService.instance.consumePendingNativeUpdateLaunch().then((launched) {
-          if (launched && mounted) {
-            AppUpdateService.instance.openAvailableUpdateDialog(context);
-          } else if (mounted) {
-            AppUpdateService.instance.checkForUpdateIfAvailable(context);
-          }
-        });
-      }
+      AppUpdateService.instance.setNativeUpdateTapHandler(() {
+        if (mounted && _isActiveInTree) {
+          AppUpdateService.instance.openAvailableUpdateDialog(context);
+        }
+      });
+      FirebaseNotificationService.pendingUpdateNotificationNotifier
+          .addListener(_onPendingUpdateNotification);
+      _onPendingUpdateNotification();
+      AppUpdateService.instance.consumePendingNativeUpdateLaunch().then((launched) {
+        if (!mounted || !_isActiveInTree) return;
+        if (launched) {
+          AppUpdateService.instance.openAvailableUpdateDialog(context);
+        } else {
+          AppUpdateService.instance.checkForUpdateIfAvailable(context);
+        }
+      });
     });
   }
 
@@ -205,13 +216,28 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
   }
 
   @override
+  void activate() {
+    super.activate();
+    _isActiveInTree = true;
+  }
+
+  @override
+  void deactivate() {
+    _isActiveInTree = false;
+    super.deactivate();
+  }
+
+  @override
   void dispose() {
+    if (HomeScreen._mountedCount > 0) {
+      HomeScreen._mountedCount--;
+    }
     FirebaseNotificationService.pendingUpdateNotificationNotifier
         .removeListener(_onPendingUpdateNotification);
     AppUpdateService.instance.setNativeUpdateTapHandler(null);
     if (AppCapabilities.current.chatEnabled) {
       try {
-        ref.read(authControllerProvider).setUserState(false);
+        _authController?.setUserState(false);
       } catch (_) {}
     }
     _pageController.dispose();
@@ -224,26 +250,29 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     super.didChangeAppLifecycleState(state);
+    if (!mounted || !_isActiveInTree) return;
     if (state == AppLifecycleState.resumed) {
       AppUpdateService.instance.consumePendingNativeUpdateLaunch().then((launched) {
-        if (launched && mounted) {
+        if (!mounted || !_isActiveInTree) return;
+        if (launched) {
           AppUpdateService.instance.openAvailableUpdateDialog(context);
-        } else if (mounted) {
+        } else {
           AppUpdateService.instance.checkForUpdateOnResume(context);
         }
       });
     }
     if (!AppCapabilities.current.chatEnabled) return;
+    final authController = _authController;
     switch (state) {
       case AppLifecycleState.resumed:
-        ref.read(authControllerProvider).setUserState(true);
+        authController?.setUserState(true);
         FirebaseNotificationService.syncPendingBackgroundRepliesToHive();
         break;
       case AppLifecycleState.inactive:
       case AppLifecycleState.detached:
       case AppLifecycleState.paused:
       case AppLifecycleState.hidden:
-        ref.read(authControllerProvider).setUserState(false);
+        authController?.setUserState(false);
         break;
     }
   }
@@ -285,10 +314,15 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
                 TodayBirthdaysSlideshowWidget.isToday(e, now) &&
                 TodayBirthdaysSlideshowWidget.isBirthday(e))
             .toList();
-        const headerHeight = 92.0;
+        final birthdayWishes = _buildBirthdayWishes(todayBirthdays);
+        final headerMetrics = _computeHeaderMetrics(
+          context,
+          birthdayWishes,
+          hasBirthdays: todayBirthdays.isNotEmpty,
+        );
         return Scaffold(
           appBar: PreferredSize(
-            preferredSize: const Size.fromHeight(headerHeight),
+            preferredSize: Size.fromHeight(headerMetrics.headerHeight),
             child: Hive.isBoxOpen('userBox')
                 ? ValueListenableBuilder<Box<UserModel>>(
                     valueListenable: Hive.box<UserModel>('userBox').listenable(),
@@ -298,6 +332,9 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
                         currentUserUid,
                         isChatEnabled,
                         todayBirthdays: todayBirthdays,
+                        birthdayWishes: birthdayWishes,
+                        headerHeight: headerMetrics.headerHeight,
+                        subtitleMinHeight: headerMetrics.subtitleMinHeight,
                       );
                     },
                   )
@@ -306,6 +343,9 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
                     currentUserUid,
                     isChatEnabled,
                     todayBirthdays: todayBirthdays,
+                    birthdayWishes: birthdayWishes,
+                    headerHeight: headerMetrics.headerHeight,
+                    subtitleMinHeight: headerMetrics.subtitleMinHeight,
                   ),
           ),
           body: isWide
@@ -450,11 +490,94 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
     );
   }
 
+  static const TextStyle _appBarWishStyle = TextStyle(
+    color: Colors.white,
+    fontSize: 11.5,
+    fontWeight: FontWeight.w500,
+    letterSpacing: 0.15,
+    height: 1.25,
+  );
+
+  List<String> _buildBirthdayWishes(List<Event> todayBirthdays) {
+    final birthdayWishes = <String>[];
+    if (todayBirthdays.isEmpty) return birthdayWishes;
+
+    final seenNames = <String>{};
+    for (final event in todayBirthdays) {
+      final name = TodayBirthdaysSlideshowWidget.extractCelebrantName(
+        event.title,
+        connectedGroupName: event.connectedGroupName,
+        connectedGroupId: event.connectedGroupId,
+      );
+      if (name.isNotEmpty && seenNames.add(name.toLowerCase())) {
+        birthdayWishes.add('Happy Birthday $name');
+      }
+    }
+    return birthdayWishes;
+  }
+
+  bool _shouldReserveTwoWishLines(
+    BuildContext context,
+    List<String> birthdayWishes,
+  ) {
+    final screenWidth = MediaQuery.sizeOf(context).width;
+    final textScaler = MediaQuery.textScalerOf(context);
+    if (screenWidth < 390 || textScaler.scale(11.5) > 12.0) {
+      return true;
+    }
+    if (birthdayWishes.isEmpty) return false;
+
+    final maxWishWidth = math.max(1.0, screenWidth - 32.0);
+    final textDirection = Directionality.of(context);
+    for (final wish in birthdayWishes) {
+      final painter = TextPainter(
+        text: TextSpan(text: wish, style: _appBarWishStyle),
+        maxLines: 1,
+        textDirection: textDirection,
+        textScaler: textScaler,
+      );
+      try {
+        painter.layout(maxWidth: double.infinity);
+        if (painter.width > maxWishWidth) {
+          return true;
+        }
+      } finally {
+        painter.dispose();
+      }
+    }
+    return false;
+  }
+
+  ({double headerHeight, double subtitleMinHeight}) _computeHeaderMetrics(
+    BuildContext context,
+    List<String> birthdayWishes, {
+    required bool hasBirthdays,
+  }) {
+    final textScaler = MediaQuery.textScalerOf(context);
+    final lineCount =
+        _shouldReserveTwoWishLines(context, birthdayWishes) ? 2 : 1;
+    final subtitleLineHeight = textScaler.scale(11.5 * 1.25);
+    final subtitleHeight = (subtitleLineHeight * lineCount + 2.0).ceilToDouble();
+    final profileTextHeight =
+        textScaler.scale(12.5 * 1.15) + 1.5 + textScaler.scale(11.0 * 1.15);
+    final row1Height = math.max(
+      hasBirthdays ? 53.0 : 50.0,
+      profileTextHeight.ceilToDouble(),
+    );
+    return (
+      headerHeight: math.max(92.0, row1Height + 3.0 + subtitleHeight + 14.0),
+      subtitleMinHeight: subtitleHeight,
+    );
+  }
+
   PreferredSizeWidget _buildAppBar(
     UserModel? user,
     String currentUserUid,
     bool isChatEnabled, {
     List<Event> todayBirthdays = const [],
+    List<String> birthdayWishes = const [],
+    double headerHeight = 92.0,
+    double subtitleMinHeight = 17.0,
   }) {
     final authUser = _safeGetCurrentUser();
 
@@ -477,22 +600,6 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
             : null;
 
     final displayPic = UserAvatar.sanitizeUrl(rawPic);
-
-    final birthdayWishes = <String>[];
-    if (todayBirthdays.isNotEmpty) {
-      final seenNames = <String>{};
-      for (final event in todayBirthdays) {
-        final name = TodayBirthdaysSlideshowWidget.extractCelebrantName(
-          event.title,
-          connectedGroupName: event.connectedGroupName,
-        );
-        if (name.isNotEmpty && seenNames.add(name.toLowerCase())) {
-          birthdayWishes.add('Happy Birthday $name');
-        }
-      }
-    }
-
-    const headerHeight = 92.0;
 
     return AppBar(
       automaticallyImplyLeading: false,
@@ -556,35 +663,35 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
               ),
             ],
           ),
-          const SizedBox(height: 2),
-          Align(
-            alignment: Alignment.centerLeft,
-            child: ShaderMask(
-              blendMode: BlendMode.srcIn,
-              shaderCallback: (bounds) => const LinearGradient(
-                begin: Alignment.centerLeft,
-                end: Alignment.centerRight,
-                colors: [
-                  Color(0xFFFF7EB3),
-                  Color(0xFFFFB26B),
-                  Color(0xFFFFDC88),
-                ],
-              ).createShader(
-                Rect.fromLTWH(
-                  0,
-                  0,
-                  bounds.width > 0 ? bounds.width : 1,
-                  bounds.height > 0 ? bounds.height : 1,
-                ),
-              ),
-              child: DynamicTextWidget(
-                maxLines: 1,
-                overrideTexts: birthdayWishes,
-                style: const TextStyle(
-                  color: Colors.white,
-                  fontSize: 11.5,
-                  fontWeight: FontWeight.w500,
-                  letterSpacing: 0.15,
+          const SizedBox(height: 3),
+          ConstrainedBox(
+            constraints: BoxConstraints(minHeight: subtitleMinHeight),
+            child: Align(
+              alignment: Alignment.topLeft,
+              child: RepaintBoundary(
+                child: ShaderMask(
+                  blendMode: BlendMode.srcIn,
+                  shaderCallback: (bounds) => const LinearGradient(
+                    begin: Alignment.centerLeft,
+                    end: Alignment.centerRight,
+                    colors: [
+                      Color(0xFFFF7EB3),
+                      Color(0xFFFFB26B),
+                      Color(0xFFFFDC88),
+                    ],
+                  ).createShader(
+                    Rect.fromLTWH(
+                      0,
+                      0,
+                      bounds.width > 0 ? bounds.width : 1,
+                      bounds.height > 0 ? bounds.height : 1,
+                    ),
+                  ),
+                  child: DynamicTextWidget(
+                    maxLines: 2,
+                    overrideTexts: birthdayWishes,
+                    style: _appBarWishStyle,
+                  ),
                 ),
               ),
             ),
@@ -639,27 +746,29 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
                   ),
                 ),
                 const SizedBox(height: 1.5),
-                ShimmerEffect(
-                  baseColor: const Color(0xFFD2B46E),
-                  highlightColor: const Color(0xFFF7EBD0),
-                  duration: const Duration(seconds: 10),
-                  activeFraction: 0.14,
-                  child: Text(
-                    displayUserName,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(
-                      color: Colors.white,
-                      fontWeight: FontWeight.w500,
-                      fontSize: 11,
-                      letterSpacing: 0.2,
-                      height: 1.15,
-                      shadows: [
-                        Shadow(
-                          color: Color(0x33D2B46E),
-                          blurRadius: 6,
-                        ),
-                      ],
+                RepaintBoundary(
+                  child: ShimmerEffect(
+                    baseColor: const Color(0xFFD2B46E),
+                    highlightColor: const Color(0xFFF7EBD0),
+                    duration: const Duration(seconds: 10),
+                    activeFraction: 0.14,
+                    child: Text(
+                      displayUserName,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontWeight: FontWeight.w500,
+                        fontSize: 11,
+                        letterSpacing: 0.2,
+                        height: 1.15,
+                        shadows: [
+                          Shadow(
+                            color: Color(0x33D2B46E),
+                            blurRadius: 6,
+                          ),
+                        ],
+                      ),
                     ),
                   ),
                 ),

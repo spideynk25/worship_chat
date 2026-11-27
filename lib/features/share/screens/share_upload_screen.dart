@@ -1,19 +1,26 @@
 import 'dart:io';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:firebase_core/firebase_core.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:hive_flutter/hive_flutter.dart';
 import 'package:uuid/uuid.dart';
+import 'package:worship_chat/common/utils/app_capabilities.dart';
 import 'package:worship_chat/common/utils/utils.dart';
 import 'package:worship_chat/common/utils/share_intent_service.dart';
 import 'package:worship_chat/common/widgets/skeleton_loader.dart';
 import 'package:worship_chat/features/auth/controller/auth_controller.dart';
 import 'package:worship_chat/features/chat/controller/chat_controller.dart';
+import 'package:worship_chat/features/chat/screens/one_to_one_chat_screen.dart';
 import 'package:worship_chat/features/group/controller/group_controller.dart';
 import 'package:worship_chat/features/group/controller/group_gallery_controller.dart';
+import 'package:worship_chat/features/group/screens/group_chat_screen.dart';
+import 'package:worship_chat/features/group/screens/group_gallery_screen.dart';
+import 'package:worship_chat/features/group/screens/recent_gallery_photos_screen.dart';
 import 'package:worship_chat/features/group/utils/queendom_emblem_helper.dart';
 import 'package:worship_chat/features/home/screens/home_screen.dart';
+import 'package:worship_chat/features/settings/providers/queendom_customization_provider.dart';
 import 'package:worship_chat/models/chat_contact.dart';
 import 'package:worship_chat/models/group.dart';
 import 'package:worship_chat/models/user_model.dart';
@@ -24,10 +31,30 @@ class ShareUploadScreen extends ConsumerStatefulWidget {
   final List<File>? files;
   final SharedPayload? payload;
 
+  /// Optional test screen builders so navigation tests can verify destination
+  /// routing and Back-to-Home behavior without Firebase initialization.
+  @visibleForTesting
+  final Widget Function()? homeScreenBuilder;
+
+  @visibleForTesting
+  final Widget Function(ChatContact contact)? directChatScreenBuilder;
+
+  @visibleForTesting
+  final Widget Function(GroupModel group, Color accentColor, String type)?
+      groupChatScreenBuilder;
+
+  @visibleForTesting
+  final Widget Function(GroupModel group, Color accentColor)?
+      groupGalleryScreenBuilder;
+
   const ShareUploadScreen({
     super.key,
     this.files,
     this.payload,
+    this.homeScreenBuilder,
+    this.directChatScreenBuilder,
+    this.groupChatScreenBuilder,
+    this.groupGalleryScreenBuilder,
   });
 
   @override
@@ -110,19 +137,128 @@ class _ShareUploadScreenState extends ConsumerState<ShareUploadScreen>
     ref.read(sharedFilesProvider.notifier).clear();
     ref.read(sharedPayloadProvider.notifier).clear();
     if (!mounted) return;
-    if (Navigator.of(context).canPop()) {
-      Navigator.pop(context);
+    final nav = Navigator.of(context);
+    if (nav.canPop()) {
+      nav.pop();
     } else {
-      Navigator.of(context).pushReplacement(
-        MaterialPageRoute(builder: (_) => const HomeScreen()),
+      nav.pushReplacement(
+        MaterialPageRoute(
+          settings: const RouteSettings(name: HomeScreen.routeName),
+          builder: (_) => _buildHomeScreen(),
+        ),
       );
     }
   }
 
-  void _finishAndExit(String message, {bool success = true}) {
+  Widget _buildHomeScreen() {
+    return widget.homeScreenBuilder?.call() ?? const HomeScreen();
+  }
+
+  Widget _buildDirectChatDestination(ChatContact contact) {
+    if (widget.directChatScreenBuilder != null) {
+      return widget.directChatScreenBuilder!(contact);
+    }
+    return OneToOneChatScreen(
+      name: contact.name,
+      uid: contact.uid,
+      fcmToken: contact.fcmToken ?? '',
+      unseenCount: contact.unseenCount,
+      profilePic: contact.profilePic,
+      chatBackgroundUrl: contact.chatBackgroundUrl,
+    );
+  }
+
+  Widget _buildGroupGalleryDestination(GroupModel group) {
+    final customization = ref.read(queendomCustomizationProvider);
+    final accent = resolveGroupAccentColor(group, customization);
+    if (widget.groupGalleryScreenBuilder != null) {
+      return widget.groupGalleryScreenBuilder!(group, accent);
+    }
+    return GroupGalleryScreen(
+      groupId: group.groupId,
+      groupName: group.nameWithPosition,
+      accentColor: accent,
+    );
+  }
+
+  Widget _buildGroupChatDestination(GroupModel group) {
+    final customization = ref.read(queendomCustomizationProvider);
+    final accent = resolveGroupAccentColor(group, customization);
+    final type = _groupType(group);
+    if (widget.groupChatScreenBuilder != null) {
+      return widget.groupChatScreenBuilder!(group, accent, type);
+    }
+    if (!AppCapabilities.current.chatEnabled) {
+      return _buildGroupGalleryDestination(group);
+    }
+    return GroupChatScreen(
+      groupPic: group.groupPic,
+      chatBackgroundUrl: group.chatBackgroundUrl,
+      name: group.nameWithPosition,
+      groupId: group.groupId,
+      fcmToken: List<String>.from(group.fcmTokens),
+      membersUid: List<String>.from(group.membersUid),
+      wish: group.wish,
+      queendom: group.queendom,
+      color: accent,
+      type: type,
+    );
+  }
+
+  void _finishAndExit(
+    String message, {
+    bool success = true,
+    Widget? destinationScreen,
+  }) {
     if (!mounted) return;
-    _snack(message, success);
-    _safeExit();
+
+    if (!success) {
+      setState(() => _isUploading = false);
+      _snack(message, false);
+      return;
+    }
+
+    _snack(message, true);
+    ref.read(sharedFilesProvider.notifier).clear();
+    ref.read(sharedPayloadProvider.notifier).clear();
+
+    final hasCustomBuilders = widget.homeScreenBuilder != null ||
+        widget.directChatScreenBuilder != null ||
+        widget.groupChatScreenBuilder != null ||
+        widget.groupGalleryScreenBuilder != null;
+
+    if (!hasCustomBuilders && Firebase.apps.isEmpty) {
+      _safeExit();
+      return;
+    }
+
+    final nav = Navigator.of(context);
+    final hasLiveHome = widget.homeScreenBuilder == null &&
+        HomeScreen.isMountedInTree &&
+        nav.canPop();
+
+    if (hasLiveHome) {
+      // Clear ShareUploadScreen and any intermediate screens above the live HomeScreen.
+      nav.popUntil(
+        (route) =>
+            route.settings.name == HomeScreen.routeName || route.isFirst,
+      );
+    } else {
+      // Ensure HomeScreen is ALWAYS the base route so pressing Back navigates to Home.
+      nav.pushAndRemoveUntil(
+        MaterialPageRoute(
+          settings: const RouteSettings(name: HomeScreen.routeName),
+          builder: (_) => _buildHomeScreen(),
+        ),
+        (route) => false,
+      );
+    }
+
+    if (destinationScreen != null) {
+      nav.push(
+        MaterialPageRoute(builder: (_) => destinationScreen),
+      );
+    }
   }
 
   void _toggleGroup(GroupModel group) {
@@ -254,11 +390,15 @@ class _ShareUploadScreenState extends ConsumerState<ShareUploadScreen>
     }
 
     if (groupsList.length == 1) {
+      final targetGroup = groupsList.first;
       _finishAndExit(
         totalSuccessCount > 0
-            ? '✅ $totalSuccessCount ${isVideo ? "video" : "photo"}${totalSuccessCount == 1 ? '' : 's'} added to ${groupsList.first.nameWithPosition} gallery'
+            ? '✅ $totalSuccessCount ${isVideo ? "video" : "photo"}${totalSuccessCount == 1 ? '' : 's'} added to ${targetGroup.nameWithPosition} gallery'
             : '⚠️ Upload failed',
         success: totalSuccessCount > 0,
+        destinationScreen: totalSuccessCount > 0
+            ? _buildGroupGalleryDestination(targetGroup)
+            : null,
       );
     } else {
       _finishAndExit(
@@ -359,11 +499,17 @@ class _ShareUploadScreenState extends ConsumerState<ShareUploadScreen>
     }
 
     if (groupsList.length == 1) {
+      final targetGroup = groupsList.first;
+      final groupDest = _buildGroupChatDestination(targetGroup);
       if (_payload.isTextOnly) {
-        _finishAndExit('✅ Sent to ${groupsList.first.nameWithPosition}');
+        _finishAndExit(
+          '✅ Sent to ${targetGroup.nameWithPosition}',
+          destinationScreen: groupDest,
+        );
       } else {
         _finishAndExit(
-          '✅ ${files.length} ${isVideo ? "video" : "photo"}${files.length == 1 ? '' : 's'} sent to ${groupsList.first.nameWithPosition}',
+          '✅ ${files.length} ${isVideo ? "video" : "photo"}${files.length == 1 ? '' : 's'} sent to ${targetGroup.nameWithPosition}',
+          destinationScreen: groupDest,
         );
       }
     } else {
@@ -410,7 +556,10 @@ class _ShareUploadScreenState extends ConsumerState<ShareUploadScreen>
             'others',
           );
 
-      _finishAndExit('✅ Sent to ${contact.name}');
+      _finishAndExit(
+        '✅ Sent to ${contact.name}',
+        destinationScreen: _buildDirectChatDestination(contact),
+      );
       return;
     }
 
@@ -442,6 +591,7 @@ class _ShareUploadScreenState extends ConsumerState<ShareUploadScreen>
 
     _finishAndExit(
       '✅ ${files.length} ${isVideo ? "video" : "photo"}${files.length == 1 ? '' : 's'} sent to ${contact.name}',
+      destinationScreen: _buildDirectChatDestination(contact),
     );
   }
 
@@ -1558,9 +1708,11 @@ class _ShareUploadScreenState extends ConsumerState<ShareUploadScreen>
                         ),
                         const SizedBox(width: 4),
                         ConstrainedBox(
-                          constraints: const BoxConstraints(maxWidth: 120),
+                          constraints: const BoxConstraints(maxWidth: 190),
                           child: Text(
-                            g.name,
+                            g.nameWithPosition.isNotEmpty
+                                ? g.nameWithPosition
+                                : g.name,
                             style: const TextStyle(
                               color: Colors.white,
                               fontSize: 11,

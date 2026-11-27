@@ -95,7 +95,10 @@ Future<GroupModel?> showQueendomGroupPicker(
 }) async {
   HapticFeedback.lightImpact();
   final groupCtrl = ref.read(groupControllerProvider);
-  final currentUserId = FirebaseAuth.instance.currentUser?.uid ?? '';
+  String currentUserId = '';
+  try {
+    currentUserId = FirebaseAuth.instance.currentUser?.uid ?? '';
+  } catch (_) {}
 
   // Cached groups
   final cachedPooja = groupCtrl.getCachedGroups('groups_pooja_$currentUserId');
@@ -341,17 +344,21 @@ class _QueendomGroupPickerSheetState extends State<_QueendomGroupPickerSheet>
             child: TabBarView(
               controller: _tabController,
               children: [
-                _buildGroupList(
-                  stream: widget.groupCtrl.getQueenPoojaStream(),
+                _QueendomGroupListView(
+                  streamBuilder: () => widget.groupCtrl.getQueenPoojaStream(),
                   cached: widget.cachedPooja,
                   queendomName: 'Queen Pooja',
                   accentColor: const Color(0xFFFFD700),
+                  searchQuery: _searchQuery,
+                  currentSelectedGroupId: widget.currentSelectedGroupId,
                 ),
-                _buildGroupList(
-                  stream: widget.groupCtrl.getQueenRashmikaStream(),
+                _QueendomGroupListView(
+                  streamBuilder: () => widget.groupCtrl.getQueenRashmikaStream(),
                   cached: widget.cachedRashmika,
                   queendomName: 'Queen Rashmika',
                   accentColor: const Color(0xFFFF4081),
+                  searchQuery: _searchQuery,
+                  currentSelectedGroupId: widget.currentSelectedGroupId,
                 ),
               ],
             ),
@@ -361,25 +368,60 @@ class _QueendomGroupPickerSheetState extends State<_QueendomGroupPickerSheet>
     ),
   );
   }
+}
 
-  Widget _buildGroupList({
-    required Stream<List<GroupModel>> stream,
-    required List<GroupModel> cached,
-    required String queendomName,
-    required Color accentColor,
-  }) {
+class _QueendomGroupListView extends StatefulWidget {
+  final Stream<List<GroupModel>> Function() streamBuilder;
+  final List<GroupModel> cached;
+  final String queendomName;
+  final Color accentColor;
+  final String searchQuery;
+  final String? currentSelectedGroupId;
+
+  const _QueendomGroupListView({
+    required this.streamBuilder,
+    required this.cached,
+    required this.queendomName,
+    required this.accentColor,
+    required this.searchQuery,
+    this.currentSelectedGroupId,
+  });
+
+  @override
+  State<_QueendomGroupListView> createState() => _QueendomGroupListViewState();
+}
+
+class _QueendomGroupListViewState extends State<_QueendomGroupListView>
+    with AutomaticKeepAliveClientMixin {
+  late final Stream<List<GroupModel>> _stream;
+
+  @override
+  bool get wantKeepAlive => true;
+
+  @override
+  void initState() {
+    super.initState();
+    _stream = widget.streamBuilder();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    super.build(context);
+    final query = widget.searchQuery.toLowerCase();
+    final queendomName = widget.queendomName;
+    final accentColor = widget.accentColor;
+
     return StreamBuilder<List<GroupModel>>(
-      initialData: cached.isNotEmpty ? cached : null,
-      stream: stream,
+      initialData: widget.cached.isNotEmpty ? widget.cached : null,
+      stream: _stream,
       builder: (context, snapshot) {
-        final groups = (snapshot.data ?? cached)
+        final groups = (snapshot.data ?? widget.cached)
             .where((g) =>
                 g.queendom == queendomName &&
-                (_searchQuery.isEmpty ||
-                    g.name.toLowerCase().contains(_searchQuery.toLowerCase()) ||
-                    g.effectiveLivingPlace
-                        .toLowerCase()
-                        .contains(_searchQuery.toLowerCase())))
+                (query.isEmpty ||
+                    g.nameWithPosition.toLowerCase().contains(query) ||
+                    g.name.toLowerCase().contains(query) ||
+                    g.effectiveLivingPlace.toLowerCase().contains(query)))
             .toList();
 
         if (groups.isEmpty) {
@@ -390,9 +432,9 @@ class _QueendomGroupPickerSheetState extends State<_QueendomGroupPickerSheet>
                 Icon(Icons.group_outlined, size: 40, color: Colors.white24),
                 const SizedBox(height: 8),
                 Text(
-                  _searchQuery.isEmpty
+                  widget.searchQuery.isEmpty
                       ? 'No $queendomName groups found'
-                      : 'No groups match "$_searchQuery"',
+                      : 'No groups match "${widget.searchQuery}"',
                   style: const TextStyle(color: Colors.white38, fontSize: 13),
                 ),
               ],
@@ -560,7 +602,10 @@ String resolveQueendomGroupWish(GroupModel group) {
   if (template.wish.trim().isNotEmpty) {
     return template.wish.trim();
   }
-  return '🙇‍♀️🙇‍♀️ Praise ${group.name} 🙇‍♀️🙇‍♀️';
+  final fullName = group.nameWithPosition.trim().isNotEmpty
+      ? group.nameWithPosition.trim()
+      : group.name.trim();
+  return '🙇‍♀️🙇‍♀️ Praise $fullName 🙇‍♀️🙇‍♀️';
 }
 
 /// Confirms and sends wishes to all [groupsToWish] inside [BackgroundTaskService],
@@ -662,8 +707,11 @@ Future<void> confirmAndWishCategoryGroups({
           final wishText = resolveQueendomGroupWish(group);
           if (wishText.isEmpty) continue;
 
+          final displayName = group.nameWithPosition.trim().isNotEmpty
+              ? group.nameWithPosition.trim()
+              : group.name;
           updateProgress(
-            'Wishing ${group.name} (${sent + 1}/$total)...',
+            'Wishing $displayName (${sent + 1}/$total)...',
             progress: sent,
             maxProgress: total,
           );

@@ -6,6 +6,7 @@ import 'package:worship_chat/colors.dart';
 import 'package:worship_chat/common/utils/utils.dart';
 import 'package:worship_chat/features/dashboard/controller/event_controller.dart';
 import 'package:worship_chat/features/dashboard/screens/event_calender_page.dart';
+import 'package:worship_chat/features/dashboard/widgets/today_birthdays_slideshow_widget.dart';
 import 'package:worship_chat/features/group/controller/group_controller.dart';
 import 'package:worship_chat/features/group/utils/queendom_group_helper.dart';
 import 'package:worship_chat/features/group/widgets/queendom_badge_widget.dart';
@@ -1094,7 +1095,8 @@ class _EventShortcutsWidgetState extends ConsumerState<EventShortcutsWidget> {
                             children: [
                               Expanded(
                                 child: Text(
-                                  event.title,
+                                  TodayBirthdaysSlideshowWidget
+                                      .formatBirthdayEventTitle(event),
                                   style: const TextStyle(
                                     fontSize: 14,
                                     fontWeight: FontWeight.bold,
@@ -1126,34 +1128,46 @@ class _EventShortcutsWidgetState extends ConsumerState<EventShortcutsWidget> {
                             ],
                           ),
                           const SizedBox(height: 3),
-                          Row(
+                          Wrap(
+                            spacing: 8,
+                            runSpacing: 2,
+                            crossAxisAlignment: WrapCrossAlignment.center,
                             children: [
-                              Icon(
-                                Icons.access_time,
-                                size: 11,
-                                color: Colors.grey[400],
+                              Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  Icon(
+                                    Icons.access_time,
+                                    size: 11,
+                                    color: Colors.grey[400],
+                                  ),
+                                  const SizedBox(width: 3),
+                                  Text(
+                                    event.time.format(context),
+                                    style: TextStyle(
+                                      fontSize: 11,
+                                      color: Colors.grey[400],
+                                    ),
+                                  ),
+                                ],
                               ),
-                              const SizedBox(width: 3),
-                              Text(
-                                event.time.format(context),
-                                style: TextStyle(
-                                  fontSize: 11,
-                                  color: Colors.grey[400],
-                                ),
-                              ),
-                              const SizedBox(width: 8),
-                              Icon(
-                                Icons.calendar_today,
-                                size: 11,
-                                color: Colors.grey[400],
-                              ),
-                              const SizedBox(width: 3),
-                              Text(
-                                DateFormat('MMM dd').format(occurrence),
-                                style: TextStyle(
-                                  fontSize: 11,
-                                  color: Colors.grey[400],
-                                ),
+                              Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  Icon(
+                                    Icons.calendar_today,
+                                    size: 11,
+                                    color: Colors.grey[400],
+                                  ),
+                                  const SizedBox(width: 3),
+                                  Text(
+                                    DateFormat('MMM dd').format(occurrence),
+                                    style: TextStyle(
+                                      fontSize: 11,
+                                      color: Colors.grey[400],
+                                    ),
+                                  ),
+                                ],
                               ),
                             ],
                           ),
@@ -1205,10 +1219,15 @@ class _EventShortcutsWidgetState extends ConsumerState<EventShortcutsWidget> {
                     if (event.connectedGroupId != null)
                       InkWell(
                         onTap: () {
+                          final resolvedName = TodayBirthdaysSlideshowWidget
+                              .resolveConnectedGroupName(
+                            connectedGroupName: event.connectedGroupName,
+                            connectedGroupId: event.connectedGroupId,
+                          );
                           navigateToQueendomGroup(
                             context,
                             groupId: event.connectedGroupId!,
-                            name: event.connectedGroupName ?? 'Queendom Group',
+                            name: resolvedName ?? 'Queendom Group',
                             groupPic: event.connectedGroupPic,
                             queendom: event.connectedQueendom,
                           );

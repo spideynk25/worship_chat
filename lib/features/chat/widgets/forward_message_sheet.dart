@@ -281,6 +281,9 @@ class _ForwardMessageSheetState extends ConsumerState<ForwardMessageSheet>
               case ForwardTargetType.groupChat:
                 final group = target.data as GroupModel;
                 if (group.groupId.isEmpty) continue;
+                final groupDisplayName = group.nameWithPosition.isNotEmpty
+                    ? group.nameWithPosition
+                    : group.name;
                 await ref.read(groupControllerProvider).sendTextMessage(
                       context,
                       cleanText,
@@ -289,7 +292,7 @@ class _ForwardMessageSheetState extends ConsumerState<ForwardMessageSheet>
                       effectiveFile,
                       group.fcmTokens,
                       group.membersUid,
-                      group.name,
+                      groupDisplayName,
                       "group",
                       clearReply: true,
                     );
@@ -1198,7 +1201,9 @@ class _GroupsTabState extends ConsumerState<_GroupsTab>
   Widget _buildGroupTile(GroupModel group) {
     final target = ForwardTarget(
       id: group.groupId,
-      name: group.name,
+      name: group.nameWithPosition.isNotEmpty
+          ? group.nameWithPosition
+          : group.name,
       avatarUrl: group.groupPic,
       type: ForwardTargetType.groupChat,
       data: group,
@@ -1247,7 +1252,8 @@ class _GroupsTabState extends ConsumerState<_GroupsTab>
     final query = widget.searchQuery.toLowerCase();
     final allMatching = _groups.where((g) {
       if (query.isEmpty) return true;
-      return g.name.toLowerCase().contains(query);
+      return g.nameWithPosition.toLowerCase().contains(query) ||
+          g.name.toLowerCase().contains(query);
     }).toList();
 
     // Segregate by category
@@ -1476,9 +1482,12 @@ class _GalleriesTabState extends ConsumerState<_GalleriesTab>
   }
 
   Widget _buildGalleryTile(GroupModel group) {
+    final displayName = group.nameWithPosition.isNotEmpty
+        ? group.nameWithPosition
+        : group.name;
     final target = ForwardTarget(
       id: group.groupId,
-      name: '${group.name} Gallery',
+      name: '$displayName Gallery',
       avatarUrl: group.groupPic,
       type: ForwardTargetType.groupGallery,
       data: group,
@@ -1539,7 +1548,8 @@ class _GalleriesTabState extends ConsumerState<_GalleriesTab>
         return false;
       }
       if (query.isEmpty) return true;
-      return g.name.toLowerCase().contains(query);
+      return g.nameWithPosition.toLowerCase().contains(query) ||
+          g.name.toLowerCase().contains(query);
     }).toList();
 
     // Segregate by category

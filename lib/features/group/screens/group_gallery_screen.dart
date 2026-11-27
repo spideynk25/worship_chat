@@ -29,6 +29,7 @@ import 'package:worship_chat/features/group/services/duplicate_detection_service
 import 'package:worship_chat/features/chat/widgets/forward_message_sheet.dart';
 import 'package:worship_chat/features/group/services/gallery_media_service.dart';
 import 'package:worship_chat/features/group/widgets/multi_gallery_shuffle_sheet.dart';
+import 'package:worship_chat/features/home/screens/home_screen.dart';
 import 'package:worship_chat/models/group_gallery_image.dart';
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -115,6 +116,19 @@ class _GroupGalleryScreenState extends ConsumerState<GroupGalleryScreen>
       _shuffledImages = null;
       _isShuffled = false;
     });
+  }
+
+  void _handleBack() {
+    if (Navigator.of(context).canPop()) {
+      Navigator.of(context).pop();
+    } else {
+      Navigator.of(context).pushReplacement(
+        MaterialPageRoute(
+          settings: const RouteSettings(name: HomeScreen.routeName),
+          builder: (_) => const HomeScreen(),
+        ),
+      );
+    }
   }
 
   // ── Upload ────────────────────────────────────────────────────────────────
@@ -426,8 +440,13 @@ class _GroupGalleryScreenState extends ConsumerState<GroupGalleryScreen>
 
         final isVideoTab = _tabController.index == 1;
 
-        return Scaffold(
-          backgroundColor: backgroundColor,
+        return PopScope(
+          canPop: false,
+          onPopInvokedWithResult: (didPop, _) {
+            if (!didPop) _handleBack();
+          },
+          child: Scaffold(
+            backgroundColor: backgroundColor,
           appBar: _buildAppBar(originalImages, photos, videos),
           floatingActionButton: ScaleTransition(
             scale: _fabScaleAnim,
@@ -500,6 +519,7 @@ class _GroupGalleryScreenState extends ConsumerState<GroupGalleryScreen>
               ),
             ],
           ),
+        ),
         );
       },
     );
@@ -517,7 +537,7 @@ class _GroupGalleryScreenState extends ConsumerState<GroupGalleryScreen>
       titleSpacing: 0,
       leading: IconButton(
         icon: const Icon(Icons.arrow_back_ios_new_rounded, size: 18),
-        onPressed: () => Navigator.pop(context),
+        onPressed: _handleBack,
       ),
       title: Column(
         crossAxisAlignment: CrossAxisAlignment.start,

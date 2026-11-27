@@ -55,10 +55,14 @@ class _BottomChatFieldState extends ConsumerState<GroupBottomChatFieldWidget> {
   bool _isTyping = false;
   bool _hasText = false;
   bool _isSendPressed = false;
+  late final GroupController _groupController;
+  late final StateController<MessageEdit?> _messageEditController;
 
   @override
   void initState() {
     super.initState();
+    _groupController = ref.read(groupControllerProvider);
+    _messageEditController = ref.read(messageEditProvider.notifier);
     _messageController.addListener(_onTextChanged);
     _focusNode.addListener(() {
       if (mounted) setState(() {});
@@ -73,15 +77,20 @@ class _BottomChatFieldState extends ConsumerState<GroupBottomChatFieldWidget> {
     _typingTimer?.cancel();
     // Set typing to false when leaving group chat
     if (_isTyping) {
-      ref
-          .read(groupControllerProvider)
-          .setGroupTypingStatus(widget.groupId, false);
+      _groupController.setGroupTypingStatus(widget.groupId, false);
     }
-    final currentEdit = ref.read(messageEditProvider);
-    if (currentEdit != null &&
-        currentEdit.chatType == 'group' &&
-        currentEdit.groupId == widget.groupId) {
-      ref.read(messageEditProvider.notifier).state = null;
+    if (_messageEditController.mounted) {
+      final currentEdit = _messageEditController.state;
+      if (currentEdit != null &&
+          currentEdit.chatType == 'group' &&
+          currentEdit.groupId == widget.groupId) {
+        Future<void>.microtask(() {
+          if (!_messageEditController.mounted) return;
+          if (identical(_messageEditController.state, currentEdit)) {
+            _messageEditController.state = null;
+          }
+        });
+      }
     }
     super.dispose();
   }
@@ -98,9 +107,7 @@ class _BottomChatFieldState extends ConsumerState<GroupBottomChatFieldWidget> {
     if (text.isNotEmpty && !_isTyping) {
       // User started typing
       _isTyping = true;
-      ref
-          .read(groupControllerProvider)
-          .setGroupTypingStatus(widget.groupId, true);
+      _groupController.setGroupTypingStatus(widget.groupId, true);
     }
 
     // Cancel existing timer
@@ -108,11 +115,10 @@ class _BottomChatFieldState extends ConsumerState<GroupBottomChatFieldWidget> {
 
     // Set new timer - if user stops typing for 2 seconds, set typing to false
     _typingTimer = Timer(const Duration(seconds: 2), () {
+      if (!mounted) return;
       if (_isTyping) {
         _isTyping = false;
-        ref
-            .read(groupControllerProvider)
-            .setGroupTypingStatus(widget.groupId, false);
+        _groupController.setGroupTypingStatus(widget.groupId, false);
       }
     });
 
@@ -120,9 +126,7 @@ class _BottomChatFieldState extends ConsumerState<GroupBottomChatFieldWidget> {
     if (text.isEmpty && _isTyping) {
       _isTyping = false;
       _typingTimer?.cancel();
-      ref
-          .read(groupControllerProvider)
-          .setGroupTypingStatus(widget.groupId, false);
+      _groupController.setGroupTypingStatus(widget.groupId, false);
     }
   }
 

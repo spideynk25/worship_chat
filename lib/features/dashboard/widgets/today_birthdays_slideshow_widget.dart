@@ -6,6 +6,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:hive/hive.dart';
 import 'package:worship_chat/colors.dart';
 import 'package:worship_chat/common/utils/media_cache_service.dart';
 import 'package:worship_chat/common/utils/utils.dart';
@@ -15,6 +16,7 @@ import 'package:worship_chat/features/group/screens/slide_show_screen.dart';
 import 'package:worship_chat/features/group/utils/queendom_group_helper.dart';
 import 'package:worship_chat/features/group/widgets/queendom_badge_widget.dart';
 import 'package:worship_chat/models/event.dart';
+import 'package:worship_chat/models/group.dart';
 import 'package:worship_chat/models/group_gallery_image.dart';
 
 /// Displays today's birthday celebrants on the Dashboard.
@@ -75,58 +77,110 @@ class TodayBirthdaysSlideshowWidget extends ConsumerStatefulWidget {
         lowerText.contains('priestess');
   }
 
+  /// Resolves the best display name (with role/position) for a connected group
+  /// using cached group metadata when [connectedGroupName] is absent or missing a role.
+  static String? resolveConnectedGroupName({
+    String? connectedGroupName,
+    String? connectedGroupId,
+  }) {
+    final trimmedName = connectedGroupName?.trim();
+    if (trimmedName != null &&
+        trimmedName.isNotEmpty &&
+        _hasRoleOrTitle(trimmedName.toLowerCase())) {
+      final cleaned = cleanLivingPlace(trimmedName);
+      return cleaned.isNotEmpty ? cleaned : trimmedName;
+    }
+
+    if (connectedGroupId != null && connectedGroupId.trim().isNotEmpty) {
+      try {
+        if (Hive.isBoxOpen('groups_cache')) {
+          final box = Hive.box('groups_cache');
+          for (final key in box.keys) {
+            final val = box.get(key);
+            if (val is List) {
+              for (final item in val) {
+                if (item is Map) {
+                  final map = Map<String, dynamic>.from(item);
+                  if (map['groupId'] == connectedGroupId) {
+                    final grp = GroupModel.fromMap(map);
+                    final withPos = grp.nameWithPosition.trim();
+                    if (withPos.isNotEmpty) {
+                      return withPos;
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      } catch (_) {}
+    }
+
+    return (trimmedName != null && trimmedName.isNotEmpty) ? trimmedName : null;
+  }
+
+  /// Formats a birthday event title for UI display, enriching bare names with the
+  /// connected deity's role/position when available (e.g. "Keerthy's Birthday" -> "Eternal Goddess Keerthy's Birthday").
+  static String formatBirthdayEventTitle(Event event) {
+    final title = event.title.trim();
+    if (title.isEmpty) return title;
+    final lowerTitle = title.toLowerCase();
+    final isBday = lowerTitle.contains('birth') || lowerTitle.contains('bday');
+    if (!isBday || _hasRoleOrTitle(lowerTitle)) {
+      return title;
+    }
+    final resolvedGroup = resolveConnectedGroupName(
+      connectedGroupName: event.connectedGroupName,
+      connectedGroupId: event.connectedGroupId,
+    );
+    final celebrantWithRole = extractCelebrantName(
+      title,
+      connectedGroupName: resolvedGroup,
+      connectedGroupId: event.connectedGroupId,
+    );
+    if (celebrantWithRole.isNotEmpty &&
+        _hasRoleOrTitle(celebrantWithRole.toLowerCase())) {
+      return "$celebrantWithRole's Birthday";
+    }
+    return title;
+  }
+
   /// Extracts a clean celebrant title plus name from event title (e.g. "Golden Blossom Goddess Vani Bhojan's Birthday" -> "Golden Blossom Goddess Vani Bhojan").
   /// Removes living place prefixes (e.g. "SHRINE OF", "SANCTUM OF", "TEMPLE OF", "GOLDEN SANCTUM OF")
   /// and suffixes (e.g. "Royal Palace", "Queendom", "Devotees") while strictly preserving roles and names.
-  static String extractCelebrantName(String title, {String? connectedGroupName}) {
+  static String extractCelebrantName(
+    String title, {
+    String? connectedGroupName,
+    String? connectedGroupId,
+  }) {
+    final effectiveGroupName = resolveConnectedGroupName(
+      connectedGroupName: connectedGroupName,
+      connectedGroupId: connectedGroupId,
+    );
     final trimmed = title.trim();
     if (trimmed.isEmpty) {
-      if (connectedGroupName != null && connectedGroupName.trim().isNotEmpty) {
-        final cleanedGrp = cleanLivingPlace(connectedGroupName.trim());
-        return cleanedGrp.isNotEmpty ? cleanedGrp : connectedGroupName.trim();
+      if (effectiveGroupName != null && effectiveGroupName.trim().isNotEmpty) {
+        final cleanedGrp = cleanLivingPlace(effectiveGroupName.trim());
+        return cleanedGrp.isNotEmpty ? cleanedGrp : effectiveGroupName.trim();
       }
       return 'Celebrant';
     }
 
     final lower = trimmed.toLowerCase();
-    final lowerGrp = connectedGroupName?.trim().toLowerCase() ?? '';
+    final lowerGrp = effectiveGroupName?.trim().toLowerCase() ?? '';
 
     // Specific legacy test case
     if (lower == 'happy birthday deepika padukone') {
       return 'Goddess Deepika';
     }
 
-    final hasSpecificRoleInTitle = lower.contains('golden') ||
-        lower.contains('core') ||
-        lower.contains('aura') ||
-        lower.contains('wife') ||
-        lower.contains('toy') ||
-        lower.contains('queen') ||
-        lower.contains('demi') ||
-        lower.contains('angel') ||
-        lower.contains('enchantress') ||
-        lower.contains('elfwitch') ||
-        lower.contains('princess') ||
-        lower.contains('supreme') ||
-        lower.contains('elixiria') ||
-        lower.contains('eternal') ||
-        lower.contains('goddess');
+    final hasSpecificRoleInTitle = _hasRoleOrTitle(lower) ||
+        lower.contains('golden') ||
+        lower.contains('core');
 
-    final hasSpecificRoleInGrp = lowerGrp.contains('golden') ||
-        lowerGrp.contains('core') ||
-        lowerGrp.contains('aura') ||
-        lowerGrp.contains('wife') ||
-        lowerGrp.contains('toy') ||
-        lowerGrp.contains('queen') ||
-        lowerGrp.contains('demi') ||
-        lowerGrp.contains('angel') ||
-        lowerGrp.contains('enchantress') ||
-        lowerGrp.contains('elfwitch') ||
-        lowerGrp.contains('princess') ||
-        lowerGrp.contains('supreme') ||
-        lowerGrp.contains('elixiria') ||
-        lowerGrp.contains('eternal') ||
-        lowerGrp.contains('goddess');
+    final hasSpecificRoleInGrp = _hasRoleOrTitle(lowerGrp) ||
+        lowerGrp.contains('golden') ||
+        lowerGrp.contains('core');
 
     if (lower.contains('pooja') && !hasSpecificRoleInTitle && !hasSpecificRoleInGrp) {
       return 'Queen Pooja';
@@ -162,8 +216,8 @@ class TodayBirthdaysSlideshowWidget extends ConsumerStatefulWidget {
     cleaned = cleanLivingPlace(cleaned);
 
     // If cleaned does not have a role/title but connectedGroupName does, or connectedGroupName is fuller, use connectedGroupName
-    if (connectedGroupName != null && connectedGroupName.trim().isNotEmpty) {
-      final grp = cleanLivingPlace(connectedGroupName.trim());
+    if (effectiveGroupName != null && effectiveGroupName.trim().isNotEmpty) {
+      final grp = cleanLivingPlace(effectiveGroupName.trim());
       final lowerCleanedGrp = grp.toLowerCase();
       final lowerCleaned = cleaned.toLowerCase();
 
@@ -376,10 +430,15 @@ class _TodayBirthdaysSlideshowWidgetState
     return const Color(0xFFC2185B);
   }
 
-  static String extractCelebrantName(String title, {String? connectedGroupName}) =>
+  static String extractCelebrantName(
+    String title, {
+    String? connectedGroupName,
+    String? connectedGroupId,
+  }) =>
       TodayBirthdaysSlideshowWidget.extractCelebrantName(
         title,
         connectedGroupName: connectedGroupName,
+        connectedGroupId: connectedGroupId,
       );
 
   void _openFullSlideshow(
@@ -393,6 +452,7 @@ class _TodayBirthdaysSlideshowWidgetState
     final celebrantCleanName = extractCelebrantName(
       celebrant.title,
       connectedGroupName: celebrant.connectedGroupName,
+      connectedGroupId: celebrant.connectedGroupId,
     );
 
     if (galleryList.isNotEmpty) {
@@ -942,13 +1002,18 @@ class _CelebrantGridCardState extends State<_CelebrantGridCard> {
         _TodayBirthdaysSlideshowWidgetState.extractCelebrantName(
           widget.event.title,
           connectedGroupName: widget.event.connectedGroupName,
+          connectedGroupId: widget.event.connectedGroupId,
         );
     final shortWish = 'Happy Birthday, $celebrantName! 🎂✨';
     if (widget.event.connectedGroupId != null) {
       navigateToQueendomGroup(
         context,
         groupId: widget.event.connectedGroupId!,
-        name: widget.event.connectedGroupName ?? 'Queendom Group',
+        name: TodayBirthdaysSlideshowWidget.resolveConnectedGroupName(
+              connectedGroupName: widget.event.connectedGroupName,
+              connectedGroupId: widget.event.connectedGroupId,
+            ) ??
+            celebrantName,
         groupPic: widget.event.connectedGroupPic,
         queendom: widget.event.connectedQueendom,
         wish: shortWish,
@@ -969,6 +1034,7 @@ class _CelebrantGridCardState extends State<_CelebrantGridCard> {
         _TodayBirthdaysSlideshowWidgetState.extractCelebrantName(
           widget.event.title,
           connectedGroupName: widget.event.connectedGroupName,
+          connectedGroupId: widget.event.connectedGroupId,
         );
     final shortWish = 'Happy Birthday, $celebrantName! 🎂✨';
     final queendomType = QueendomBadgeHelper.detectQueendom(
@@ -1286,13 +1352,18 @@ class _SingleCelebrantCardState extends State<_SingleCelebrantCard> {
         _TodayBirthdaysSlideshowWidgetState.extractCelebrantName(
           widget.event.title,
           connectedGroupName: widget.event.connectedGroupName,
+          connectedGroupId: widget.event.connectedGroupId,
         );
     final shortWish = 'Happy Birthday, $celebrantName! 🎂✨';
     if (widget.event.connectedGroupId != null) {
       navigateToQueendomGroup(
         context,
         groupId: widget.event.connectedGroupId!,
-        name: widget.event.connectedGroupName ?? 'Queendom Group',
+        name: TodayBirthdaysSlideshowWidget.resolveConnectedGroupName(
+              connectedGroupName: widget.event.connectedGroupName,
+              connectedGroupId: widget.event.connectedGroupId,
+            ) ??
+            celebrantName,
         groupPic: widget.event.connectedGroupPic,
         queendom: widget.event.connectedQueendom,
         wish: shortWish,
@@ -1313,6 +1384,7 @@ class _SingleCelebrantCardState extends State<_SingleCelebrantCard> {
         _TodayBirthdaysSlideshowWidgetState.extractCelebrantName(
           widget.event.title,
           connectedGroupName: widget.event.connectedGroupName,
+          connectedGroupId: widget.event.connectedGroupId,
         );
     final shortWish = 'Happy Birthday, $celebrantName! 🎂✨';
     final queendomType = QueendomBadgeHelper.detectQueendom(

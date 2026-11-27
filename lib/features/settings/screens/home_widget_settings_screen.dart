@@ -248,6 +248,7 @@ class _HomeWidgetSettingsScreenState
       return;
     }
 
+    final groupsFuture = ref.read(galleryGroupsProvider.future);
     await showModalBottomSheet<void>(
       context: context,
       backgroundColor: const Color(0xFF161426),
@@ -283,8 +284,8 @@ class _HomeWidgetSettingsScreenState
                 ),
                 const SizedBox(height: 10),
                 Flexible(
-                  child: StreamBuilder<List<GroupModel>>(
-                    stream: ref.read(galleryGroupsProvider.future).asStream(),
+                  child: FutureBuilder<List<GroupModel>>(
+                    future: groupsFuture,
                     builder: (_, snap) {
                       final groups = snap.data ?? const <GroupModel>[];
                       if (snap.connectionState == ConnectionState.waiting &&
@@ -320,7 +321,9 @@ class _HomeWidgetSettingsScreenState
                               color: tabColor,
                             ),
                             title: Text(
-                              grp.name,
+                              grp.nameWithPosition.isNotEmpty
+                                  ? grp.nameWithPosition
+                                  : grp.name,
                               style: const TextStyle(
                                 color: Colors.white,
                                 fontWeight: FontWeight.w600,
@@ -345,9 +348,12 @@ class _HomeWidgetSettingsScreenState
   }
 
   Future<void> _syncGroupGallery(GroupModel group) async {
+    final groupDisplayName = group.nameWithPosition.isNotEmpty
+        ? group.nameWithPosition
+        : group.name;
     setState(() {
       _isSyncing = true;
-      _syncStatusText = 'Caching latest photos from "${group.name}"...';
+      _syncStatusText = 'Caching latest photos from "$groupDisplayName"...';
     });
 
     try {
@@ -360,7 +366,7 @@ class _HomeWidgetSettingsScreenState
             (img) => HomeWidgetPhotoInput(
               id: img.imageId,
               imageUrl: img.imageUrl,
-              title: group.name,
+              title: groupDisplayName,
               subtitle: img.caption?.trim().isNotEmpty == true
                   ? img.caption!.trim()
                   : 'Gallery',
@@ -370,18 +376,18 @@ class _HomeWidgetSettingsScreenState
 
       final count = await HomeWidgetService.instance.syncPlaylist(
         items: photoInputs,
-        sourceLabel: group.name,
+        sourceLabel: groupDisplayName,
       );
       if (!mounted) return;
       if (count > 0) {
         AppSnackBar.success(
           context,
-          'Synced $count photo${count == 1 ? '' : 's'} from "${group.name}".',
+          'Synced $count photo${count == 1 ? '' : 's'} from "$groupDisplayName".',
         );
       } else {
         AppSnackBar.warning(
           context,
-          'No downloadable photos found in "${group.name}".',
+          'No downloadable photos found in "$groupDisplayName".',
         );
       }
     } catch (e) {

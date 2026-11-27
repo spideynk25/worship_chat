@@ -26,6 +26,7 @@ class AppSnackBar {
   }) {
     final colors = _getColorsForType(type);
     final iconData = customIcon ?? _getIconForType(type);
+    final messenger = ScaffoldMessenger.maybeOf(context);
 
     return SnackBar(
       elevation: 0,
@@ -42,7 +43,7 @@ class AppSnackBar {
         actionLabel: actionLabel,
         onAction: onAction,
         onDismiss: () {
-          ScaffoldMessenger.of(context).hideCurrentSnackBar();
+          messenger?.hideCurrentSnackBar();
         },
       ),
     );

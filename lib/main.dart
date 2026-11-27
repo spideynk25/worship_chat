@@ -427,6 +427,9 @@ class _RootGateState extends State<RootGate> {
       final nav = navigatorKey.currentState ?? Navigator.of(context);
       nav.pushReplacement(
         PageRouteBuilder(
+          settings: target is HomeScreen
+              ? const RouteSettings(name: HomeScreen.routeName)
+              : null,
           pageBuilder: (_, __, ___) => target,
           transitionsBuilder: (_, animation, __, child) => FadeTransition(
             opacity: CurvedAnimation(parent: animation, curve: Curves.easeOut),

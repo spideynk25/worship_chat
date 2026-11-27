@@ -61,6 +61,15 @@ class _DevelopmentScreenState extends State<DevelopmentScreen> {
     );
   }
 
+  Future<void> _clearResolvedReports() async {
+    await DiagnosticsService.instance.clearResolved();
+    if (!mounted) return;
+    AppSnackBar.info(
+      context,
+      'Resolved diagnostic logs cleared locally and in backend.',
+    );
+  }
+
   Future<void> _confirmClearAll() async {
     final confirmed = await showDialog<bool>(
       context: context,
@@ -72,7 +81,7 @@ class _DevelopmentScreenState extends State<DevelopmentScreen> {
           style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
         ),
         content: const Text(
-          'This removes locally stored crash, error, and performance logs from this device.',
+          'This removes all crash, error, and performance logs from this device and the Firebase backend.',
           style: TextStyle(color: Colors.white70, fontSize: 13),
         ),
         actions: [
@@ -93,7 +102,7 @@ class _DevelopmentScreenState extends State<DevelopmentScreen> {
     if (confirmed == true) {
       await DiagnosticsService.instance.clearAll();
       if (mounted) {
-        AppSnackBar.info(context, 'Local diagnostic logs cleared.');
+        AppSnackBar.info(context, 'Diagnostic logs cleared locally and in backend.');
       }
     }
   }
@@ -406,6 +415,7 @@ class _DevelopmentScreenState extends State<DevelopmentScreen> {
       appBar: AppBar(
         backgroundColor: const Color(0xFF161426),
         elevation: 0,
+        titleSpacing: 0,
         leading: IconButton(
           icon: const Icon(
             Icons.arrow_back_ios_new_rounded,
@@ -416,31 +426,40 @@ class _DevelopmentScreenState extends State<DevelopmentScreen> {
         ),
         title: Row(
           children: [
-            const Text(
-              'Development',
-              style: TextStyle(
-                color: Colors.white,
-                fontSize: 18,
-                fontWeight: FontWeight.bold,
-              ),
-            ),
-            const SizedBox(width: 8),
-            Container(
-              padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
-              decoration: BoxDecoration(
-                color: const Color(0xFF00E5FF).withValues(alpha: 0.16),
-                borderRadius: BorderRadius.circular(8),
-                border: Border.all(
-                  color: const Color(0xFF00E5FF).withValues(alpha: 0.4),
+            const Flexible(
+              child: Text(
+                'Development',
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(
+                  color: Colors.white,
+                  fontSize: 18,
+                  fontWeight: FontWeight.bold,
                 ),
               ),
-              child: const Text(
-                'DIAGNOSTICS',
-                style: TextStyle(
-                  color: Color(0xFF00E5FF),
-                  fontSize: 9.5,
-                  fontWeight: FontWeight.w800,
-                  letterSpacing: 0.6,
+            ),
+            const SizedBox(width: 6),
+            Flexible(
+              flex: 0,
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                decoration: BoxDecoration(
+                  color: const Color(0xFF00E5FF).withValues(alpha: 0.16),
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(
+                    color: const Color(0xFF00E5FF).withValues(alpha: 0.4),
+                  ),
+                ),
+                child: const Text(
+                  'DIAGNOSTICS',
+                  maxLines: 1,
+                  overflow: TextOverflow.clip,
+                  style: TextStyle(
+                    color: Color(0xFF00E5FF),
+                    fontSize: 9,
+                    fontWeight: FontWeight.w800,
+                    letterSpacing: 0.4,
+                  ),
                 ),
               ),
             ),
@@ -449,6 +468,8 @@ class _DevelopmentScreenState extends State<DevelopmentScreen> {
         actions: [
           IconButton(
             tooltip: 'Sync with Firebase',
+            padding: EdgeInsets.zero,
+            constraints: const BoxConstraints(minWidth: 38, minHeight: 40),
             onPressed: _isSyncing ? null : _syncCloud,
             icon: _isSyncing
                 ? const SizedBox(
@@ -466,6 +487,8 @@ class _DevelopmentScreenState extends State<DevelopmentScreen> {
           ),
           IconButton(
             tooltip: 'Copy Fix Command Prompt',
+            padding: EdgeInsets.zero,
+            constraints: const BoxConstraints(minWidth: 38, minHeight: 40),
             icon: const Icon(Icons.auto_fix_high_rounded, color: Color(0xFFFFD700)),
             onPressed: () {
               final prompt = DiagnosticsService.instance
@@ -479,12 +502,13 @@ class _DevelopmentScreenState extends State<DevelopmentScreen> {
           ),
           PopupMenuButton<String>(
             color: const Color(0xFF1D1B30),
+            padding: EdgeInsets.zero,
             icon: const Icon(Icons.more_vert_rounded, color: Colors.white70),
             onSelected: (value) {
               if (value == 'hide_resolved') {
                 setState(() => _hideResolved = !_hideResolved);
               } else if (value == 'clear_resolved') {
-                DiagnosticsService.instance.clearResolved();
+                _clearResolvedReports();
               } else if (value == 'clear_all') {
                 _confirmClearAll();
               }

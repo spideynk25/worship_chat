@@ -114,7 +114,7 @@ class _MultiGalleryShuffleSheetState
       final matchesCategory = _selectedCategory == 'All' || g.queendom == _selectedCategory;
       final query = _search.trim().toLowerCase();
       final matchesSearch = query.isEmpty ||
-          '${g.name} ${g.effectiveLivingPlace} ${g.queendom ?? ''}'
+          '${g.nameWithPosition} ${g.name} ${g.effectiveLivingPlace} ${g.queendom ?? ''}'
               .toLowerCase()
               .contains(query);
       return matchesCategory && matchesSearch;

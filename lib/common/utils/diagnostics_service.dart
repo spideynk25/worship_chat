@@ -296,6 +296,9 @@ class DiagnosticsService {
   DateTime Function() _nowProvider = DateTime.now;
   Future<void> Function(DiagnosticReport report)? _remoteUploaderOverride;
   Future<List<DiagnosticReport>> Function()? _remoteFetcherOverride;
+  Future<void> Function(String id)? _remoteDeleterOverride;
+  Future<void> Function()? _remoteClearResolvedOverride;
+  Future<void> Function()? _remoteClearAllOverride;
 
   double _totalBuildMsAccum = 0.0;
   double _totalRasterMsAccum = 0.0;
@@ -310,11 +313,17 @@ class DiagnosticsService {
     DateTime Function()? nowProvider,
     Future<void> Function(DiagnosticReport report)? remoteUploader,
     Future<List<DiagnosticReport>> Function()? remoteFetcher,
+    Future<void> Function(String id)? remoteDeleter,
+    Future<void> Function()? remoteClearResolved,
+    Future<void> Function()? remoteClearAll,
     String appVersion = '1.0.5+6',
   }) {
     if (nowProvider != null) _nowProvider = nowProvider;
     _remoteUploaderOverride = remoteUploader;
     _remoteFetcherOverride = remoteFetcher;
+    _remoteDeleterOverride = remoteDeleter;
+    _remoteClearResolvedOverride = remoteClearResolved;
+    _remoteClearAllOverride = remoteClearAll;
     _cachedAppVersion = appVersion;
   }
 
@@ -332,6 +341,9 @@ class DiagnosticsService {
     _nowProvider = DateTime.now;
     _remoteUploaderOverride = null;
     _remoteFetcherOverride = null;
+    _remoteDeleterOverride = null;
+    _remoteClearResolvedOverride = null;
+    _remoteClearAllOverride = null;
     _totalBuildMsAccum = 0.0;
     _totalRasterMsAccum = 0.0;
     _sampledFrames = 0;
@@ -796,19 +808,26 @@ class DiagnosticsService {
         .toList(growable: false);
     reportsNotifier.value = List<DiagnosticReport>.unmodifiable(current);
     await _persistToStorage();
+    await _tryRemoteDeleteReport(id);
   }
 
   Future<void> clearResolved() async {
+    final resolvedIds = reportsNotifier.value
+        .where((r) => r.isResolved)
+        .map((r) => r.id)
+        .toList(growable: false);
     final current = reportsNotifier.value
         .where((r) => !r.isResolved)
         .toList(growable: false);
     reportsNotifier.value = List<DiagnosticReport>.unmodifiable(current);
     await _persistToStorage();
+    await _tryRemoteClearResolved(resolvedIds);
   }
 
   Future<void> clearAll() async {
     reportsNotifier.value = const [];
     await _persistToStorage();
+    await _tryRemoteClearAll();
   }
 
   String exportUnresolvedAsCommand({DiagnosticReportKind? filterKind}) {
@@ -890,6 +909,81 @@ class DiagnosticsService {
     } catch (_) {
       return const [];
     }
+  }
+
+  Future<void> _tryRemoteDeleteReport(String id) async {
+    if (_remoteDeleterOverride != null) {
+      try {
+        await _remoteDeleterOverride!(id);
+      } catch (_) {}
+      return;
+    }
+    if (Firebase.apps.isEmpty) return;
+    try {
+      await FirebaseFirestore.instance
+          .collection(firestoreCollection)
+          .doc(id)
+          .delete()
+          .timeout(const Duration(seconds: 6));
+    } catch (_) {}
+  }
+
+  Future<void> _tryRemoteClearResolved(List<String> localResolvedIds) async {
+    if (_remoteClearResolvedOverride != null) {
+      try {
+        await _remoteClearResolvedOverride!();
+      } catch (_) {}
+      return;
+    }
+    if (Firebase.apps.isEmpty) return;
+    try {
+      await _deleteRemoteCollectionDocs(resolvedOnly: true);
+      if (localResolvedIds.isNotEmpty) {
+        final col = FirebaseFirestore.instance.collection(firestoreCollection);
+        for (var i = 0; i < localResolvedIds.length; i += 400) {
+          final end = (i + 400).clamp(0, localResolvedIds.length);
+          final batch = FirebaseFirestore.instance.batch();
+          for (final id in localResolvedIds.sublist(i, end)) {
+            batch.delete(col.doc(id));
+          }
+          await batch.commit().timeout(const Duration(seconds: 8));
+        }
+      }
+    } catch (_) {}
+  }
+
+  Future<void> _tryRemoteClearAll() async {
+    if (_remoteClearAllOverride != null) {
+      try {
+        await _remoteClearAllOverride!();
+      } catch (_) {}
+      return;
+    }
+    await _deleteRemoteCollectionDocs(resolvedOnly: false);
+  }
+
+  Future<void> _deleteRemoteCollectionDocs({required bool resolvedOnly}) async {
+    if (Firebase.apps.isEmpty) return;
+    try {
+      final collection =
+          FirebaseFirestore.instance.collection(firestoreCollection);
+      while (true) {
+        final query = resolvedOnly
+            ? collection.where('isResolved', isEqualTo: true)
+            : collection;
+        final snap = await query
+            .limit(400)
+            .get()
+            .timeout(const Duration(seconds: 8));
+        if (snap.docs.isEmpty) break;
+        final batch = FirebaseFirestore.instance.batch();
+        for (final doc in snap.docs) {
+          batch.delete(doc.reference);
+        }
+        await batch.commit().timeout(const Duration(seconds: 8));
+        if (snap.docs.length < 400) break;
+      }
+    } catch (_) {}
   }
 
   Future<void> _loadFromStorage() async {

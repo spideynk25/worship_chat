@@ -2,6 +2,7 @@ import 'dart:developer';
 import 'dart:io';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:worship_chat/features/group/repository/group_gallery_repository.dart';
+import 'package:worship_chat/models/group.dart';
 import 'package:worship_chat/models/group_gallery_image.dart';
 
 final groupGalleryControllerProvider = Provider((ref) {
@@ -103,5 +104,32 @@ class GroupGalleryController {
 
   Future<int> getGalleryCount(String groupId) async {
     return repository.getGalleryCount(groupId);
+  }
+
+  Future<List<GroupGalleryImage>> getCachedRecentGalleryPhotos(String uid) {
+    return repository.getCachedRecentGalleryPhotos(uid);
+  }
+
+  Future<List<GroupGalleryImage>> getRecentGalleryPhotos({
+    required List<GroupModel> groups,
+    int limit = 24,
+    int limitPerGroup = 8,
+    int maxGroupsToQuery = 16,
+    bool photosOnly = true,
+    bool saveCache = true,
+  }) async {
+    try {
+      return await repository.getRecentGalleryPhotos(
+        groups: groups,
+        limit: limit,
+        limitPerGroup: limitPerGroup,
+        maxGroupsToQuery: maxGroupsToQuery,
+        photosOnly: photosOnly,
+        saveCache: saveCache,
+      );
+    } catch (e) {
+      log('❌ GroupGalleryController.getRecentGalleryPhotos error: $e');
+      return const [];
+    }
   }
 }

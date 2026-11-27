@@ -64,6 +64,9 @@ class _OneToOneChatScreenState extends ConsumerState<OneToOneChatScreen>
   StreamSubscription<DocumentSnapshot<Map<String, dynamic>>>? _backgroundSubscription;
   String? _currentChatBackgroundUrl;
   final ChatPowerUpController _powerUpController = ChatPowerUpController();
+  AuthController? _authController;
+  ChatController? _chatController;
+  bool _isActiveInTree = true;
 
   @override
   void initState() {
@@ -71,6 +74,8 @@ class _OneToOneChatScreenState extends ConsumerState<OneToOneChatScreen>
     _currentChatBackgroundUrl = widget.chatBackgroundUrl;
     _loadCachedBackground();
     if (!AppCapabilities.current.chatEnabled) return;
+    _authController = ref.read(authControllerProvider);
+    _chatController = ref.read(chatControllerProvider);
     WidgetsBinding.instance.addObserver(this);
     ActiveChatNotifier.instance.enter(widget.uid, chatName: widget.name);
     FirebaseNotificationService.cancelNotificationsForChat(
@@ -80,7 +85,7 @@ class _OneToOneChatScreenState extends ConsumerState<OneToOneChatScreen>
     // Initialise typing stream directly (ref is available in initState for
     // ConsumerStatefulWidget). Using ref.read (not watch) means
     // chatControllerProvider notifications will NOT trigger build().
-    _typingStream = ref.read(chatControllerProvider).getTypingStatus(widget.uid);
+    _typingStream = _chatController!.getTypingStatus(widget.uid);
     displayOrHideImage();
 
     final currentUserId = FirebaseAuth.instance.currentUser?.uid;
@@ -108,15 +113,26 @@ class _OneToOneChatScreenState extends ConsumerState<OneToOneChatScreen>
     }
 
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      ref.read(authControllerProvider).setUserState(true);
+      if (!mounted || !_isActiveInTree) return;
+      _authController?.setUserState(true);
       FirebaseNotificationService.cancelNotificationsForChat(
         widget.uid,
         chatName: widget.name,
       );
-      if (mounted) {
-        ref.read(chatControllerProvider).markChatAsSeen(widget.uid);
-      }
+      _chatController?.markChatAsSeen(widget.uid);
     });
+  }
+
+  @override
+  void activate() {
+    super.activate();
+    _isActiveInTree = true;
+  }
+
+  @override
+  void deactivate() {
+    _isActiveInTree = false;
+    super.deactivate();
   }
 
   Future<void> _loadCachedBackground() async {
@@ -140,22 +156,22 @@ class _OneToOneChatScreenState extends ConsumerState<OneToOneChatScreen>
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     super.didChangeAppLifecycleState(state);
-    if (!AppCapabilities.current.chatEnabled) return;
+    if (!AppCapabilities.current.chatEnabled || !mounted || !_isActiveInTree) {
+      return;
+    }
     if (state == AppLifecycleState.resumed) {
-      ref.read(authControllerProvider).setUserState(true);
+      _authController?.setUserState(true);
       ActiveChatNotifier.instance.enter(widget.uid, chatName: widget.name);
       FirebaseNotificationService.cancelNotificationsForChat(
         widget.uid,
         chatName: widget.name,
       );
-      if (mounted) {
-        ref.read(chatControllerProvider).markChatAsSeen(widget.uid);
-      }
+      _chatController?.markChatAsSeen(widget.uid);
     } else if (state == AppLifecycleState.inactive ||
         state == AppLifecycleState.paused ||
         state == AppLifecycleState.detached ||
         state == AppLifecycleState.hidden) {
-      ref.read(authControllerProvider).setUserState(false);
+      _authController?.setUserState(false);
     }
   }
 

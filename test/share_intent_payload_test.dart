@@ -540,9 +540,16 @@ void main() {
       await tester.tap(find.byKey(const ValueKey('group_tile_grp_sreeleela')));
       await tester.pumpAndSettle();
 
-      // Multi-group banner and button should appear
+      // Multi-group banner and chips should show full role + name
       expect(find.text('2 Groups Selected'), findsOneWidget);
       expect(find.text('Send 1 message to 2 Groups'), findsOneWidget);
+      expect(
+        find.descendant(
+          of: find.byKey(const ValueKey('chip_grp_preity')),
+          matching: find.text('Princess Preity'),
+        ),
+        findsOneWidget,
+      );
 
       // Tap Group 1 chip in banner to remove / deselect it
       await tester.tap(find.byKey(const ValueKey('chip_grp_preity')));

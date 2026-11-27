@@ -8,6 +8,7 @@ import 'package:worship_chat/features/auth/controller/auth_controller.dart';
 import 'package:worship_chat/features/chat/controller/chat_controller.dart';
 import 'package:worship_chat/features/chat/widgets/media_group_widget.dart';
 import 'package:worship_chat/features/group/controller/group_controller.dart';
+import 'package:worship_chat/features/group/controller/group_gallery_controller.dart';
 import 'package:worship_chat/features/group/widgets/group_chat_list_widget.dart';
 import 'package:worship_chat/features/share/screens/share_upload_screen.dart';
 import 'package:worship_chat/models/chat_contact.dart';
@@ -162,6 +163,39 @@ class _RecordingGroupController implements GroupController {
 
   @override
   Future<void> setChatMessageSeen(BuildContext context, String groupId, String messageId) async {}
+
+  @override
+  dynamic noSuchMethod(Invocation invocation) => null;
+}
+
+class _RecordingGalleryController implements GroupGalleryController {
+  final List<String> uploadedGroupIds = [];
+
+  @override
+  Future<int> uploadImages({
+    required String groupId,
+    required List<File> imageFiles,
+    required String uploaderName,
+    String? caption,
+    void Function(int uploaded, int total)? onProgress,
+  }) async {
+    uploadedGroupIds.add(groupId);
+    onProgress?.call(imageFiles.length, imageFiles.length);
+    return imageFiles.length;
+  }
+
+  @override
+  Future<int> uploadVideos({
+    required String groupId,
+    required List<File> videoFiles,
+    required String uploaderName,
+    String? caption,
+    void Function(int uploaded, int total)? onProgress,
+  }) async {
+    uploadedGroupIds.add(groupId);
+    onProgress?.call(videoFiles.length, videoFiles.length);
+    return videoFiles.length;
+  }
 
   @override
   dynamic noSuchMethod(Invocation invocation) => null;
@@ -524,6 +558,223 @@ void main() {
       expect(mediaGroupWidget.items[2].url, equals('https://example.com/vid3.mp4'));
       expect(mediaGroupWidget.items[2].type, equals('video'));
       expect(mediaGroupWidget.caption, equals('Collage caption'));
+    });
+  });
+
+  group('Post-Send Destination & Back Navigation Tests', () {
+    Future<void> pumpShareWithStack(
+      WidgetTester tester, {
+      required _RecordingChatController chatController,
+      required _RecordingGroupController groupController,
+      required _RecordingGalleryController galleryController,
+      required SharedPayload payload,
+    }) async {
+      await tester.pumpWidget(
+        ProviderScope(
+          overrides: [
+            chatControllerProvider.overrideWithValue(chatController),
+            groupControllerProvider.overrideWithValue(groupController),
+            groupGalleryControllerProvider.overrideWithValue(galleryController),
+            userDataAuthProvider.overrideWith((ref) => Future.value(testUser)),
+          ],
+          child: MaterialApp(
+            home: Builder(
+              builder: (rootCtx) => Scaffold(
+                body: ElevatedButton(
+                  onPressed: () {
+                    // Push an intermediate screen first, then ShareUploadScreen,
+                    // verifying Back from the destination skips both and goes Home.
+                    Navigator.of(rootCtx).push(
+                      MaterialPageRoute(
+                        builder: (midCtx) => Scaffold(
+                          body: ElevatedButton(
+                            onPressed: () => Navigator.of(midCtx).push(
+                              MaterialPageRoute(
+                                builder: (_) => ShareUploadScreen(
+                                  payload: payload,
+                                  homeScreenBuilder: () => const Scaffold(
+                                    body: Center(child: Text('HOME_ROOT')),
+                                  ),
+                                  directChatScreenBuilder: (contact) =>
+                                      Scaffold(
+                                    appBar: AppBar(
+                                      title: Text('DIRECT:${contact.uid}'),
+                                    ),
+                                    body: const SizedBox.shrink(),
+                                  ),
+                                  groupChatScreenBuilder:
+                                      (group, accent, type) => Scaffold(
+                                    appBar: AppBar(
+                                      title: Text('GROUP:${group.groupId}'),
+                                    ),
+                                    body: const SizedBox.shrink(),
+                                  ),
+                                  groupGalleryScreenBuilder: (group, accent) =>
+                                      Scaffold(
+                                    appBar: AppBar(
+                                      title: Text('GALLERY:${group.groupId}'),
+                                    ),
+                                    body: const SizedBox.shrink(),
+                                  ),
+                                ),
+                              ),
+                            ),
+                            child: const Text('Push Share'),
+                          ),
+                        ),
+                      ),
+                    );
+                  },
+                  child: const Text('Push Intermediate'),
+                ),
+              ),
+            ),
+          ),
+        ),
+      );
+
+      await tester.tap(find.text('Push Intermediate'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Push Share'));
+      await tester.pumpAndSettle();
+    }
+
+    testWidgets(
+        'Direct chat share navigates to 1:1 chat and going back lands on Home',
+        (tester) async {
+      final chatCtrl = _RecordingChatController();
+      final groupCtrl = _RecordingGroupController();
+      final galleryCtrl = _RecordingGalleryController();
+
+      await pumpShareWithStack(
+        tester,
+        chatController: chatCtrl,
+        groupController: groupCtrl,
+        galleryController: galleryCtrl,
+        payload: const SharedPayload(
+          text: 'Hello via intent',
+          type: SharedPayloadType.text,
+        ),
+      );
+
+      await tester.tap(find.text('Pooja Devotee'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Send 1 message to Pooja Devotee'));
+      await tester.pumpAndSettle();
+
+      expect(find.text('DIRECT:uid_devotee_1'), findsOneWidget);
+
+      await tester.pageBack();
+      await tester.pumpAndSettle();
+      expect(find.text('HOME_ROOT'), findsOneWidget);
+      expect(find.text('Push Share'), findsNothing);
+    });
+
+    testWidgets(
+        'Single group chat share navigates to group chat and going back lands on Home',
+        (tester) async {
+      final chatCtrl = _RecordingChatController();
+      final groupCtrl = _RecordingGroupController();
+      final galleryCtrl = _RecordingGalleryController();
+
+      await pumpShareWithStack(
+        tester,
+        chatController: chatCtrl,
+        groupController: groupCtrl,
+        galleryController: galleryCtrl,
+        payload: SharedPayload(
+          type: SharedPayloadType.image,
+          files: [File('/tmp/royal_single.jpg')],
+        ),
+      );
+
+      await tester.tap(find.text('Queen Pooja'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Chat'));
+      await tester.pumpAndSettle();
+      await tester
+          .tap(find.textContaining('Royal Chamber', findRichText: true).first);
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.text('Send 1 photo to Royal Chamber'));
+      await tester.pumpAndSettle();
+
+      expect(find.text('GROUP:royal_group_1'), findsOneWidget);
+
+      await tester.pageBack();
+      await tester.pumpAndSettle();
+      expect(find.text('HOME_ROOT'), findsOneWidget);
+      expect(find.text('Push Share'), findsNothing);
+    });
+
+    testWidgets(
+        'Single group gallery share navigates to gallery screen and going back lands on Home',
+        (tester) async {
+      final chatCtrl = _RecordingChatController();
+      final groupCtrl = _RecordingGroupController();
+      final galleryCtrl = _RecordingGalleryController();
+
+      await pumpShareWithStack(
+        tester,
+        chatController: chatCtrl,
+        groupController: groupCtrl,
+        galleryController: galleryCtrl,
+        payload: SharedPayload(
+          type: SharedPayloadType.image,
+          files: [File('/tmp/gallery_1.jpg'), File('/tmp/gallery_2.jpg')],
+        ),
+      );
+
+      await tester.tap(find.text('Queen Pooja'));
+      await tester.pumpAndSettle();
+      await tester
+          .tap(find.textContaining('Royal Chamber', findRichText: true).first);
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.text('Upload 2 photos to Gallery'));
+      await tester.pumpAndSettle();
+
+      expect(galleryCtrl.uploadedGroupIds, ['royal_group_1']);
+      expect(find.text('GALLERY:royal_group_1'), findsOneWidget);
+
+      await tester.pageBack();
+      await tester.pumpAndSettle();
+      expect(find.text('HOME_ROOT'), findsOneWidget);
+    });
+
+    testWidgets(
+        'Multi-group share navigates cleanly back to Home root',
+        (tester) async {
+      final chatCtrl = _RecordingChatController();
+      final groupCtrl = _RecordingGroupController();
+      final galleryCtrl = _RecordingGalleryController();
+
+      await pumpShareWithStack(
+        tester,
+        chatController: chatCtrl,
+        groupController: groupCtrl,
+        galleryController: galleryCtrl,
+        payload: const SharedPayload(
+          text: 'Broadcast link',
+          type: SharedPayloadType.text,
+        ),
+      );
+
+      await tester.tap(find.text('Queen Pooja'));
+      await tester.pumpAndSettle();
+      await tester
+          .tap(find.textContaining('Royal Chamber', findRichText: true).first);
+      await tester.pumpAndSettle();
+      final grp2 =
+          find.textContaining('Royal Courtyard', findRichText: true).first;
+      await tester.ensureVisible(grp2);
+      await tester.tap(grp2);
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.text('Send 1 message to 2 Groups'));
+      await tester.pumpAndSettle();
+
+      expect(find.text('HOME_ROOT'), findsOneWidget);
     });
   });
 }
