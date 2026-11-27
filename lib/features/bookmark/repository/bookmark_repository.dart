@@ -343,6 +343,27 @@ class BookmarkRepository {
     }
   }
 
+  /// Replaces the image URL on an existing bookmark document while keeping all
+  /// collection memberships intact.
+  Future<bool> replaceBookmarkImage({
+    required String bookmarkId,
+    required String newImageUrl,
+  }) async {
+    if (_uid == null || bookmarkId.trim().isEmpty || newImageUrl.trim().isEmpty) {
+      return false;
+    }
+    try {
+      await firestore.collection('bookmarks').doc(bookmarkId).update({
+        'imageUrl': newImageUrl.trim(),
+        'bookmarkedAt': DateTime.now().millisecondsSinceEpoch,
+      });
+      return true;
+    } catch (e) {
+      log('❌ replaceBookmarkImage error: $e');
+      return false;
+    }
+  }
+
   // ── Add multiple bookmarks to collection ──────────────────────────────────
   Future<bool> addBookmarksToCollection({
     required String collectionId,

@@ -9,7 +9,16 @@ import 'package:worship_chat/features/group/utils/group_template_helper.dart';
 import 'package:worship_chat/models/group.dart';
 
 class DynamicTextWidget extends StatefulWidget {
-  const DynamicTextWidget({super.key});
+  final TextStyle? style;
+  final int maxLines;
+  final List<String> overrideTexts;
+
+  const DynamicTextWidget({
+    super.key,
+    this.style,
+    this.maxLines = 2,
+    this.overrideTexts = const [],
+  });
 
   /// Cleans wish text by removing bowing emojis, skin tone modifiers,
   /// and stray Fitzpatrick swatches to ensure pristine typography in AppBar subtitle.
@@ -75,6 +84,9 @@ class _DynamicTextWidgetState extends State<DynamicTextWidget> {
   Timer? _timer;
   StreamSubscription<QuerySnapshot>? _firestoreSub;
 
+  List<String> get _activeList =>
+      widget.overrideTexts.isNotEmpty ? widget.overrideTexts : _currentList;
+
   @override
   void initState() {
     super.initState();
@@ -83,12 +95,31 @@ class _DynamicTextWidgetState extends State<DynamicTextWidget> {
     _startTimer();
   }
 
+  @override
+  void didUpdateWidget(covariant DynamicTextWidget oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (!_listsEqual(oldWidget.overrideTexts, widget.overrideTexts)) {
+      _currentIndex = 0;
+      _startTimer();
+    }
+  }
+
+  static bool _listsEqual(List<String> a, List<String> b) {
+    if (identical(a, b)) return true;
+    if (a.length != b.length) return false;
+    for (var i = 0; i < a.length; i++) {
+      if (a[i] != b[i]) return false;
+    }
+    return true;
+  }
+
   void _startTimer() {
     _timer?.cancel();
     _timer = Timer.periodic(const Duration(seconds: 5), (timer) {
-      if (!mounted || _currentList.isEmpty) return;
+      final active = _activeList;
+      if (!mounted || active.length <= 1) return;
       setState(() {
-        _currentIndex = (_currentIndex + 1) % _currentList.length;
+        _currentIndex = (_currentIndex + 1) % active.length;
       });
     });
   }
@@ -219,12 +250,22 @@ class _DynamicTextWidgetState extends State<DynamicTextWidget> {
 
   @override
   Widget build(BuildContext context) {
-    if (_currentList.isEmpty) return const SizedBox.shrink();
+    final active = _activeList;
+    if (active.isEmpty) return const SizedBox.shrink();
 
-    final text = _currentList[_currentIndex % _currentList.length];
+    final text = active[_currentIndex % active.length];
 
     return AnimatedSwitcher(
       duration: const Duration(milliseconds: 700),
+      layoutBuilder: (Widget? currentChild, List<Widget> previousChildren) {
+        return Stack(
+          alignment: Alignment.centerLeft,
+          children: <Widget>[
+            ...previousChildren,
+            if (currentChild != null) currentChild,
+          ],
+        );
+      },
       transitionBuilder: (Widget child, Animation<double> animation) {
         final offsetAnimation = Tween<Offset>(
           begin: const Offset(0.0, 0.2), // gentle slide from bottom
@@ -241,13 +282,15 @@ class _DynamicTextWidgetState extends State<DynamicTextWidget> {
       child: Text(
         text,
         key: ValueKey<String>(text),
-        maxLines: 2,
+        textAlign: TextAlign.left,
+        maxLines: widget.maxLines,
         overflow: TextOverflow.ellipsis,
-        style: const TextStyle(
-          color: accentOrange,
-          fontSize: 11.5,
-          fontWeight: FontWeight.w400,
-        ),
+        style: widget.style ??
+            const TextStyle(
+              color: accentOrange,
+              fontSize: 11.5,
+              fontWeight: FontWeight.w400,
+            ),
       ),
     );
   }

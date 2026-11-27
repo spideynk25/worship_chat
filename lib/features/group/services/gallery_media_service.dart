@@ -194,6 +194,40 @@ class GalleryMediaService {
     );
   }
 
+  /// Saves an already-materialized local image file (for example an edited
+  /// Text Remover output) to the user's device album or desktop save picker.
+  Future<GallerySaveResult> saveLocalImageFile({
+    required File imageFile,
+    String? fileName,
+  }) async {
+    if (!await imageFile.exists()) {
+      return GallerySaveResult.failed;
+    }
+
+    final resolvedName = (fileName != null && fileName.trim().isNotEmpty)
+        ? fileName.trim()
+        : p.basename(imageFile.path);
+
+    return await BackgroundTaskService.instance.runWithBackgroundTask<GallerySaveResult>(
+      title: 'Saving Cleaned Photo',
+      initialMessage: 'Saving photo to device...',
+      successMessage: 'Saved cleaned photo to device',
+      task: (_) async {
+        if (isDesktop) {
+          final bytes = await imageFile.readAsBytes();
+          final destination = await _saveFile(resolvedName, bytes);
+          return destination == null
+              ? GallerySaveResult.cancelled
+              : GallerySaveResult.saved;
+        }
+
+        return await _saveToAlbum(imageFile.path) == true
+            ? GallerySaveResult.saved
+            : GallerySaveResult.failed;
+      },
+    );
+  }
+
   /// Downloads all images from a gallery, compresses them into a ZIP archive,
   /// and saves the archive to the platform's destination.
   Future<GalleryZipResult> downloadGalleryAsZip({

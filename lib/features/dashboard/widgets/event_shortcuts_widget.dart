@@ -571,17 +571,25 @@ class _EventShortcutsWidgetState extends ConsumerState<EventShortcutsWidget> {
                           children: [
                             const Text('🎉', style: TextStyle(fontSize: 16)),
                             const SizedBox(width: 6),
-                            ShaderMask(
-                              shaderCallback: (bounds) => const LinearGradient(
-                                colors: [Color(0xFFFF5288), Color(0xFFFF9E68)],
-                              ).createShader(bounds),
-                              child: const Text(
-                                'BIRTHDAYS & EVENTS',
-                                style: TextStyle(
-                                  fontSize: 13,
-                                  fontWeight: FontWeight.w900,
-                                  color: Colors.white,
-                                  letterSpacing: 0.8,
+                            Flexible(
+                              child: ShaderMask(
+                                shaderCallback: (bounds) =>
+                                    const LinearGradient(
+                                  colors: [
+                                    Color(0xFFFF5288),
+                                    Color(0xFFFF9E68),
+                                  ],
+                                ).createShader(bounds),
+                                child: const Text(
+                                  'BIRTHDAYS & EVENTS',
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: TextStyle(
+                                    fontSize: 13,
+                                    fontWeight: FontWeight.w900,
+                                    color: Colors.white,
+                                    letterSpacing: 0.8,
+                                  ),
                                 ),
                               ),
                             ),
@@ -620,12 +628,16 @@ class _EventShortcutsWidgetState extends ConsumerState<EventShortcutsWidget> {
                                   color: tabColor,
                                 ),
                                 SizedBox(width: 4),
-                                Text(
-                                  'Open Calendar',
-                                  style: TextStyle(
-                                    fontSize: 11,
-                                    fontWeight: FontWeight.bold,
-                                    color: tabColor,
+                                Flexible(
+                                  child: Text(
+                                    'Open Calendar',
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: TextStyle(
+                                      fontSize: 11,
+                                      fontWeight: FontWeight.bold,
+                                      color: tabColor,
+                                    ),
                                   ),
                                 ),
                                 SizedBox(width: 2),

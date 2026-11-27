@@ -98,5 +98,42 @@ void main() {
         equals('Long live Core Supreme Goddess Deepika'),
       );
     });
+
+    testWidgets(
+        'DynamicTextWidget displays single birthday override steadily and cycles multiple overrides every 5s',
+        (tester) async {
+      await tester.pumpWidget(
+        const MaterialApp(
+          home: Scaffold(
+            body: DynamicTextWidget(
+              overrideTexts: ['Happy Birthday Queen Pooja'],
+            ),
+          ),
+        ),
+      );
+
+      expect(find.text('Happy Birthday Queen Pooja'), findsOneWidget);
+      await tester.pump(const Duration(seconds: 5));
+      await tester.pump(const Duration(milliseconds: 800));
+      expect(find.text('Happy Birthday Queen Pooja'), findsOneWidget);
+
+      await tester.pumpWidget(
+        const MaterialApp(
+          home: Scaffold(
+            body: DynamicTextWidget(
+              overrideTexts: [
+                'Happy Birthday Queen Pooja',
+                'Happy Birthday Goddess Deepika',
+              ],
+            ),
+          ),
+        ),
+      );
+
+      expect(find.text('Happy Birthday Queen Pooja'), findsOneWidget);
+      await tester.pump(const Duration(seconds: 5));
+      await tester.pump(const Duration(milliseconds: 800));
+      expect(find.text('Happy Birthday Goddess Deepika'), findsOneWidget);
+    });
   });
 }

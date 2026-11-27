@@ -1,6 +1,7 @@
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:firebase_core/firebase_core.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:intl/intl.dart';
@@ -12,6 +13,7 @@ import 'package:worship_chat/common/utils/google_lens_service.dart';
 import 'package:worship_chat/common/utils/utils.dart';
 import 'package:worship_chat/features/group/services/gallery_media_service.dart';
 import 'package:worship_chat/features/group/widgets/gallery_navigation_controls.dart';
+import 'package:worship_chat/common/widgets/photo_text_remover_sheet.dart';
 import 'package:worship_chat/common/widgets/set_as_profile_pic_sheet.dart';
 import 'package:worship_chat/common/widgets/skeleton_loader.dart';
 import 'package:worship_chat/common/widgets/user_avatar.dart';
@@ -522,6 +524,35 @@ class _UserBookmarksScreenState extends ConsumerState<_UserBookmarksScreen>
                 GoogleLensService.search(
                   context: context,
                   imageUrl: bm.imageUrl,
+                );
+              },
+            ),
+            ListTile(
+              leading: const Icon(
+                Icons.text_fields_rounded,
+                color: Color(0xFF00E5FF),
+              ),
+              title: const Text(
+                'Remove Text',
+                style: TextStyle(color: Colors.white),
+              ),
+              subtitle: const Text(
+                'Erase captions, watermarks & overlaid text',
+                style: TextStyle(color: Colors.white54, fontSize: 12),
+              ),
+              onTap: () {
+                Navigator.pop(ctx);
+                PhotoTextRemoverSheet.open(
+                  context,
+                  origin: PhotoTextRemoverOrigin.bookmarks,
+                  imageUrl: bm.imageUrl,
+                  groupId: bm.groupId,
+                  groupName: bm.groupName,
+                  sourceBookmarkId: bm.bookmarkId,
+                  isOwner: isMe,
+                  title: bm.groupName.isNotEmpty
+                      ? bm.groupName
+                      : widget.userName,
                 );
               },
             ),
@@ -1197,6 +1228,7 @@ class BookmarkFullscreenViewer extends ConsumerStatefulWidget {
   final int initialIndex;
   final String currentUserId;
   final bool isOwner;
+  final String? sourceCollectionId;
   final Future<void> Function(BookmarkModel bm)? onRemove;
 
   const BookmarkFullscreenViewer({
@@ -1205,6 +1237,7 @@ class BookmarkFullscreenViewer extends ConsumerStatefulWidget {
     required this.initialIndex,
     required this.currentUserId,
     required this.isOwner,
+    this.sourceCollectionId,
     required this.onRemove,
   });
 
@@ -1217,11 +1250,12 @@ class BookmarkFullscreenViewerState
     extends ConsumerState<BookmarkFullscreenViewer> {
   late PageController _pageCtrl;
   late int _index;
+  late List<BookmarkModel> _bookmarks;
   bool _overlayOn = true;
   bool _isDownloading = false;
 
   // Convert BookmarkModel list to GroupGalleryImage list for slideshow
-  List<GroupGalleryImage> get _asGalleryImages => widget.bookmarks
+  List<GroupGalleryImage> get _asGalleryImages => _bookmarks
       .map(
         (bm) => GroupGalleryImage(
           imageId: bm.bookmarkId,
@@ -1239,7 +1273,19 @@ class BookmarkFullscreenViewerState
   void initState() {
     super.initState();
     _index = widget.initialIndex;
+    _bookmarks = List<BookmarkModel>.from(widget.bookmarks);
     _pageCtrl = PageController(initialPage: widget.initialIndex);
+  }
+
+  @override
+  void didUpdateWidget(covariant BookmarkFullscreenViewer oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.bookmarks != widget.bookmarks) {
+      _bookmarks = List<BookmarkModel>.from(widget.bookmarks);
+      if (_index >= _bookmarks.length && _bookmarks.isNotEmpty) {
+        _index = _bookmarks.length - 1;
+      }
+    }
   }
 
   @override
@@ -1253,7 +1299,7 @@ class BookmarkFullscreenViewerState
     setState(() => _isDownloading = true);
 
     try {
-      final bm = widget.bookmarks[_index];
+      final bm = _bookmarks[_index];
       final media = GalleryMediaService();
       final result = await media.saveImage(
         imageUrl: bm.imageUrl,
@@ -1282,7 +1328,7 @@ class BookmarkFullscreenViewerState
 
   void _forwardCurrent() {
     if (!AppCapabilities.current.chatEnabled) return;
-    final bm = widget.bookmarks[_index];
+    final bm = _bookmarks[_index];
     ForwardMessageSheet.show(
       context,
       ForwardMessagePayload(
@@ -1322,18 +1368,18 @@ class BookmarkFullscreenViewerState
     );
 
     if (ok == true && widget.onRemove != null) {
-      await widget.onRemove!(widget.bookmarks[_index]);
+      await widget.onRemove!(_bookmarks[_index]);
       if (mounted) Navigator.pop(context);
     }
   }
 
   @override
   Widget build(BuildContext context) {
-    if (widget.bookmarks.isEmpty) {
+    if (_bookmarks.isEmpty) {
       return const Scaffold(backgroundColor: Colors.black);
     }
 
-    final bm = widget.bookmarks[_index];
+    final bm = _bookmarks[_index];
 
     return Scaffold(
       backgroundColor: Colors.black,
@@ -1343,7 +1389,7 @@ class BookmarkFullscreenViewerState
           // ── Photo gallery ──────────────────────────────────────────────
           PhotoViewGallery.builder(
             pageController: _pageCtrl,
-            itemCount: widget.bookmarks.length,
+            itemCount: _bookmarks.length,
             onPageChanged: (i) => setState(() => _index = i),
             scrollPhysics: const BouncingScrollPhysics(
               parent: AlwaysScrollableScrollPhysics(),
@@ -1351,13 +1397,13 @@ class BookmarkFullscreenViewerState
             backgroundDecoration: const BoxDecoration(color: Colors.black),
             builder: (context, i) => PhotoViewGalleryPageOptions(
               imageProvider: CachedNetworkImageProvider(
-                getOriginalHighQualityImageUrl(widget.bookmarks[i].imageUrl),
+                getOriginalHighQualityImageUrl(_bookmarks[i].imageUrl),
               ),
               minScale: PhotoViewComputedScale.contained,
               maxScale: PhotoViewComputedScale.covered * 4,
               onTapUp: (_, __, ___) => setState(() => _overlayOn = !_overlayOn),
               heroAttributes: PhotoViewHeroAttributes(
-                tag: 'bookmark_${widget.bookmarks[i].bookmarkId}',
+                tag: 'bookmark_${_bookmarks[i].bookmarkId}',
               ),
             ),
             loadingBuilder: (context, event) =>
@@ -1367,7 +1413,7 @@ class BookmarkFullscreenViewerState
           GalleryNavigationControls(
             controller: _pageCtrl,
             currentIndex: _index,
-            imageCount: widget.bookmarks.length,
+            imageCount: _bookmarks.length,
           ),
 
           // ── Overlay ────────────────────────────────────────────────────
@@ -1517,6 +1563,47 @@ class BookmarkFullscreenViewerState
                                     ),
                                   ),
 
+                                  // ── Remove Text ────────────────────────
+                                  IconButton(
+                                    icon: const Icon(
+                                      Icons.text_fields_rounded,
+                                      color: Color(0xFF00E5FF),
+                                    ),
+                                    tooltip: 'Remove Text',
+                                    onPressed: () => PhotoTextRemoverSheet.open(
+                                      context,
+                                      origin: widget.sourceCollectionId != null
+                                          ? PhotoTextRemoverOrigin
+                                              .bookmarkCollection
+                                          : PhotoTextRemoverOrigin.bookmarks,
+                                      imageUrl: bm.imageUrl,
+                                      groupId: bm.groupId,
+                                      groupName: bm.groupName,
+                                      sourceBookmarkId: bm.bookmarkId,
+                                      sourceCollectionId:
+                                          widget.sourceCollectionId,
+                                      isOwner: widget.isOwner,
+                                      title: bm.groupName.isNotEmpty
+                                          ? bm.groupName
+                                          : 'Saved Bookmark',
+                                      onRemoteImageUpdated: (newUrl) {
+                                        if (!mounted) return;
+                                        setState(() {
+                                          _bookmarks[_index] = BookmarkModel(
+                                            bookmarkId: bm.bookmarkId,
+                                            userId: bm.userId,
+                                            userName: bm.userName,
+                                            userProfilePic: bm.userProfilePic,
+                                            imageUrl: newUrl,
+                                            groupId: bm.groupId,
+                                            groupName: bm.groupName,
+                                            bookmarkedAt: DateTime.now(),
+                                          );
+                                        });
+                                      },
+                                    ),
+                                  ),
+
                                   // ── Wallpaper & Home Widget ────────────
                                   IconButton(
                                     icon: const Icon(
@@ -1617,10 +1704,12 @@ class BookmarkFullscreenViewerState
                               StreamBuilder<
                                 DocumentSnapshot<Map<String, dynamic>>
                               >(
-                                stream: FirebaseFirestore.instance
-                                    .collection('users')
-                                    .doc(bm.userId)
-                                    .snapshots(),
+                                stream: Firebase.apps.isNotEmpty
+                                    ? FirebaseFirestore.instance
+                                        .collection('users')
+                                        .doc(bm.userId)
+                                        .snapshots()
+                                    : const Stream.empty(),
                                 builder: (context, snapshot) {
                                   final data = snapshot.data?.data();
                                   final pic =

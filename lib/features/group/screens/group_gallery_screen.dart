@@ -16,6 +16,7 @@ import 'package:worship_chat/colors.dart';
 import 'package:worship_chat/common/utils/google_lens_service.dart';
 import 'package:worship_chat/common/utils/utils.dart';
 import 'package:worship_chat/common/widgets/loader.dart';
+import 'package:worship_chat/common/widgets/photo_text_remover_sheet.dart';
 import 'package:worship_chat/common/widgets/set_as_profile_pic_sheet.dart';
 import 'package:worship_chat/common/widgets/wallpaper_widget_sheet.dart';
 import 'package:worship_chat/features/auth/controller/auth_controller.dart';
@@ -1286,6 +1287,30 @@ class _FullscreenViewerState extends ConsumerState<_FullscreenViewer> {
                                       ),
                                     ),
 
+                                  // ── Remove Text ────────────────────────
+                                  if (!img.isVideo)
+                                    IconButton(
+                                      icon: const Icon(
+                                        Icons.text_fields_rounded,
+                                        color: Color(0xFF00E5FF),
+                                      ),
+                                      tooltip: 'Remove Text',
+                                      onPressed: () =>
+                                          PhotoTextRemoverSheet.open(
+                                        context,
+                                        origin:
+                                            PhotoTextRemoverOrigin.groupGallery,
+                                        imageUrl: img.imageUrl,
+                                        groupId: widget.groupId,
+                                        groupName: widget.groupName,
+                                        sourceImageId: img.imageId,
+                                        title: (img.caption?.trim().isNotEmpty ??
+                                                false)
+                                            ? img.caption!.trim()
+                                            : widget.groupName,
+                                      ),
+                                    ),
+
                                   // ── Wallpaper & Home Widget ─────────────
                                   if (!img.isVideo)
                                     IconButton(
@@ -1865,6 +1890,35 @@ class _GalleryGrid extends ConsumerWidget {
                                   GoogleLensService.search(
                                     context: context,
                                     imageUrl: img.imageUrl,
+                                  );
+                                },
+                              ),
+                            if (!img.isVideo)
+                              ListTile(
+                                leading: const Icon(
+                                  Icons.text_fields_rounded,
+                                  color: Color(0xFF00E5FF),
+                                ),
+                                title: const Text('Remove Text',
+                                    style: TextStyle(color: Colors.white)),
+                                subtitle: const Text(
+                                    'Erase captions, watermarks & overlaid text',
+                                    style: TextStyle(
+                                        color: Colors.white54, fontSize: 12)),
+                                onTap: () {
+                                  Navigator.pop(ctx);
+                                  PhotoTextRemoverSheet.open(
+                                    context,
+                                    origin:
+                                        PhotoTextRemoverOrigin.groupGallery,
+                                    imageUrl: img.imageUrl,
+                                    groupId: groupId,
+                                    groupName: groupName,
+                                    sourceImageId: img.imageId,
+                                    title:
+                                        (img.caption?.trim().isNotEmpty ?? false)
+                                            ? img.caption!.trim()
+                                            : groupName,
                                   );
                                 },
                               ),

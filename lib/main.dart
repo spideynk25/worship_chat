@@ -133,9 +133,7 @@ Future<void> main() async {
         await _safeOpenHiveBox('roleplay_settings');
         await _safeOpenHiveBox('displayImage');
         await _safeOpenHiveBox('status_cache');
-        unawaited(
-          LocationService.instance.resumeActiveLiveLocationTracking(),
-        );
+        unawaited(LocationService.instance.resumeActiveLiveLocationTracking());
         unawaited(RoleplayService.instance.restoreActiveSessions());
       }
       await _safeOpenHiveBox('groups_cache');

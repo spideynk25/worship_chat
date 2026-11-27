@@ -38,6 +38,13 @@ class FakeBookmarkController implements BookmarkController {
   }
 
   @override
+  Future<bool> replaceBookmarkImage({
+    required String bookmarkId,
+    required String newImageUrl,
+  }) async =>
+      true;
+
+  @override
   Future<BookmarkCollectionModel?> createCollection({
     required String name,
     List<String> initialBookmarkIds = const [],

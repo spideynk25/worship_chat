@@ -164,6 +164,21 @@ class BookmarkController {
     }
   }
 
+  Future<bool> replaceBookmarkImage({
+    required String bookmarkId,
+    required String newImageUrl,
+  }) async {
+    try {
+      return await repository.replaceBookmarkImage(
+        bookmarkId: bookmarkId,
+        newImageUrl: newImageUrl,
+      );
+    } catch (e) {
+      log('❌ BookmarkController.replaceBookmarkImage: $e');
+      return false;
+    }
+  }
+
   Future<bool> addBookmarksToCollection({
     required String collectionId,
     required List<String> bookmarkIds,

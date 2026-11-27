@@ -13,6 +13,7 @@ import 'package:worship_chat/colors.dart';
 import 'package:worship_chat/common/utils/app_capabilities.dart';
 import 'package:worship_chat/common/utils/google_lens_service.dart';
 import 'package:worship_chat/common/utils/utils.dart';
+import 'package:worship_chat/common/widgets/photo_text_remover_sheet.dart';
 import 'package:worship_chat/common/widgets/set_as_profile_pic_sheet.dart';
 import 'package:worship_chat/common/widgets/wallpaper_widget_sheet.dart';
 import 'package:worship_chat/features/chat/widgets/forward_message_sheet.dart';
@@ -650,6 +651,17 @@ class _FolderGalleryScreenState extends ConsumerState<FolderGalleryScreen> {
     });
   }
 
+  void _handleLocalFileUpdated(File updatedFile) {
+    final canon = p.canonicalize(updatedFile.path);
+    setState(() {
+      final exists = _allFiles.any((f) => p.canonicalize(f.path) == canon);
+      if (!exists) {
+        _allFiles.insert(0, updatedFile);
+        _shuffledFiles?.insert(0, updatedFile);
+      }
+    });
+  }
+
   void _showFileDetailsSheet(File file) {
     final fileName = p.basename(file.path);
     int size = 0;
@@ -692,6 +704,31 @@ class _FolderGalleryScreenState extends ConsumerState<FolderGalleryScreen> {
                 maxLines: 2,
                 overflow: TextOverflow.ellipsis,
               ),
+            ),
+            ListTile(
+              leading: const Icon(
+                Icons.text_fields_rounded,
+                color: Color(0xFF00E5FF),
+              ),
+              title: const Text(
+                'Remove Text',
+                style: TextStyle(color: Colors.white),
+              ),
+              subtitle: const Text(
+                'Erase captions, watermarks & overlaid text',
+                style: TextStyle(color: Colors.white54, fontSize: 12),
+              ),
+              onTap: () {
+                Navigator.pop(ctx);
+                PhotoTextRemoverSheet.open(
+                  context,
+                  origin: PhotoTextRemoverOrigin.localGallery,
+                  localPath: file.path,
+                  groupName: _folderName,
+                  title: fileName,
+                  onLocalFileUpdated: _handleLocalFileUpdated,
+                );
+              },
             ),
             ListTile(
               leading: const Icon(Icons.account_circle_outlined, color: tabColor),
@@ -1702,6 +1739,7 @@ class _FolderGalleryScreenState extends ConsumerState<FolderGalleryScreen> {
                             onSlideshow: () =>
                                 _startSlideshow(initialIndex: index),
                             onFileDeleted: _removeFileFromLists,
+                            onFileUpdated: _handleLocalFileUpdated,
                           ),
                         ),
                       );
@@ -1816,6 +1854,7 @@ class _LocalFullscreenViewer extends StatefulWidget {
   final String folderName;
   final VoidCallback onSlideshow;
   final void Function(File deletedFile) onFileDeleted;
+  final void Function(File updatedFile)? onFileUpdated;
 
   const _LocalFullscreenViewer({
     required this.files,
@@ -1825,6 +1864,7 @@ class _LocalFullscreenViewer extends StatefulWidget {
     required this.folderName,
     required this.onSlideshow,
     required this.onFileDeleted,
+    this.onFileUpdated,
   });
 
   @override
@@ -2109,6 +2149,52 @@ class _LocalFullscreenViewerState extends State<_LocalFullscreenViewer> {
                                     onPressed: () => GoogleLensService.search(
                                       context: context,
                                       localPath: currentFile.path,
+                                    ),
+                                  ),
+
+                                  // ── Remove Text ────────────────────────
+                                  IconButton(
+                                    icon: const Icon(
+                                      Icons.text_fields_rounded,
+                                      color: Color(0xFF00E5FF),
+                                    ),
+                                    tooltip: 'Remove Text',
+                                    onPressed: () => PhotoTextRemoverSheet.open(
+                                      context,
+                                      origin:
+                                          PhotoTextRemoverOrigin.localGallery,
+                                      localPath: currentFile.path,
+                                      groupName: widget.folderName,
+                                      title: fileName,
+                                      onLocalFileUpdated: (updatedFile) {
+                                        widget.onFileUpdated?.call(updatedFile);
+                                        if (!mounted) return;
+                                        final canon =
+                                            p.canonicalize(updatedFile.path);
+                                        setState(() {
+                                          if (!_files.any(
+                                            (f) =>
+                                                p.canonicalize(f.path) == canon,
+                                          )) {
+                                            _files.insert(_index + 1, updatedFile);
+                                            _images.insert(
+                                              _index + 1,
+                                              GroupGalleryImage(
+                                                imageId:
+                                                    'local_${updatedFile.path.hashCode}',
+                                                groupId: 'local',
+                                                imageUrl: updatedFile.path,
+                                                uploadedBy: 'local_storage',
+                                                uploadedByName:
+                                                    'Device Storage',
+                                                uploadedAt: DateTime.now(),
+                                                caption:
+                                                    p.basename(updatedFile.path),
+                                              ),
+                                            );
+                                          }
+                                        });
+                                      },
                                     ),
                                   ),
 

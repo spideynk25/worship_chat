@@ -285,9 +285,10 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
                 TodayBirthdaysSlideshowWidget.isToday(e, now) &&
                 TodayBirthdaysSlideshowWidget.isBirthday(e))
             .toList();
+        const headerHeight = 92.0;
         return Scaffold(
           appBar: PreferredSize(
-            preferredSize: const Size.fromHeight(90),
+            preferredSize: const Size.fromHeight(headerHeight),
             child: Hive.isBoxOpen('userBox')
                 ? ValueListenableBuilder<Box<UserModel>>(
                     valueListenable: Hive.box<UserModel>('userBox').listenable(),
@@ -365,71 +366,86 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
     );
   }
 
-  Widget _buildDeityBirthdayAvatar(BuildContext context, Event celebrant) {
-    final pic = HomeBirthdayDeitiesAppBarBottom.resolveCelebrantPic(celebrant);
-    final imageProvider = HomeBirthdayDeitiesAppBarBottom.getImageProvider(pic);
-    final cleanName = TodayBirthdaysSlideshowWidget.extractCelebrantName(
-      celebrant.title,
-      connectedGroupName: celebrant.connectedGroupName,
-    );
+  Widget _buildDeityBirthdayStrip(
+    BuildContext context,
+    List<Event> todayBirthdays,
+  ) {
+    final hasMany = todayBirthdays.length > 3;
 
-    return Tooltip(
-      message: cleanName,
-      child: GestureDetector(
-        onTap: () {
-          HapticFeedback.selectionClick();
-          HomeBirthdayDeitiesAppBarBottom.openSlideshow(context, celebrant);
-        },
-        child: Container(
-          margin: const EdgeInsets.only(right: 6),
-          child: Stack(
-            clipBehavior: Clip.none,
-            alignment: Alignment.center,
-            children: [
-              Container(
-                padding: const EdgeInsets.all(1.5),
-                decoration: BoxDecoration(
-                  shape: BoxShape.circle,
-                  border: Border.all(
-                    color: const Color(0xFFFFD700),
-                    width: 1.5,
-                  ),
-                  boxShadow: [
-                    BoxShadow(
-                      color: const Color(0xFFFFD700).withValues(alpha: 0.45),
-                      blurRadius: 6,
-                      spreadRadius: 1,
+    return SizedBox(
+      height: 53,
+      child: Row(
+        children: [
+          Expanded(
+            child: SingleChildScrollView(
+              scrollDirection: Axis.horizontal,
+              physics: const BouncingScrollPhysics(),
+              clipBehavior: Clip.none,
+              padding: const EdgeInsets.symmetric(vertical: 1),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  for (var i = 0; i < todayBirthdays.length; i++)
+                    Padding(
+                      padding: const EdgeInsets.only(right: 8),
+                      child: AnimatedBirthdayDeityAvatar(
+                        celebrant: todayBirthdays[i],
+                        radius: 23,
+                        phaseOffset: i * 0.23,
+                        onTap: () {
+                          HapticFeedback.selectionClick();
+                          HomeBirthdayDeitiesAppBarBottom.openSlideshow(
+                            context,
+                            todayBirthdays[i],
+                          );
+                        },
+                      ),
+                    ),
+                ],
+              ),
+            ),
+          ),
+          if (hasMany) ...[
+            const SizedBox(width: 4),
+            InkWell(
+              borderRadius: BorderRadius.circular(14),
+              onTap: () {
+                HapticFeedback.selectionClick();
+                HomeBirthdayDeitiesAppBarBottom.showAllCelebrantsSheet(
+                  context,
+                  todayBirthdays,
+                );
+              },
+              child: Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 4),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const Icon(
+                      Icons.cake_outlined,
+                      size: 13,
+                      color: Color(0xFFD2B46E),
+                    ),
+                    const SizedBox(width: 2.5),
+                    Text(
+                      '${todayBirthdays.length}',
+                      style: const TextStyle(
+                        color: Color(0xFFE7D6AD),
+                        fontSize: 11.5,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                    const Icon(
+                      Icons.keyboard_arrow_down_rounded,
+                      size: 15,
+                      color: Color(0xFFD2B46E),
                     ),
                   ],
                 ),
-                child: CircleAvatar(
-                  radius: 13,
-                  backgroundColor: const Color(0xFF20162E),
-                  backgroundImage: imageProvider,
-                  child: imageProvider == null
-                      ? const Icon(Icons.person, color: Colors.white, size: 14)
-                      : null,
-                ),
               ),
-              Positioned(
-                bottom: -2,
-                right: -2,
-                child: Container(
-                  padding: const EdgeInsets.all(1.0),
-                  decoration: BoxDecoration(
-                    color: const Color(0xFF140E20),
-                    shape: BoxShape.circle,
-                    border: Border.all(
-                      color: const Color(0xFFFFD700).withValues(alpha: 0.8),
-                      width: 0.8,
-                    ),
-                  ),
-                  child: const Text('🎂', style: TextStyle(fontSize: 8)),
-                ),
-              ),
-            ],
-          ),
-        ),
+            ),
+          ],
+        ],
       ),
     );
   }
@@ -462,101 +478,198 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
 
     final displayPic = UserAvatar.sanitizeUrl(rawPic);
 
+    final birthdayWishes = <String>[];
+    if (todayBirthdays.isNotEmpty) {
+      final seenNames = <String>{};
+      for (final event in todayBirthdays) {
+        final name = TodayBirthdaysSlideshowWidget.extractCelebrantName(
+          event.title,
+          connectedGroupName: event.connectedGroupName,
+        );
+        if (name.isNotEmpty && seenNames.add(name.toLowerCase())) {
+          birthdayWishes.add('Happy Birthday $name');
+        }
+      }
+    }
+
+    const headerHeight = 92.0;
+
     return AppBar(
-      toolbarHeight: 90,
+      automaticallyImplyLeading: false,
+      centerTitle: false,
+      titleSpacing: 16,
+      toolbarHeight: headerHeight,
       backgroundColor: appBarColor,
+      surfaceTintColor: Colors.transparent,
       elevation: 0,
+      scrolledUnderElevation: 0,
       title: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
         mainAxisAlignment: MainAxisAlignment.center,
+        mainAxisSize: MainAxisSize.min,
         children: [
-          Text(
-            isChatEnabled ? 'Worship Chat' : 'Worship Gallery',
-            style: const TextStyle(
-              color: Colors.white,
-              fontSize: 20,
-              fontWeight: FontWeight.bold,
-            ),
-          ),
-          const DynamicTextWidget(),
-          if (todayBirthdays.isNotEmpty) ...[
-            const SizedBox(height: 3),
-            Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                for (final celebrant in todayBirthdays.take(4))
-                  _buildDeityBirthdayAvatar(context, celebrant),
-              ],
-            ),
-          ],
-        ],
-      ),
-      actions: [
-        if (!isChatEnabled)
-          IconButton(
-            tooltip: 'Bookmarks',
-            icon: const Icon(Icons.bookmark_outline, color: tabColor),
-            onPressed: () => Navigator.push(
-              context,
-              MaterialPageRoute(builder: (_) => const BookmarkScreen()),
-            ),
-          ),
-        Padding(
-          padding: const EdgeInsets.only(right: 8),
-          child: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
-            crossAxisAlignment: CrossAxisAlignment.end,
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.center,
             children: [
-              Text(
-                displayName,
-                style: const TextStyle(
-                  fontWeight: FontWeight.w700,
-                  fontSize: 12,
-                  color: tabColor,
-                ),
-              ),
-              ShimmerEffect(
-                baseColor: const Color(0xFFD4A017),
-                highlightColor: const Color(0xFFFFF8DC),
-                duration: const Duration(seconds: 10),
-                activeFraction: 0.14,
-                child: Text(
-                  displayUserName,
-                  style: const TextStyle(
-                    color: Colors.white,
-                    fontWeight: FontWeight.w600,
-                    fontSize: 12,
-                    letterSpacing: 0.25,
-                    shadows: [
-                      Shadow(
-                        color: Color(0x66FFD700),
-                        blurRadius: 8,
+              Expanded(
+                child: todayBirthdays.isNotEmpty
+                    ? _buildDeityBirthdayStrip(context, todayBirthdays)
+                    : Text(
+                        isChatEnabled ? 'Worship Chat' : 'Worship Gallery',
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                          color: Color(0xFFF6F4FC),
+                          fontSize: 20.5,
+                          fontWeight: FontWeight.w700,
+                          letterSpacing: -0.4,
+                        ),
                       ),
-                    ],
+              ),
+              const SizedBox(width: 10),
+              if (!isChatEnabled)
+                IconButton(
+                  tooltip: 'Bookmarks',
+                  visualDensity: VisualDensity.compact,
+                  padding: const EdgeInsets.only(right: 4),
+                  constraints: const BoxConstraints(
+                    minWidth: 34,
+                    minHeight: 34,
+                  ),
+                  icon: const Icon(
+                    Icons.bookmark_outline_rounded,
+                    color: Colors.white70,
+                    size: 20,
+                  ),
+                  onPressed: () => Navigator.push(
+                    context,
+                    MaterialPageRoute(builder: (_) => const BookmarkScreen()),
                   ),
                 ),
+              _buildProfileMenuButton(
+                displayName: displayName,
+                displayUserName: displayUserName,
+                displayPic: displayPic,
+                user: user,
+                currentUserUid: currentUserUid,
+                isChatEnabled: isChatEnabled,
               ),
             ],
           ),
-        ),
-        PopupMenuButton<String>(
-          position: PopupMenuPosition.under,
-          padding: EdgeInsets.zero,
-          iconSize: 50,
-          elevation: 16,
-          shadowColor: Colors.black.withValues(alpha: 0.7),
-          color: const Color(0xFF161426),
-          surfaceTintColor: Colors.transparent,
-          offset: const Offset(0, 10),
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(18),
-            side: BorderSide(
-              color: Colors.white.withValues(alpha: 0.12),
-              width: 1.0,
+          const SizedBox(height: 2),
+          Align(
+            alignment: Alignment.centerLeft,
+            child: ShaderMask(
+              blendMode: BlendMode.srcIn,
+              shaderCallback: (bounds) => const LinearGradient(
+                begin: Alignment.centerLeft,
+                end: Alignment.centerRight,
+                colors: [
+                  Color(0xFFFF7EB3),
+                  Color(0xFFFFB26B),
+                  Color(0xFFFFDC88),
+                ],
+              ).createShader(
+                Rect.fromLTWH(
+                  0,
+                  0,
+                  bounds.width > 0 ? bounds.width : 1,
+                  bounds.height > 0 ? bounds.height : 1,
+                ),
+              ),
+              child: DynamicTextWidget(
+                maxLines: 1,
+                overrideTexts: birthdayWishes,
+                style: const TextStyle(
+                  color: Colors.white,
+                  fontSize: 11.5,
+                  fontWeight: FontWeight.w500,
+                  letterSpacing: 0.15,
+                ),
+              ),
             ),
           ),
-          icon: ValueListenableBuilder<UpdateCheckOutcome?>(
-            valueListenable: AppUpdateService.instance.availableOutcomeNotifier,
+        ],
+      ),
+    );
+  }
+
+  Widget _buildProfileMenuButton({
+    required String displayName,
+    required String displayUserName,
+    required String? displayPic,
+    required UserModel? user,
+    required String currentUserUid,
+    required bool isChatEnabled,
+  }) {
+    return PopupMenuButton<String>(
+      position: PopupMenuPosition.under,
+      padding: EdgeInsets.zero,
+      elevation: 16,
+      shadowColor: Colors.black.withValues(alpha: 0.7),
+      color: const Color(0xFF161426),
+      surfaceTintColor: Colors.transparent,
+      offset: const Offset(0, 8),
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(18),
+        side: BorderSide(
+          color: Colors.white.withValues(alpha: 0.12),
+          width: 1.0,
+        ),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 108),
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              crossAxisAlignment: CrossAxisAlignment.end,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(
+                  displayName,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                    fontWeight: FontWeight.w700,
+                    fontSize: 12.5,
+                    color: Color(0xFFFF82B2),
+                    height: 1.15,
+                  ),
+                ),
+                const SizedBox(height: 1.5),
+                ShimmerEffect(
+                  baseColor: const Color(0xFFD2B46E),
+                  highlightColor: const Color(0xFFF7EBD0),
+                  duration: const Duration(seconds: 10),
+                  activeFraction: 0.14,
+                  child: Text(
+                    displayUserName,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                      color: Colors.white,
+                      fontWeight: FontWeight.w500,
+                      fontSize: 11,
+                      letterSpacing: 0.2,
+                      height: 1.15,
+                      shadows: [
+                        Shadow(
+                          color: Color(0x33D2B46E),
+                          blurRadius: 6,
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(width: 9),
+          ValueListenableBuilder<UpdateCheckOutcome?>(
+            valueListenable:
+                AppUpdateService.instance.availableOutcomeNotifier,
             builder: (context, pendingUpdate, child) {
               final hasUpdate =
                   pendingUpdate?.status == UpdateCheckStatus.updateAvailable &&
@@ -567,8 +680,8 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
                   child!,
                   if (hasUpdate)
                     Positioned(
-                      top: -1,
-                      right: -1,
+                      top: -2,
+                      right: -2,
                       child: Container(
                         constraints: const BoxConstraints(
                           minWidth: 18,
@@ -610,11 +723,16 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
               );
             },
             child: Hero(
-              tag: user?.uid ?? (currentUserUid.isNotEmpty ? currentUserUid : "profile_icon"),
-              child: UserAvatar(url: displayPic, radius: 22),
+              tag: user?.uid ??
+                  (currentUserUid.isNotEmpty
+                      ? currentUserUid
+                      : 'profile_icon'),
+              child: UserAvatar(url: displayPic, radius: 25),
             ),
           ),
-          itemBuilder: (context) {
+        ],
+      ),
+      itemBuilder: (context) {
             final pendingUpdate =
                 AppUpdateService.instance.availableOutcomeNotifier.value;
             final updateInfo =
@@ -769,9 +887,6 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
             ),
             ];
           },
-        ),
-        const SizedBox(width: 4),
-      ],
     );
   }
 

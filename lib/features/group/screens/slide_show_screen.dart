@@ -7,6 +7,7 @@ import 'package:flutter/services.dart';
 import 'package:photo_view/photo_view.dart';
 import 'package:worship_chat/common/utils/google_lens_service.dart';
 import 'package:worship_chat/common/utils/utils.dart';
+import 'package:worship_chat/common/widgets/photo_text_remover_sheet.dart';
 import 'package:worship_chat/common/widgets/set_as_profile_pic_sheet.dart';
 import 'package:worship_chat/common/widgets/wallpaper_widget_sheet.dart';
 import 'package:worship_chat/features/group/services/gallery_media_service.dart';
@@ -54,6 +55,35 @@ Widget _buildSlideshowProfilePicButton({
           ? photo.caption!.trim()
           : (groupName.isNotEmpty ? groupName : 'Worship Slideshow'),
     ),
+  );
+}
+
+Widget _buildSlideshowTextRemoverButton({
+  required BuildContext context,
+  required GroupGalleryImage photo,
+  required bool isNetwork,
+  required String groupName,
+  VoidCallback? onBeforeOpen,
+}) {
+  if (photo.isVideo) return const SizedBox.shrink();
+  return IconButton(
+    icon: const Icon(Icons.text_fields_rounded, color: Color(0xFF00E5FF)),
+    tooltip: 'Remove Text',
+    onPressed: () {
+      onBeforeOpen?.call();
+      PhotoTextRemoverSheet.open(
+        context,
+        origin: PhotoTextRemoverOrigin.slideshow,
+        imageUrl: isNetwork ? photo.imageUrl : null,
+        localPath: isNetwork ? null : photo.imageUrl,
+        groupId: photo.groupId,
+        groupName: groupName,
+        sourceImageId: isNetwork ? photo.imageId : null,
+        title: (photo.caption?.trim().isNotEmpty ?? false)
+            ? photo.caption!.trim()
+            : (groupName.isNotEmpty ? groupName : 'Worship Slideshow'),
+      );
+    },
   );
 }
 
@@ -872,6 +902,12 @@ class _SlideshowScreenState extends State<SlideshowScreen>
                       isNetwork: isNetwork,
                       groupName: groupName,
                     ),
+                    _buildSlideshowTextRemoverButton(
+                      context: context,
+                      photo: photo,
+                      isNetwork: isNetwork,
+                      groupName: groupName,
+                    ),
                     _buildSlideshowProfilePicButton(
                       context: context,
                       photo: photo,
@@ -1063,6 +1099,35 @@ class _SlideshowScreenState extends State<SlideshowScreen>
                                     ? TwoPhotosLayout.sideBySide
                                     : TwoPhotosLayout.stacked;
                           });
+                        },
+                      ),
+
+                    // Remove Text (when viewing single photo in alternate mode)
+                    if (_mode != MultiGalleryMode.sameSlide &&
+                        _playlist.isNotEmpty &&
+                        !_playlist[_currentIndex.clamp(0, _playlist.length - 1)]
+                            .isVideo)
+                      Builder(
+                        builder: (_) {
+                          final activePhoto = _playlist[
+                              _currentIndex.clamp(0, _playlist.length - 1)];
+                          final isNet =
+                              activePhoto.imageUrl.startsWith('http://') ||
+                              activePhoto.imageUrl.startsWith('https://');
+                          return _buildSlideshowTextRemoverButton(
+                            context: context,
+                            photo: activePhoto,
+                            isNetwork: isNet,
+                            groupName:
+                                widget.groupNamesMap?[activePhoto.groupId] ??
+                                widget.groupName,
+                            onBeforeOpen: () {
+                              if (_isPlaying) {
+                                _progressCtrl.stop();
+                                setState(() => _isPlaying = false);
+                              }
+                            },
+                          );
                         },
                       ),
 
@@ -1348,6 +1413,12 @@ class PhotoLightboxViewer extends StatelessWidget {
                         ),
                       ),
                       _buildSlideshowWallpaperButton(
+                        context: context,
+                        photo: photo,
+                        isNetwork: isNetwork,
+                        groupName: groupName,
+                      ),
+                      _buildSlideshowTextRemoverButton(
                         context: context,
                         photo: photo,
                         isNetwork: isNetwork,
